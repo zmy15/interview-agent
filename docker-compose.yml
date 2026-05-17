@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  # ========== 后端 — FastAPI ==========
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: interview-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      # 持久化向量数据库
+      - chroma_data:/app/chroma_data
+    restart: unless-stopped
+
+  # ========== 前端 — React + Nginx ==========
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: interview-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  chroma_data:

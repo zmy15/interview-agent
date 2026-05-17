@@ -1,0 +1,22 @@
+{
+  // ===== TypeScript / React =====
+  "typescript.tsdk": "frontend/node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+  "eslint.workingDirectories": ["frontend"],
+
+  // ===== Python =====
+  "python.analysis.extraPaths": [
+    "."
+  ],
+  "python.analysis.exclude": [
+    "frontend",
+    "frontend/node_modules"
+  ],
+
+  // ===== 文件关联 =====
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.pytest_cache": true,
+    "**/*.pyc": true
+  }
+}
