@@ -14,8 +14,14 @@ logger = logging.getLogger(__name__)
 _client: Optional[AsyncOpenAI] = None
 
 
-def get_client() -> AsyncOpenAI:
+def get_client(api_key: Optional[str] = None) -> AsyncOpenAI:
+    """获取 OpenAI 客户端。如果提供 api_key，则使用该 key 创建新客户端；否则复用全局客户端。"""
     global _client
+    if api_key:
+        return AsyncOpenAI(
+            api_key=api_key,
+            base_url=settings.DEEPSEEK_BASE_URL,
+        )
     if _client is None:
         _client = AsyncOpenAI(
             api_key=settings.DEEPSEEK_API_KEY,
@@ -29,6 +35,7 @@ async def stream_chat(
     model: Optional[str] = None,
     thinking_enabled: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> AsyncGenerator[dict, None]:
     """
     流式调用 DeepSeek，yield 统一格式 dict：
@@ -36,7 +43,7 @@ async def stream_chat(
     - {"type": "content", "content": "..."}    最终回答
     - {"type": "done", "content": ""}          结束
     """
-    client = get_client()
+    client = get_client(api_key=api_key)
     _model = model or settings.DEEPSEEK_MODEL
     _thinking = thinking_enabled if thinking_enabled is not None else settings.DEEPSEEK_THINKING_ENABLED
     _effort = reasoning_effort or settings.DEEPSEEK_REASONING_EFFORT
@@ -96,9 +103,10 @@ async def stream_chat(
 async def generate_report(
     messages: list[dict],
     model: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> str:
     """非流式调用，用于报告生成"""
-    client = get_client()
+    client = get_client(api_key=api_key)
     _model = model or settings.DEEPSEEK_MODEL
 
     msgs = []

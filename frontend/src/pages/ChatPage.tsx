@@ -8,6 +8,10 @@ import {
   Segmented,
   Typography,
   App,
+  Modal,
+  Select,
+  Tag,
+  Tooltip,
 } from 'antd'
 import {
   SendOutlined,
@@ -15,6 +19,10 @@ import {
   ClearOutlined,
   SettingOutlined,
   SearchOutlined,
+  KeyOutlined,
+  ClockCircleOutlined,
+  PlayCircleOutlined,
+  PauseCircleOutlined,
 } from '@ant-design/icons'
 import { useChatStore } from '@/stores/chatStore'
 import { useAppStore } from '@/stores/appStore'
@@ -23,7 +31,8 @@ import ChatMessage from '@/components/ChatMessage'
 import ModelSelector from '@/components/ModelSelector'
 import PositionSelect from '@/components/PositionSelect'
 import PromptEditor from '@/components/PromptEditor'
-import type { ChatMode } from '@/types'
+import { getInterviewPlan } from '@/api/interview'
+import type { ChatMode, InterviewPlanResponse } from '@/types'
 
 const { TextArea } = Input
 const { Text } = Typography
@@ -43,11 +52,16 @@ const ChatPage: React.FC = () => {
   } = useChatStore()
 
   const { message } = App.useApp()
-  const { highlightCode, toggleHighlightCode } = useAppStore()
+  const { highlightCode, toggleHighlightCode, apiKey, setApiKey, interviewDuration, setInterviewDuration } = useAppStore()
   const { sendMessage, abort } = useSSE()
 
   const [inputValue, setInputValue] = useState('')
   const [promptEditorOpen, setPromptEditorOpen] = useState(false)
+  const [apiKeyModalOpen, setApiKeyModalOpen] = useState(false)
+  const [apiKeyInput, setApiKeyInput] = useState(apiKey)
+  const [interviewPlan, setInterviewPlan] = useState<InterviewPlanResponse | null>(null)
+  const [practiceActive, setPracticeActive] = useState(false)
+  const [questionIndex, setQuestionIndex] = useState(0)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const chatContainerRef = useRef<HTMLDivElement>(null)
   const [autoScroll, setAutoScroll] = useState(true)
@@ -87,8 +101,69 @@ const ChatPage: React.FC = () => {
 
   const handleClear = () => {
     clearChat()
+    setPracticeActive(false)
+    setQuestionIndex(0)
+    setInterviewPlan(null)
     message.success('对话已清空')
   }
+
+  // API Key 配置
+  const handleApiKeySave = () => {
+    setApiKey(apiKeyInput.trim())
+    setApiKeyModalOpen(false)
+    if (apiKeyInput.trim()) {
+      message.success('API Key 已保存')
+    } else {
+      message.info('API Key 已清除，将使用服务端默认配置')
+    }
+  }
+
+  // 获取面试计划
+  const handleGetPlan = async () => {
+    try {
+      const plan = await getInterviewPlan({
+        mode: selectedMode,
+        duration_minutes: interviewDuration,
+      })
+      setInterviewPlan(plan)
+      message.success(plan.description)
+    } catch {
+      message.error('获取面试计划失败')
+    }
+  }
+
+  // 开始模拟练习
+  const handleStartPractice = async () => {
+    if (!interviewPlan) {
+      await handleGetPlan()
+    }
+    setPracticeActive(true)
+    setQuestionIndex(0)
+    // 发送开始练习的系统消息
+    const startMsg = `开始模拟面试练习，时长 ${interviewDuration} 分钟，预计 ${interviewPlan?.question_count || '若干'} 道题目。请开始提问。`
+    await sendMessage(startMsg)
+  }
+
+  // 结束练习并跳转报告
+  const handleEndPractice = () => {
+    setPracticeActive(false)
+    setQuestionIndex(0)
+    setInterviewPlan(null)
+    message.success('练习结束，可前往报告页面生成评价')
+  }
+
+  // 跟踪问题数量（检测 AI 消息中的问题标记）
+  useEffect(() => {
+    if (!practiceActive || !interviewPlan) return
+    const assistantMsgs = messages.filter((m) => m.role === 'assistant')
+    // 简单估算：每个 assistant 消息代表一个问题
+    const count = Math.min(assistantMsgs.length, interviewPlan.question_count)
+    setQuestionIndex(count)
+    // 达到问题数量时自动提示
+    if (count >= interviewPlan.question_count && assistantMsgs.length > 0) {
+      message.info(`已完成 ${interviewPlan.question_count} 道题目，可以结束练习并生成报告`)
+    }
+  }, [messages, practiceActive, interviewPlan])
 
   // 构建流式消息（用于显示正在生成的内容）
   const streamingMessage =
@@ -116,7 +191,11 @@ const ChatPage: React.FC = () => {
       >
         <Segmented
           value={selectedMode}
-          onChange={(val) => setMode(val as ChatMode)}
+          onChange={(val) => {
+            setMode(val as ChatMode)
+            setPracticeActive(false)
+            setInterviewPlan(null)
+          }}
           options={[
             { value: 'interviewer', label: '🤖 AI 面试官' },
             { value: 'candidate', label: '🧑 我是求职者' },
@@ -126,6 +205,45 @@ const ChatPage: React.FC = () => {
         <ModelSelector />
         <div style={{ width: 1, height: 24, background: '#d9d9d9' }} />
         <PositionSelect />
+
+        {/* 求职者模式：面试时长选择器 */}
+        {selectedMode === 'interviewer' && (
+          <>
+            <div style={{ width: 1, height: 24, background: '#d9d9d9' }} />
+            <Space size={4}>
+              <ClockCircleOutlined style={{ color: '#1677ff' }} />
+              <Select
+                size="small"
+                value={interviewDuration}
+                onChange={(val) => {
+                  setInterviewDuration(val)
+                  setInterviewPlan(null)
+                }}
+                style={{ width: 100 }}
+                options={[
+                  { value: 15, label: '15 分钟' },
+                  { value: 30, label: '30 分钟' },
+                  { value: 45, label: '45 分钟' },
+                  { value: 60, label: '60 分钟' },
+                ]}
+              />
+              {interviewPlan && (
+                <Tag color="blue">{interviewPlan.question_count} 题</Tag>
+              )}
+            </Space>
+            <Tooltip title="根据时长推算问题数量">
+              <Button
+                size="small"
+                type="link"
+                onClick={handleGetPlan}
+                style={{ padding: '0 4px', fontSize: 12 }}
+              >
+                推算
+              </Button>
+            </Tooltip>
+          </>
+        )}
+
         <Space size={4}>
           <Switch
             size="small"
@@ -147,12 +265,29 @@ const ChatPage: React.FC = () => {
           </Text>
         </Space>
         <div style={{ flex: 1 }} />
+
+        {/* API Key 配置按钮 */}
+        <Tooltip title={apiKey ? 'DeepSeek API Key 已配置' : '配置 DeepSeek API Key'}>
+          <Button
+            size="small"
+            icon={<KeyOutlined />}
+            type={apiKey ? 'primary' : 'default'}
+            ghost={!!apiKey}
+            onClick={() => {
+              setApiKeyInput(apiKey)
+              setApiKeyModalOpen(true)
+            }}
+          >
+            {apiKey ? '已配置' : 'API Key'}
+          </Button>
+        </Tooltip>
+
         <Button
           size="small"
           icon={<SettingOutlined />}
           onClick={() => setPromptEditorOpen(true)}
         >
-          Prompt 设置
+          Prompt
         </Button>
         <Popconfirm
           title="确定清空所有对话记录？"
@@ -161,7 +296,7 @@ const ChatPage: React.FC = () => {
           cancelText="取消"
         >
           <Button size="small" danger icon={<ClearOutlined />}>
-            清空对话
+            清空
           </Button>
         </Popconfirm>
       </div>
@@ -186,9 +321,52 @@ const ChatPage: React.FC = () => {
           >
             <div style={{ fontSize: 48, marginBottom: 16 }}>🎯</div>
             <div style={{ fontSize: 18, marginBottom: 8 }}>欢迎使用面试 Agent</div>
-            <div style={{ fontSize: 13 }}>
+            <div style={{ fontSize: 13, marginBottom: 24 }}>
               选择面试模式和岗位，开始 AI 模拟面试对话
             </div>
+            {/* 求职者模式：开始练习按钮 */}
+            {selectedMode === 'interviewer' && !practiceActive && (
+              <Button
+                type="primary"
+                size="large"
+                icon={<PlayCircleOutlined />}
+                onClick={handleStartPractice}
+                disabled={!interviewPlan}
+              >
+                开始模拟练习
+              </Button>
+            )}
+          </div>
+        )}
+
+        {/* 练习进度条（求职者模式） */}
+        {practiceActive && interviewPlan && (
+          <div
+            style={{
+              background: '#e6f4ff',
+              borderRadius: 8,
+              padding: '8px 16px',
+              marginBottom: 12,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+            }}
+          >
+            <Space>
+              <PlayCircleOutlined style={{ color: '#1677ff' }} />
+              <Text strong>
+                模拟练习中 · 第 {questionIndex}/{interviewPlan.question_count} 题
+              </Text>
+              <Tag color="processing">{interviewDuration} 分钟</Tag>
+            </Space>
+            <Button
+              size="small"
+              danger
+              icon={<PauseCircleOutlined />}
+              onClick={handleEndPractice}
+            >
+              结束练习
+            </Button>
           </div>
         )}
 
@@ -224,7 +402,7 @@ const ChatPage: React.FC = () => {
           placeholder={
             selectedMode === 'interviewer'
               ? '输入你的回答... (Enter 发送, Shift+Enter 换行)'
-              : '描述你的求职意向... (Enter 发送, Shift+Enter 换行)'
+              : '向 AI 求职者提问... (Enter 发送, Shift+Enter 换行)'
           }
           autoSize={{ minRows: 1, maxRows: 5 }}
           disabled={isStreaming}
@@ -257,6 +435,40 @@ const ChatPage: React.FC = () => {
         open={promptEditorOpen}
         onClose={() => setPromptEditorOpen(false)}
       />
+
+      {/* API Key 配置弹窗 */}
+      <Modal
+        title="配置 DeepSeek API Key"
+        open={apiKeyModalOpen}
+        onOk={handleApiKeySave}
+        onCancel={() => setApiKeyModalOpen(false)}
+        okText="保存"
+        cancelText="取消"
+        width={480}
+      >
+        <div style={{ marginBottom: 16 }}>
+          <Text type="secondary">
+            输入你的 DeepSeek API Key，将优先使用此密钥进行对话。
+            留空则使用服务端默认配置。
+          </Text>
+        </div>
+        <Input.Password
+          value={apiKeyInput}
+          onChange={(e) => setApiKeyInput(e.target.value)}
+          placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          autoFocus
+        />
+        <div style={{ marginTop: 12 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            密钥仅保存在本地浏览器中，不会上传到服务器。
+            你可以从{' '}
+            <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer">
+              DeepSeek 开放平台
+            </a>{' '}
+            获取 API Key。
+          </Text>
+        </div>
+      </Modal>
     </div>
   )
 }

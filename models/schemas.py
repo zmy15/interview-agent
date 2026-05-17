@@ -19,6 +19,7 @@ class ChatRequest(BaseModel):
     model: Optional[str] = None  # 覆盖默认模型
     thinking_enabled: Optional[bool] = None  # 覆盖默认思考开关
     reasoning_effort: Optional[str] = None  # "high" / "max"
+    api_key: Optional[str] = None  # 前端传入的 API Key，覆盖 .env 配置
 
 
 class ChatResponse(BaseModel):
@@ -59,10 +60,23 @@ class InterviewStopResponse(BaseModel):
 class ReportRequest(BaseModel):
     messages: list[Message]
     mode: str
+    api_key: Optional[str] = None  # 前端传入的 API Key
 
 
 class ReportResponse(BaseModel):
     report: str
+
+
+class InterviewPlanRequest(BaseModel):
+    mode: str
+    duration_minutes: int = Field(30, ge=5, le=120, description="面试时长（分钟），默认30分钟")
+
+
+class InterviewPlanResponse(BaseModel):
+    question_count: int
+    duration_minutes: int
+    avg_time_per_question: float
+    description: str
 
 
 # ============ 上传相关 ============

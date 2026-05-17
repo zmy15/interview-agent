@@ -1,5 +1,5 @@
 import { request } from './client'
-import type { Message, ReportResponse } from '@/types'
+import type { Message, ReportResponse, InterviewPlanRequest, InterviewPlanResponse } from '@/types'
 
 export async function startInterview(body: {
   mode: string
@@ -20,9 +20,22 @@ export async function stopInterview(): Promise<{ message: string }> {
   })
 }
 
-export async function generateReport(messages: Message[], mode: string): Promise<ReportResponse> {
+export async function generateReport(
+  messages: Message[],
+  mode: string,
+  apiKey?: string,
+): Promise<ReportResponse> {
   return request<ReportResponse>('/interview/report', {
     method: 'POST',
-    body: { messages, mode },
+    body: { messages, mode, api_key: apiKey || undefined },
+  })
+}
+
+export async function getInterviewPlan(
+  req: InterviewPlanRequest,
+): Promise<InterviewPlanResponse> {
+  return request<InterviewPlanResponse>('/interview/plan', {
+    method: 'POST',
+    body: req,
   })
 }

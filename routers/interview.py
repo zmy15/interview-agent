@@ -1,4 +1,4 @@
-"""面试控制路由 — 开始/停止/报告"""
+"""面试控制路由 — 开始/停止/报告/计划"""
 
 import logging
 
@@ -6,6 +6,8 @@ from fastapi import APIRouter, HTTPException
 
 from models.schemas import (
     InterviewStartRequest,
+    InterviewPlanRequest,
+    InterviewPlanResponse,
     Message,
     ReportRequest,
     ReportResponse,
@@ -79,6 +81,31 @@ async def generate_interview_report(req: ReportRequest):
 
     report = await generate_report(
         messages=[{"role": "user", "content": report_prompt}],
+        api_key=req.api_key,
     )
 
     return ReportResponse(report=report)
+
+
+@router.post("/plan", response_model=InterviewPlanResponse)
+async def get_interview_plan(req: InterviewPlanRequest):
+    """
+    根据面试时长推算问题数量。
+
+    推算规则：
+    - 每个问题平均 3-5 分钟（含回答时间）
+    - 预留 2 分钟开场和 3 分钟总结
+    - 最少 3 题，最多 30 题
+    """
+    effective_minutes = max(1, req.duration_minutes - 5)  # 减去开场+总结时间
+    # 每题约 4 分钟（回答 + 追问），至少 1 题
+    question_count = max(3, min(30, effective_minutes * 60 // 240))
+
+    avg_time = round(req.duration_minutes / question_count, 1) if question_count > 0 else 0
+
+    return InterviewPlanResponse(
+        question_count=question_count,
+        duration_minutes=req.duration_minutes,
+        avg_time_per_question=avg_time,
+        description=f"预计 {question_count} 道题目，每题约 {avg_time} 分钟",
+    )

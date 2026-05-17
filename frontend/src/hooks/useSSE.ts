@@ -1,5 +1,6 @@
 import { useCallback, useRef } from 'react'
 import { useChatStore } from '@/stores/chatStore'
+import { useAppStore } from '@/stores/appStore'
 import { streamChat } from '@/api/chat'
 
 export function useSSE() {
@@ -25,6 +26,7 @@ export function useSSE() {
       if (isStreaming) return
 
       const store = useChatStore.getState()
+      const appStore = useAppStore.getState()
 
       // 添加用户消息
       const userMsg = { role: 'user' as const, content }
@@ -52,6 +54,7 @@ export function useSSE() {
           thinking_enabled: thinkingEnabled || undefined,
           reasoning_effort: thinkingEnabled ? reasoningEffort : undefined,
           prompt_override: promptOverride,
+          api_key: appStore.apiKey || undefined,
         },
         (chunk) => appendReasoning(chunk),
         (chunk) => appendContent(chunk),

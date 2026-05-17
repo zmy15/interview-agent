@@ -98,6 +98,7 @@ async def chat_stream(req: ChatRequest):
             model=req.model,
             thinking_enabled=req.thinking_enabled,
             reasoning_effort=req.reasoning_effort,
+            api_key=req.api_key,
         ):
             if chunk["type"] == "done":
                 yield f"data: [DONE]\n\n"

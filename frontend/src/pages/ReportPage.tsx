@@ -4,12 +4,14 @@ import { FileTextOutlined, CopyOutlined } from '@ant-design/icons'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useChatStore } from '@/stores/chatStore'
+import { useAppStore } from '@/stores/appStore'
 import * as interviewApi from '@/api/interview'
 
 const { Title, Text, Paragraph } = Typography
 
 const ReportPage: React.FC = () => {
   const { messages, selectedMode } = useChatStore()
+  const { apiKey } = useAppStore()
   const [report, setReport] = useState<string>('')
   const [loading, setLoading] = useState(false)
   const { message } = App.useApp()
@@ -18,7 +20,7 @@ const ReportPage: React.FC = () => {
   const handleGenerate = async () => {
     setLoading(true)
     try {
-      const res = await interviewApi.generateReport(messages, selectedMode)
+      const res = await interviewApi.generateReport(messages, selectedMode, apiKey)
       setReport(res.report)
       setGenerated(true)
       message.success('报告生成成功')

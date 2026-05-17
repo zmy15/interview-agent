@@ -43,6 +43,19 @@ export async function request<T>(url: string, options: RequestOptions = {}): Pro
   const headers: Record<string, string> = {}
   let requestBody: BodyInit | null = null
 
+  // 自动附加 API Key（从 localStorage 读取）
+  try {
+    const stored = localStorage.getItem('interview-agent-app-prefs')
+    if (stored) {
+      const parsed = JSON.parse(stored)
+      if (parsed?.state?.apiKey) {
+        headers['X-DEEPSEEK-API-KEY'] = parsed.state.apiKey
+      }
+    }
+  } catch {
+    // ignore
+  }
+
   if (body instanceof FormData) {
     requestBody = body
   } else if (body !== undefined && body !== null) {

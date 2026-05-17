@@ -15,6 +15,7 @@ export interface ChatRequest {
   thinking_enabled?: boolean
   reasoning_effort?: 'high' | 'max'
   prompt_override?: string
+  api_key?: string
 }
 
 export type ChatMode = 'interviewer' | 'candidate'
@@ -42,10 +43,25 @@ export interface ModelsResponse {
 export interface ReportRequest {
   messages: Message[]
   mode: string
+  api_key?: string
 }
 
 export interface ReportResponse {
   report: string
+}
+
+// ============ 面试计划相关 ============
+
+export interface InterviewPlanRequest {
+  mode: string
+  duration_minutes: number
+}
+
+export interface InterviewPlanResponse {
+  question_count: number
+  duration_minutes: number
+  avg_time_per_question: number
+  description: string
 }
 
 // ============ 上传相关 ============
@@ -126,4 +142,6 @@ export interface SSEEvent {
 
 export interface AppPreferences {
   highlightCode: boolean
+  apiKey: string
+  interviewDuration: number
 }
