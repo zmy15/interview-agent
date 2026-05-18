@@ -57,3 +57,7 @@ frontend/dist/
 
 # ChromaDB / FAISS runtime data
 chroma_data/
+
+# Runtime data (contains personal data / generated content)
+positions.json
+data/uploads.json
