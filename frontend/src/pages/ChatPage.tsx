@@ -34,6 +34,8 @@ import PromptEditor from '@/components/PromptEditor'
 import { getInterviewPlan } from '@/api/interview'
 import type { ChatMode, InterviewPlanResponse } from '@/types'
 
+type AnswerLength = 'short' | 'medium' | 'long'
+
 const { TextArea } = Input
 const { Text } = Typography
 
@@ -62,6 +64,7 @@ const ChatPage: React.FC = () => {
   const [interviewPlan, setInterviewPlan] = useState<InterviewPlanResponse | null>(null)
   const [practiceActive, setPracticeActive] = useState(false)
   const [questionIndex, setQuestionIndex] = useState(0)
+  const [answerLength, setAnswerLength] = useState<AnswerLength>('medium')
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const chatContainerRef = useRef<HTMLDivElement>(null)
   const [autoScroll, setAutoScroll] = useState(true)
@@ -124,6 +127,7 @@ const ChatPage: React.FC = () => {
       const plan = await getInterviewPlan({
         mode: selectedMode,
         duration_minutes: interviewDuration,
+        answer_length: answerLength,
       })
       setInterviewPlan(plan)
       message.success(plan.description)
@@ -137,10 +141,14 @@ const ChatPage: React.FC = () => {
     if (!interviewPlan) {
       await handleGetPlan()
     }
+    const plan = interviewPlan || useChatStore.getState() && null
     setPracticeActive(true)
     setQuestionIndex(0)
-    // 发送开始练习的系统消息
-    const startMsg = `我准备好了，请开始面试。面试时长 ${interviewDuration} 分钟，预计 ${interviewPlan?.question_count || '若干'} 道题目。`
+    const breakdown = plan?.breakdown
+    const bdText = breakdown
+      ? `（自我介绍${breakdown['自我介绍']}分钟 + 技术问答${breakdown['技术问答']}分钟 + 反问${breakdown['反问环节']}分钟）`
+      : ''
+    const startMsg = `我准备好了，请开始面试。${bdText}`
     await sendMessage(startMsg)
   }
 
@@ -231,7 +239,21 @@ const ChatPage: React.FC = () => {
                 <Tag color="blue">{interviewPlan.question_count} 题</Tag>
               )}
             </Space>
-            <Tooltip title="根据时长推算问题数量">
+            <Select
+              size="small"
+              value={answerLength}
+              onChange={(val) => {
+                setAnswerLength(val)
+                setInterviewPlan(null)
+              }}
+              style={{ width: 90 }}
+              options={[
+                { value: 'short', label: '📝 简短' },
+                { value: 'medium', label: '📄 适中' },
+                { value: 'long', label: '📚 详细' },
+              ]}
+            />
+            <Tooltip title="根据时长和回答风格推算问题数量">
               <Button
                 size="small"
                 type="link"
@@ -358,6 +380,9 @@ const ChatPage: React.FC = () => {
                 模拟练习中 · 第 {questionIndex}/{interviewPlan.question_count} 题
               </Text>
               <Tag color="processing">{interviewDuration} 分钟</Tag>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                含自我介绍 + 技术问答 + 反问环节
+              </Text>
             </Space>
             <Button
               size="small"

@@ -90,22 +90,56 @@ async def generate_interview_report(req: ReportRequest):
 @router.post("/plan", response_model=InterviewPlanResponse)
 async def get_interview_plan(req: InterviewPlanRequest):
     """
-    根据面试时长推算问题数量。
+    根据面试时长和回答长度推算问题数量。
 
-    推算规则：
-    - 每个问题平均 3-5 分钟（含回答时间）
-    - 预留 2 分钟开场和 3 分钟总结
-    - 最少 3 题，最多 30 题
+    固定环节：
+    - 自我介绍：3 分钟
+    - 反问环节：3 分钟
+
+    技术问答时间 = 总时长 - 6 分钟
+    每题耗时根据回答长度：
+    - short（简短）: 2 分钟/题
+    - medium（适中）: 3 分钟/题
+    - long（详细）: 5 分钟/题
     """
-    effective_minutes = max(1, req.duration_minutes - 5)  # 减去开场+总结时间
-    # 每题约 4 分钟（回答 + 追问），至少 1 题
-    question_count = max(3, min(30, effective_minutes * 60 // 240))
+    # 固定环节时间
+    INTRO_MIN = 3      # 自我介绍
+    REVERSE_MIN = 3    # 反问环节
+    FIXED_MIN = INTRO_MIN + REVERSE_MIN  # 6 分钟
 
+    # 回答长度 → 每题耗时（秒）
+    SPEED_MAP = {
+        "short": 120,   # 2 分钟/题
+        "medium": 180,  # 3 分钟/题
+        "long": 300,    # 5 分钟/题
+    }
+    speed_per_q = SPEED_MAP.get(req.answer_length, 180)
+
+    # 技术问答可用时间
+    remaining_min = max(1, req.duration_minutes - FIXED_MIN)
+    remaining_sec = remaining_min * 60
+
+    # 计算题数
+    question_count = max(3, min(30, remaining_sec // speed_per_q))
+
+    # 实际技术问答用时
+    actual_tech_min = question_count * speed_per_q // 60
+    # 每题平均时间（总时长/题数，含固定环节分摊）
     avg_time = round(req.duration_minutes / question_count, 1) if question_count > 0 else 0
+
+    # 各环节时长分解
+    breakdown = {
+        "自我介绍": INTRO_MIN,
+        "技术问答": actual_tech_min,
+        "反问环节": REVERSE_MIN,
+    }
+
+    length_label = {"short": "简短", "medium": "适中", "long": "详细"}.get(req.answer_length, "适中")
 
     return InterviewPlanResponse(
         question_count=question_count,
         duration_minutes=req.duration_minutes,
         avg_time_per_question=avg_time,
-        description=f"预计 {question_count} 道题目，每题约 {avg_time} 分钟",
+        description=f"回答风格「{length_label}」→ 预计 {question_count} 道技术题（含自我介绍+反问环节）",
+        breakdown=breakdown,
     )

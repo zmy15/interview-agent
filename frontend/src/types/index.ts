@@ -57,6 +57,7 @@ export interface ReportResponse {
 export interface InterviewPlanRequest {
   mode: string
   duration_minutes: number
+  answer_length: 'short' | 'medium' | 'long'
 }
 
 export interface InterviewPlanResponse {
@@ -64,6 +65,7 @@ export interface InterviewPlanResponse {
   duration_minutes: number
   avg_time_per_question: number
   description: string
+  breakdown: Record<string, number>
 }
 
 // ============ 上传相关 ============

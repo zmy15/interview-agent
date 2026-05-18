@@ -72,6 +72,7 @@ class ReportResponse(BaseModel):
 class InterviewPlanRequest(BaseModel):
     mode: str
     duration_minutes: int = Field(30, ge=5, le=120, description="面试时长（分钟），默认30分钟")
+    answer_length: str = Field("medium", pattern="^(short|medium|long)$", description="回答长度：short(简短)/medium(适中)/long(详细)")
 
 
 class InterviewPlanResponse(BaseModel):
@@ -79,6 +80,7 @@ class InterviewPlanResponse(BaseModel):
     duration_minutes: int
     avg_time_per_question: float
     description: str
+    breakdown: dict  # {"自我介绍": 3, "技术问答": 24, "反问环节": 3}
 
 
 # ============ 上传相关 ============
