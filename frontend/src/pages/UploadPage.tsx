@@ -3,12 +3,14 @@ import { Tabs, Upload, Button, Typography, App } from 'antd'
 import { InboxOutlined } from '@ant-design/icons'
 import type { UploadProps } from 'antd'
 import * as uploadApi from '@/api/upload'
+import { useAppStore } from '@/stores/appStore'
 import type { UploadResponse } from '@/types'
 
 const { Dragger } = Upload
 const { Text, Paragraph } = Typography
 
 const UploadPage: React.FC = () => {
+  const { resumeText, codeText, setResumeText, setCodeText } = useAppStore()
   const [resumeResult, setResumeResult] = useState<UploadResponse | null>(null)
   const [codeResult, setCodeResult] = useState<UploadResponse | null>(null)
   const { message } = App.useApp()
@@ -30,6 +32,7 @@ const UploadPage: React.FC = () => {
       try {
         const result = await uploadApi.uploadResume(file as File)
         setResumeResult(result)
+        setResumeText(result.text)  // 存入全局 store，供对话使用
         message.success('简历解析成功')
         onSuccess?.(result)
       } catch (err) {
@@ -58,6 +61,7 @@ const UploadPage: React.FC = () => {
       try {
         const result = await uploadApi.uploadCode(file as File)
         setCodeResult(result)
+        setCodeText(result.text)  // 存入全局 store，供对话使用
         message.success('代码上传成功')
         onSuccess?.(result)
       } catch (err) {

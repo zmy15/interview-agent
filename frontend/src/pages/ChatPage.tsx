@@ -140,7 +140,7 @@ const ChatPage: React.FC = () => {
     setPracticeActive(true)
     setQuestionIndex(0)
     // 发送开始练习的系统消息
-    const startMsg = `开始模拟面试练习，时长 ${interviewDuration} 分钟，预计 ${interviewPlan?.question_count || '若干'} 道题目。请开始提问。`
+    const startMsg = `我准备好了，请开始面试。面试时长 ${interviewDuration} 分钟，预计 ${interviewPlan?.question_count || '若干'} 道题目。`
     await sendMessage(startMsg)
   }
 
@@ -197,8 +197,8 @@ const ChatPage: React.FC = () => {
             setInterviewPlan(null)
           }}
           options={[
-            { value: 'interviewer', label: '🤖 AI 面试官' },
-            { value: 'candidate', label: '🧑 我是求职者' },
+            { value: 'interviewer', label: '🎯 你是面试官' },
+            { value: 'candidate', label: '🧑 你是求职者' },
           ]}
         />
         <div style={{ width: 1, height: 24, background: '#d9d9d9' }} />
@@ -206,8 +206,8 @@ const ChatPage: React.FC = () => {
         <div style={{ width: 1, height: 24, background: '#d9d9d9' }} />
         <PositionSelect />
 
-        {/* 求职者模式：面试时长选择器 */}
-        {selectedMode === 'interviewer' && (
+        {/* 你是求职者模式：面试时长选择器（AI 提问，你回答） */}
+        {selectedMode === 'candidate' && (
           <>
             <div style={{ width: 1, height: 24, background: '#d9d9d9' }} />
             <Space size={4}>
@@ -324,8 +324,8 @@ const ChatPage: React.FC = () => {
             <div style={{ fontSize: 13, marginBottom: 24 }}>
               选择面试模式和岗位，开始 AI 模拟面试对话
             </div>
-            {/* 求职者模式：开始练习按钮 */}
-            {selectedMode === 'interviewer' && !practiceActive && (
+            {/* 你是求职者模式：开始练习按钮 */}
+            {selectedMode === 'candidate' && !practiceActive && (
               <Button
                 type="primary"
                 size="large"
@@ -401,8 +401,8 @@ const ChatPage: React.FC = () => {
           onKeyDown={handleKeyDown}
           placeholder={
             selectedMode === 'interviewer'
-              ? '输入你的回答... (Enter 发送, Shift+Enter 换行)'
-              : '向 AI 求职者提问... (Enter 发送, Shift+Enter 换行)'
+              ? '你是面试官，输入你的提问... (Enter 发送, Shift+Enter 换行)'
+              : '你是求职者，输入你的回答... (Enter 发送, Shift+Enter 换行)'
           }
           autoSize={{ minRows: 1, maxRows: 5 }}
           disabled={isStreaming}

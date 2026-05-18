@@ -49,6 +49,15 @@ async def chat_stream(req: ChatRequest):
                     else:
                         prompt_kwargs["jd"] = "暂无岗位描述"
 
+                # 简历文本：两个模式都能看到
+                prompt_kwargs["resume"] = req.resume_text or ""
+
+                # 代码上下文：仅面试官模式可见
+                if req.mode == "interviewer":
+                    prompt_kwargs["code"] = req.code_context or ""
+                else:
+                    prompt_kwargs["code"] = ""
+
                 # RAG 检索：如果有关联岗位，自动搜索向量知识库
                 rag_context = ""
                 if req.position_name and req.messages:

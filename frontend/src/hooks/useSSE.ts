@@ -55,6 +55,8 @@ export function useSSE() {
           reasoning_effort: thinkingEnabled ? reasoningEffort : undefined,
           prompt_override: promptOverride,
           api_key: appStore.apiKey || undefined,
+          resume_text: appStore.resumeText || undefined,
+          code_context: appStore.codeText || undefined,
         },
         (chunk) => appendReasoning(chunk),
         (chunk) => appendContent(chunk),

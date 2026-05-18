@@ -16,6 +16,8 @@ export async function streamChat(
     reasoning_effort?: string
     prompt_override?: string
     api_key?: string
+    resume_text?: string
+    code_context?: string
   },
   onReasoning: (chunk: string) => void,
   onContent: (chunk: string) => void,

@@ -16,6 +16,8 @@ export interface ChatRequest {
   reasoning_effort?: 'high' | 'max'
   prompt_override?: string
   api_key?: string
+  resume_text?: string
+  code_context?: string
 }
 
 export type ChatMode = 'interviewer' | 'candidate'

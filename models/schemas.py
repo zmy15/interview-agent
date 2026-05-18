@@ -20,6 +20,8 @@ class ChatRequest(BaseModel):
     thinking_enabled: Optional[bool] = None  # 覆盖默认思考开关
     reasoning_effort: Optional[str] = None  # "high" / "max"
     api_key: Optional[str] = None  # 前端传入的 API Key，覆盖 .env 配置
+    resume_text: Optional[str] = None  # 上传的简历文本
+    code_context: Optional[str] = None  # 上传的代码文本（仅面试官模式使用）
 
 
 class ChatResponse(BaseModel):

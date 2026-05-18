@@ -33,17 +33,17 @@ Interview Agent is an LLM-powered AI mock interview platform supporting both **i
 
 | Mode | Description |
 |------|-------------|
-| 🕴️ **Interviewer Mode** | Simulates a professional interviewer — generates targeted questions from job descriptions & knowledge bases, evaluates candidate responses, and produces interview reports. Supports setting interview duration with auto-calculated question count |
-| 🧑‍💻 **Candidate Mode** | You ask questions, AI responds as a candidate — helps interviewers practice questioning techniques or quickly assess potential candidate performance |
+| 🎯 **You are the Interviewer** | You act as interviewer, asking questions to the AI candidate. The AI draws from JD, resume, code files, and knowledge base to give informed answers |
+| 🧑 **You are the Candidate** | You act as a job candidate, answering questions from the AI interviewer. AI generates questions from JD and resume; supports interview timer, question planning, progress tracking, and report generation |
 
 ---
 
 ## ✨ Features
 
 - 🤖 **Dual-Mode AI Chat** — Seamlessly switch between interviewer & candidate modes with SSE streaming
-- � **Frontend API Key Config** — Configure your DeepSeek API Key directly in the UI; key stored locally only
-- ⏱️ **Interview Time Planning** — Set interview duration in candidate mode, auto-calculates question count
-- 🎯 **Practice Flow** — Progress tracking + question counter, one-click report generation after practice
+- 🔑 **Frontend API Key Config** — Configure your DeepSeek API Key directly in the UI; key stored locally only
+- ⏱️ **Interview Time Planning** — Set duration in candidate mode, auto-calculates question count
+- 🎯 **Practice Flow** — Candidate mode: AI asks → you answer → progress tracking → one-click report
 - �📚 **RAG Knowledge Base** — Upload PDF / Word / text files; FAISS vector search enhances response quality
 - 🌐 **Web Search** — DuckDuckGo integration for real-time technical information
 - 📝 **Interview Reports** — Multi-dimensional evaluation (technical skills / communication / overall performance)
@@ -183,30 +183,32 @@ interview-agent/
 
 ## 📖 Usage Guide
 
-### Interviewer Mode
+### You are the Interviewer
 
 ```
-Create Position → Add JD → Upload Knowledge → Upload Resume → Set Duration → Calculate Questions → Start Practice → Chat → Generate Report
+Create Position → Add JD → Upload Knowledge → Upload Resume/Code → Switch Mode → Ask AI Candidate
 ```
 
 1. Create a position and add a job description in the "Positions" page
 2. Upload relevant documents (tech specs, FAQs, etc.) in the "Knowledge Base" page
-3. Upload a candidate's resume (PDF / Word) in the "Upload" page
-4. Switch to "AI Chat" page, select **AI Interviewer** mode
-5. Choose interview duration (15/30/45/60 min), click **Calculate** to get question count
-6. Click **Start Practice** — the AI automatically asks questions based on JD and knowledge base
-7. Track progress in real-time (question N of M), click **End Practice** when done
-8. Go to "Report" page to generate a multi-dimensional evaluation with one click
+3. Upload a candidate's resume (PDF / Word) and code files in the "Upload" page
+4. Switch to "AI Chat" page, select **🎯 You are the Interviewer** mode
+5. Ask the AI candidate questions — the AI draws from JD, resume, code, and knowledge base for informed answers
+6. After the session, go to "Report" page to generate an evaluation
 
-### Candidate Mode
+### You are the Candidate
 
 ```
-Create Position → Add JD → Ask Questions → AI Responds
+Create Position → Add JD → Upload Knowledge → Upload Resume → Set Duration → Calculate Questions → Start Practice → AI Asks, You Answer → Generate Report
 ```
 
 1. Create a target position with its JD
-2. Switch to **I am a Candidate** mode and ask the AI candidate questions
-3. Evaluate the AI's response quality to get familiar with potential candidate performance
+2. Upload relevant documents and your resume in the "Knowledge Base" and "Upload" pages
+3. Switch to "AI Chat" page, select **🧑 You are the Candidate** mode
+4. Choose interview duration (15/30/45/60 min), click **Calculate** to get estimated question count
+5. Click **Start Practice** — the AI interviewer automatically asks questions one by one
+6. Answer each question; track progress in real-time (question N of M)
+7. Click **End Practice** when done, then go to "Report" page to generate a multi-dimensional evaluation
 
 ### ChatRequest Parameters
 
