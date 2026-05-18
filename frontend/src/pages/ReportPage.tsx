@@ -10,7 +10,7 @@ import * as interviewApi from '@/api/interview'
 const { Title, Text, Paragraph } = Typography
 
 const ReportPage: React.FC = () => {
-  const { messages, selectedMode } = useChatStore()
+  const { messages, selectedMode, qaRecords, candidateLevel, interviewRound } = useChatStore()
   const { apiKey } = useAppStore()
   const [report, setReport] = useState<string>('')
   const [loading, setLoading] = useState(false)
@@ -20,7 +20,14 @@ const ReportPage: React.FC = () => {
   const handleGenerate = async () => {
     setLoading(true)
     try {
-      const res = await interviewApi.generateReport(messages, selectedMode, apiKey)
+      const res = await interviewApi.generateReport(
+        messages,
+        selectedMode,
+        apiKey,
+        candidateLevel || undefined,
+        interviewRound || undefined,
+        qaRecords.length > 0 ? qaRecords : undefined,
+      )
       setReport(res.report)
       setGenerated(true)
       message.success('报告生成成功')
@@ -50,7 +57,9 @@ const ReportPage: React.FC = () => {
         ) : (
           <>
             <Paragraph type="secondary">
-              当前共 {messages.length} 条对话消息，点击下方按钮生成面试评价报告
+              当前共 {messages.length} 条对话消息
+              {qaRecords.length > 0 && `，已记录 ${qaRecords.length} 组问答`}
+              ，点击下方按钮生成面试评价报告
             </Paragraph>
             <Button
               type="primary"

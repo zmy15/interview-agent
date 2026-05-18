@@ -62,8 +62,8 @@ function formatTime(iso: string) {
 
 const UploadPage: React.FC = () => {
   const {
-    resumeText, codeText, activeUploadId, uploads,
-    setResumeText, setCodeText, setActiveUpload, setUploads,
+    resumeText, codeText, activeResumeId, activeCodeIds, uploads,
+    setResumeText, setCodeText, setActiveResume, toggleActiveCode, setUploads,
     addUpload, removeUpload, setProjectMeta,
   } = useAppStore()
 
@@ -93,18 +93,25 @@ const UploadPage: React.FC = () => {
   }, [refreshFileList])
 
   // 激活文件（用于对话）
+  // 简历：单选（激活一个会取消另一个）
+  // 代码/项目：多选（可同时激活多个）
   const handleActivate = async (record: UploadRecord) => {
-    // 如果本地文本不完整，从服务端获取
+    // 确保本地文本完整
+    let fullRecord = record
     if (record.text.length < 50) {
       try {
-        const full = await uploadApi.getUpload(record.id)
-        setActiveUpload(full)
-        message.success(`已激活: ${record.filename}`)
-        return
+        fullRecord = await uploadApi.getUpload(record.id)
       } catch { /* 使用已有文本 */ }
     }
-    setActiveUpload(record)
-    message.success(`已激活: ${record.filename}`)
+
+    if (record.type === 'resume') {
+      setActiveResume(fullRecord)
+      message.success(`已激活简历: ${record.filename}`)
+    } else {
+      toggleActiveCode(fullRecord)
+      const isNowActive = !activeCodeIds.includes(record.id)
+      message.success(isNowActive ? `已添加: ${record.filename}` : `已移除: ${record.filename}`)
+    }
   }
 
   // 删除文件
@@ -325,12 +332,42 @@ const UploadPage: React.FC = () => {
                   {filteredUploads.length === 0 ? (
                     <Empty description="还没有上传过文件，去上方标签页上传吧" />
                   ) : (
-                    <List
+                    <>
+                      {/* 当前激活状态提示 */}
+                      {activeCodeIds.length > 0 && (
+                        <div style={{ marginBottom: 12, padding: '8px 12px', background: '#f6ffed', borderRadius: 6, border: '1px solid #b7eb8f' }}>
+                          <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>已激活的代码/项目文件：</Text>
+                          {activeCodeIds.map((id) => {
+                            const r = uploads.find((u) => u.id === id)
+                            return r ? (
+                              <Tag key={id} color="green" closable onClose={() => {
+                                toggleActiveCode(r)
+                              }} style={{ marginBottom: 4 }}>
+                                {r.filename}
+                              </Tag>
+                            ) : null
+                          })}
+                        </div>
+                      )}
+                      {activeResumeId && (
+                        <div style={{ marginBottom: 12, padding: '8px 12px', background: '#e6f4ff', borderRadius: 6, border: '1px solid #91caff' }}>
+                          <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>当前简历：</Text>
+                          <Tag color="blue" closable onClose={() => {
+                            setActiveResume(null)
+                          }}>
+                            {uploads.find((u) => u.id === activeResumeId)?.filename || '未知'}
+                          </Tag>
+                        </div>
+                      )}
+                      <List
                       dataSource={filteredUploads}
                       renderItem={(item) => {
                         const meta = TYPE_META[item.type]
-                        const isActive = (item.type === 'resume' && resumeText === item.text)
-                          || (item.type !== 'resume' && codeText === item.text)
+                        // 简历：单选，检查 activeResumeId
+                        // 代码/项目：多选，检查 activeCodeIds
+                        const isActive = item.type === 'resume'
+                          ? activeResumeId === item.id
+                          : activeCodeIds.includes(item.id)
                         return (
                           <List.Item
                             style={{
@@ -341,12 +378,24 @@ const UploadPage: React.FC = () => {
                               border: isActive ? '1px solid #b7eb8f' : '1px solid #f0f0f0',
                             }}
                             actions={[
-                              isActive ? (
-                                <Tag color="success" icon={<CheckCircleOutlined />} style={{ marginRight: 0 }}>当前使用</Tag>
+                              item.type === 'resume' ? (
+                                isActive ? (
+                                  <Tag color="success" icon={<CheckCircleOutlined />} style={{ marginRight: 0 }}>当前使用</Tag>
+                                ) : (
+                                  <Button size="small" type="link" onClick={() => handleActivate(item)}>
+                                    使用此文件
+                                  </Button>
+                                )
                               ) : (
-                                <Button size="small" type="link" onClick={() => handleActivate(item)}>
-                                  使用此文件
-                                </Button>
+                                isActive ? (
+                                  <Button size="small" type="link" danger onClick={() => handleActivate(item)}>
+                                    移除
+                                  </Button>
+                                ) : (
+                                  <Button size="small" type="link" onClick={() => handleActivate(item)}>
+                                    添加
+                                  </Button>
+                                )
                               ),
                               <Popconfirm
                                 key="delete"
@@ -396,6 +445,7 @@ const UploadPage: React.FC = () => {
                         )
                       }}
                     />
+                    </>
                   )}
                 </Spin>
               </div>

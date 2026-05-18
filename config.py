@@ -32,5 +32,9 @@ class Settings:
     CHROMA_PERSIST_PATH: str = os.getenv("CHROMA_PERSIST_PATH", "./chroma_data")
     VECTOR_SEARCH_TOP_K: int = int(os.getenv("VECTOR_SEARCH_TOP_K", "3"))
 
+    # 上下文窗口管理（DeepSeek V4 支持 1M tokens，默认 800K 留安全余量）
+    MAX_CONTEXT_TOKENS: int = int(os.getenv("MAX_CONTEXT_TOKENS", "800000"))
+    SYSTEM_RESERVED_TOKENS: int = int(os.getenv("SYSTEM_RESERVED_TOKENS", "8000"))
+
 
 settings = Settings()
