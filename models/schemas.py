@@ -92,6 +92,15 @@ class UploadResponse(BaseModel):
     type: str
 
 
+class ProjectUploadResponse(BaseModel):
+    filename: str
+    file_count: int
+    structure: dict  # {"source": [...], "config": [...], "document": [...], "build": [...], "test": [...], "other": [...]}
+    total_text: str
+    tech_stack: list[str]
+    type: str = "project"
+
+
 # ============ 岗位管理 ============
 
 class PositionCreate(BaseModel):

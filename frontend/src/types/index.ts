@@ -77,6 +77,24 @@ export interface UploadResponse {
   type: 'resume' | 'code'
 }
 
+export interface ProjectStructure {
+  source: string[]
+  config: string[]
+  document: string[]
+  build: string[]
+  test: string[]
+  other: string[]
+}
+
+export interface ProjectUploadResponse {
+  filename: string
+  file_count: number
+  structure: ProjectStructure
+  total_text: string
+  tech_stack: string[]
+  type: 'project'
+}
+
 // ============ 岗位管理 ============
 
 export interface PositionCreate {

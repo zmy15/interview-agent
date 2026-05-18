@@ -51,6 +51,7 @@ const ChatPage: React.FC = () => {
     useSearch,
     codingEnabled,
     clearChat,
+    clearAllChats,
     setMode,
     setUseSearch,
     setCodingEnabled,
@@ -110,7 +111,15 @@ const ChatPage: React.FC = () => {
     setPracticeActive(false)
     setQuestionIndex(0)
     setInterviewPlan(null)
-    message.success('对话已清空')
+    message.success(`已清空「${selectedMode === 'interviewer' ? '面试官' : '求职者'}」对话`)
+  }
+
+  const handleClearAll = () => {
+    clearAllChats()
+    setPracticeActive(false)
+    setQuestionIndex(0)
+    setInterviewPlan(null)
+    message.success('已清空全部对话记录')
   }
 
   // API Key 配置
@@ -328,13 +337,23 @@ const ChatPage: React.FC = () => {
           Prompt
         </Button>
         <Popconfirm
-          title="确定清空所有对话记录？"
+          title="确定清空当前模式对话记录？"
           onConfirm={handleClear}
-          okText="确定"
+          okText="清空当前"
           cancelText="取消"
         >
           <Button size="small" danger icon={<ClearOutlined />}>
             清空
+          </Button>
+        </Popconfirm>
+        <Popconfirm
+          title="确定清空全部（面试官+求职者）对话记录？"
+          onConfirm={handleClearAll}
+          okText="全部清空"
+          cancelText="取消"
+        >
+          <Button size="small" danger type="text" style={{ fontSize: 12 }}>
+            全部
           </Button>
         </Popconfirm>
       </div>

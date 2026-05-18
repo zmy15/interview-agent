@@ -3,7 +3,11 @@ import { persist } from 'zustand/middleware'
 import type { Message, ChatMode, PromptTemplates } from '@/types'
 
 interface ChatState {
-  // 消息列表
+  // 按模式分别存储的消息历史
+  interviewerMessages: Message[]
+  candidateMessages: Message[]
+
+  // 当前激活的消息列表（派生自 selectedMode）
   messages: Message[]
   isStreaming: boolean
   currentReasoning: string
@@ -30,6 +34,7 @@ interface ChatState {
   appendContent: (chunk: string) => void
   finishMessage: () => void
   clearChat: () => void
+  clearAllChats: () => void
 
   // Actions — 设置
   setModel: (model: string) => void
@@ -49,9 +54,20 @@ interface ChatState {
   setHydrated: () => void
 }
 
+/** 辅助：将当前 messages 保存到对应模式槽位 */
+function _saveCurrentToSlot(state: ChatState): Partial<ChatState> {
+  if (state.selectedMode === 'interviewer') {
+    return { interviewerMessages: state.messages }
+  } else {
+    return { candidateMessages: state.messages }
+  }
+}
+
 export const useChatStore = create<ChatState>()(
   persist(
     (set, get) => ({
+      interviewerMessages: [],
+      candidateMessages: [],
       messages: [],
       isStreaming: false,
       currentReasoning: '',
@@ -73,6 +89,7 @@ export const useChatStore = create<ChatState>()(
       addMessage: (msg) =>
         set((state) => ({
           messages: [...state.messages, msg],
+          ..._saveCurrentToSlot({ ...state, messages: [...state.messages, msg] }),
         })),
 
       appendReasoning: (chunk) =>
@@ -97,6 +114,7 @@ export const useChatStore = create<ChatState>()(
           }
           set((state) => ({
             messages: [...state.messages, msg],
+            ..._saveCurrentToSlot({ ...state, messages: [...state.messages, msg] }),
             currentReasoning: '',
             currentContent: '',
             isStreaming: false,
@@ -107,7 +125,18 @@ export const useChatStore = create<ChatState>()(
       },
 
       clearChat: () =>
+        set((state) => ({
+          messages: [],
+          currentReasoning: '',
+          currentContent: '',
+          isStreaming: false,
+          ..._saveCurrentToSlot({ ...state, messages: [] }),
+        })),
+
+      clearAllChats: () =>
         set({
+          interviewerMessages: [],
+          candidateMessages: [],
           messages: [],
           currentReasoning: '',
           currentContent: '',
@@ -118,7 +147,31 @@ export const useChatStore = create<ChatState>()(
       setModel: (model) => set({ selectedModel: model }),
       setThinking: (enabled) => set({ thinkingEnabled: enabled }),
       setReasoningEffort: (effort) => set({ reasoningEffort: effort }),
-      setMode: (mode) => set({ selectedMode: mode }),
+
+      setMode: (mode) => {
+        const state = get()
+        if (state.selectedMode === mode) return  // 同一模式不切换
+
+        // 1. 保存当前消息到旧模式槽位
+        const saveOld = state.selectedMode === 'interviewer'
+          ? { interviewerMessages: state.messages }
+          : { candidateMessages: state.messages }
+
+        // 2. 从新模式槽位恢复消息
+        const newMessages = mode === 'interviewer'
+          ? state.interviewerMessages
+          : state.candidateMessages
+
+        set({
+          selectedMode: mode,
+          messages: newMessages,
+          currentReasoning: '',
+          currentContent: '',
+          isStreaming: false,
+          ...saveOld,
+        })
+      },
+
       setPosition: (name) => set({ selectedPosition: name }),
       setUseSearch: (use) => set({ useSearch: use }),
       setCodingEnabled: (enabled) => set({ codingEnabled: enabled }),
@@ -149,7 +202,8 @@ export const useChatStore = create<ChatState>()(
     {
       name: 'interview-agent-chat-state',
       partialize: (state) => ({
-        messages: state.messages,
+        interviewerMessages: state.interviewerMessages,
+        candidateMessages: state.candidateMessages,
         selectedModel: state.selectedModel,
         thinkingEnabled: state.thinkingEnabled,
         reasoningEffort: state.reasoningEffort,
@@ -160,6 +214,11 @@ export const useChatStore = create<ChatState>()(
       }),
       onRehydrateStorage: () => (state) => {
         if (state) {
+          // 从 localStorage 恢复后，根据 selectedMode 恢复对应的消息列表
+          const restoredMessages = state.selectedMode === 'interviewer'
+            ? state.interviewerMessages
+            : state.candidateMessages
+          state.messages = restoredMessages
           state.setHydrated()
         }
       },
