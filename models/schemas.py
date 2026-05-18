@@ -15,6 +15,7 @@ class ChatRequest(BaseModel):
     messages: list[Message]
     mode: Optional[str] = None  # "interviewer" / "candidate"
     position_name: Optional[str] = None  # 关联岗位，触发 RAG 检索
+    jd_id: Optional[str] = None  # 指定使用某份 JD（为空则使用全部 JD）
     use_search: bool = False
     coding_enabled: bool = False  # 是否启用编程题（仅求职者模式+技术岗生效）
     model: Optional[str] = None  # 覆盖默认模型
@@ -47,6 +48,7 @@ class ModelsResponse(BaseModel):
 class InterviewStartRequest(BaseModel):
     mode: str
     position_name: Optional[str] = None
+    jd_id: Optional[str] = None  # 指定使用某份 JD（为空则使用全部 JD）
     resume_text: Optional[str] = None
     code_context: Optional[str] = None
     model: Optional[str] = None
@@ -99,6 +101,21 @@ class ProjectUploadResponse(BaseModel):
     total_text: str
     tech_stack: list[str]
     type: str = "project"
+
+
+class UploadRecord(BaseModel):
+    id: str
+    filename: str
+    type: str  # "resume" / "code" / "project"
+    text: str
+    preview: str
+    file_count: int = 1
+    tech_stack: list[str] = []
+    created_at: str
+
+
+class UploadListResponse(BaseModel):
+    uploads: list[UploadRecord]
 
 
 # ============ 岗位管理 ============

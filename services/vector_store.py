@@ -1,12 +1,10 @@
-"""向量存储服务 — FAISS + sentence-transformers（Windows 兼容）"""
+"""向量存储服务 — LangChain FAISS + HuggingFaceEmbeddings"""
 
 import json
 import logging
 import os
 import uuid
 from typing import Optional
-
-import numpy as np
 
 from config import Settings
 
@@ -31,13 +29,12 @@ def is_vector_store_available() -> bool:
 
 
 class VectorStoreManager:
-    """向量知识库管理器 — 基于 FAISS + sentence-transformers"""
+    """向量知识库管理器 — 基于 LangChain FAISS + HuggingFaceEmbeddings"""
 
     def __init__(self, settings: Settings):
         self._settings = settings
-        self._embedding_model = None
+        self._embeddings = None
         self._available = is_vector_store_available()
-        self._collections: dict[str, dict] = {}  # 内存缓存：coll_name -> {index, docs, metas}
         self._index_dir = os.path.join(settings.CHROMA_PERSIST_PATH, "faiss_indexes")
         os.makedirs(self._index_dir, exist_ok=True)
 
@@ -46,12 +43,12 @@ class VectorStoreManager:
         return self._available
 
     @property
-    def embedding_model(self):
+    def embeddings(self):
+        """懒加载 HuggingFaceEmbeddings（LangChain 封装）"""
         if not self._available:
             raise RuntimeError("Vector store is not available: sentence-transformers/torch not installed")
-        if self._embedding_model is None:
-            # ---------- 国内用户：设置 HuggingFace 镜像 ----------
-            # 必须在 import sentence_transformers 之前设置环境变量
+        if self._embeddings is None:
+            # 国内用户：设置 HuggingFace 镜像
             hf_endpoint = getattr(self._settings, "HF_ENDPOINT", "https://hf-mirror.com")
             hf_home = getattr(self._settings, "HF_HOME", None)
             if hf_endpoint:
@@ -61,38 +58,26 @@ class VectorStoreManager:
                 os.environ["HF_HOME"] = hf_home
                 os.makedirs(hf_home, exist_ok=True)
 
-            from sentence_transformers import SentenceTransformer
+            from langchain_huggingface import HuggingFaceEmbeddings
 
             model_name = self._settings.EMBEDDING_MODEL
-            logger.info(f"Loading embedding model: {model_name}")
+            logger.info(f"Loading embedding model via LangChain: {model_name}")
 
-            # 尝试从本地缓存加载，失败则从镜像下载
-            try:
-                self._embedding_model = SentenceTransformer(
-                    model_name,
-                    local_files_only=False,  # 允许从网络下载（会走镜像）
-                )
-            except Exception as e:
-                logger.warning(f"Failed to load model from network: {e}")
-                logger.info("Trying to load from local cache only...")
-                self._embedding_model = SentenceTransformer(
-                    model_name,
-                    local_files_only=True,
-                )
-        return self._embedding_model
+            # encode_kwargs normalize_embeddings=True → L2 归一化 → 余弦相似度
+            self._embeddings = HuggingFaceEmbeddings(
+                model_name=model_name,
+                model_kwargs={"device": "cpu"},
+                encode_kwargs={"normalize_embeddings": True},
+            )
+        return self._embeddings
 
     @property
     def embedding_dim(self) -> int:
         """获取嵌入向量维度"""
-        return self.embedding_model.get_embedding_dimension()
+        test_vec = self.embeddings.embed_query("test")
+        return len(test_vec)
 
-    # ========== 持久化辅助 ==========
-
-    def _get_index_path(self, coll_name: str) -> str:
-        return os.path.join(self._index_dir, f"{coll_name}.faiss")
-
-    def _get_meta_path(self, coll_name: str) -> str:
-        return os.path.join(self._index_dir, f"{coll_name}.json")
+    # ========== 存储路径（目录格式，LangChain FAISS 标准） ==========
 
     def _sanitize_collection_name(self, name: str) -> str:
         """将岗位名称 sanitize 为合法的 collection 名称"""
@@ -105,52 +90,41 @@ class VectorStoreManager:
             safe = safe[:63]
         return f"kb_{safe}"
 
-    def _load_collection(self, coll_name: str):
-        """从磁盘加载 collection 到内存缓存"""
-        if coll_name in self._collections:
-            return self._collections[coll_name]
+    def _get_coll_dir(self, coll_name: str) -> str:
+        """获取 collection 存储目录"""
+        return os.path.join(self._index_dir, coll_name)
 
-        index_path = self._get_index_path(coll_name)
+    def _collection_exists(self, coll_name: str) -> bool:
+        """检查 LangChain FAISS collection 是否存在"""
+        coll_dir = self._get_coll_dir(coll_name)
+        return os.path.isdir(coll_dir) and os.path.exists(
+            os.path.join(coll_dir, "index.faiss")
+        )
+
+    def _get_meta_path(self, coll_name: str) -> str:
+        """获取 collection 元数据文件路径"""
+        return os.path.join(self._get_coll_dir(coll_name), "collection_meta.json")
+
+    def _save_collection_meta(self, coll_name: str, position_name: str):
+        """保存 collection 元数据（含原始岗位名称，用于列表展示）"""
         meta_path = self._get_meta_path(coll_name)
+        try:
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump({"position_name": position_name}, f, ensure_ascii=False)
+        except Exception as e:
+            logger.warning(f"Failed to save collection meta for {coll_name}: {e}")
 
-        if os.path.exists(index_path) and os.path.exists(meta_path):
-            import faiss
-            index = faiss.read_index(index_path)
-            with open(meta_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            self._collections[coll_name] = {
-                "index": index,
-                "docs": data.get("docs", []),
-                "metas": data.get("metas", []),
-            }
-            return self._collections[coll_name]
-
-        # 新建
-        import faiss
-        dim = self.embedding_dim
-        # 使用 IndexFlatIP（内积），需要配合 L2 归一化实现余弦相似度
-        index = faiss.IndexFlatIP(dim)
-        self._collections[coll_name] = {
-            "index": index,
-            "docs": [],
-            "metas": [],
-        }
-        return self._collections[coll_name]
-
-    def _save_collection(self, coll_name: str, position_name: str = None):
-        """将 collection 持久化到磁盘"""
-        if coll_name not in self._collections:
-            return
-        coll = self._collections[coll_name]
-        import faiss
-        faiss.write_index(coll["index"], self._get_index_path(coll_name))
-        data = {
-            "position_name": position_name or coll_name,
-            "docs": coll["docs"],
-            "metas": coll["metas"],
-        }
-        with open(self._get_meta_path(coll_name), "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
+    def _load_collection_position_name(self, coll_name: str) -> str:
+        """从元数据文件加载原始岗位名称，失败则返回 sanitized 名称"""
+        meta_path = self._get_meta_path(coll_name)
+        try:
+            if os.path.exists(meta_path):
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return data.get("position_name", coll_name[3:])
+        except Exception:
+            pass
+        return coll_name[3:]  # 回退：去 kb_ 前缀
 
     # ========== 公开 API ==========
 
@@ -162,7 +136,11 @@ class VectorStoreManager:
     ) -> int:
         """
         将文档块向量化并存入 FAISS 索引。
-        返回存储的文档块数量。
+
+        使用 LangChain FAISS wrapper，自动处理 L2 归一化和增量添加。
+
+        Returns:
+            存储的文档块数量
         """
         if not self._available:
             raise RuntimeError("Vector store is not available")
@@ -170,29 +148,41 @@ class VectorStoreManager:
             return 0
 
         coll_name = self._sanitize_collection_name(position_name)
-        coll = self._load_collection(coll_name)
-
-        # 向量化 + L2 归一化（配合 IndexFlatIP 实现余弦相似度）
-        import faiss
-        embeddings = self.embedding_model.encode(chunks).astype(np.float32)
-        faiss.normalize_L2(embeddings)
-
-        # 添加到 FAISS 索引
-        coll["index"].add(embeddings)
+        coll_dir = self._get_coll_dir(coll_name)
 
         # 准备 metadata
-        if metadata is None:
-            metadata = {}
+        metadatas = []
         for i, chunk in enumerate(chunks):
-            meta = dict(metadata)
+            meta = dict(metadata) if metadata else {}
             if not meta:
                 meta["source"] = "upload"
             meta["chunk_id"] = str(uuid.uuid4())
-            coll["docs"].append(chunk)
-            coll["metas"].append(meta)
+            metadatas.append(meta)
 
-        # 持久化
-        self._save_collection(coll_name, position_name)
+        from langchain_community.vectorstores import FAISS
+
+        if self._collection_exists(coll_name):
+            logger.info(f"Loading existing FAISS index for incremental add: {coll_name}")
+            vectorstore = FAISS.load_local(
+                coll_dir,
+                self.embeddings,
+                allow_dangerous_deserialization=True,
+            )
+            vectorstore.add_texts(chunks, metadatas=metadatas)
+        else:
+            logger.info(f"Creating new FAISS index: {coll_name}")
+            vectorstore = FAISS.from_texts(
+                chunks,
+                self.embeddings,
+                metadatas=metadatas,
+            )
+
+        # 持久化到磁盘
+        os.makedirs(coll_dir, exist_ok=True)
+        vectorstore.save_local(coll_dir)
+
+        # 额外保存 collection 元数据（含原始岗位名称）
+        self._save_collection_meta(coll_name, position_name)
 
         logger.info(f"Added {len(chunks)} chunks to collection '{position_name}'")
         return len(chunks)
@@ -205,63 +195,61 @@ class VectorStoreManager:
     ) -> list[dict]:
         """
         向量检索，返回最相关的文档块。
+
         返回格式：[{content, score, metadata}, ...]
+        score: 余弦相似度（0~1，越高越相关）
         """
         if not self._available:
             return []
 
         coll_name = self._sanitize_collection_name(position_name)
-        coll = self._load_collection(coll_name)
+        coll_dir = self._get_coll_dir(coll_name)
 
-        total = coll["index"].ntotal
-        if total == 0:
+        if not self._collection_exists(coll_name):
             return []
 
-        # 查询向量化 + 归一化
-        import faiss
-        query_embedding = self.embedding_model.encode([query]).astype(np.float32)
-        faiss.normalize_L2(query_embedding)
+        from langchain_community.vectorstores import FAISS
 
-        k = min(top_k, total)
-        distances, indices = coll["index"].search(query_embedding, k)
+        vectorstore = FAISS.load_local(
+            coll_dir,
+            self.embeddings,
+            allow_dangerous_deserialization=True,
+        )
+
+        # similarity_search_with_score: normalize_embeddings=True 时，
+        # FAISS 内部使用 IndexFlatIP，score 为余弦相似度
+        docs_with_scores = vectorstore.similarity_search_with_score(query, k=top_k)
 
         output = []
-        for i in range(len(indices[0])):
-            idx = indices[0][i]
-            if idx < 0 or idx >= len(coll["docs"]):
-                continue
-            # IndexFlatIP 返回内积（余弦相似度），范围 [-1, 1]
-            score = float(distances[0][i])
+        for doc, score in docs_with_scores:
             output.append({
-                "content": coll["docs"][idx],
-                "score": round(score, 4),
-                "metadata": coll["metas"][idx],
+                "content": doc.page_content,
+                "score": round(float(score), 4),
+                "metadata": doc.metadata,
             })
 
         output.sort(key=lambda x: x["score"], reverse=True)
         return output
 
     def delete_collection(self, position_name: str) -> bool:
-        """删除指定岗位的向量知识库"""
+        """删除指定岗位的向量知识库（删除整个目录）"""
         if not self._available:
             return False
 
         coll_name = self._sanitize_collection_name(position_name)
-        index_path = self._get_index_path(coll_name)
-        meta_path = self._get_meta_path(coll_name)
+        coll_dir = self._get_coll_dir(coll_name)
 
-        deleted = False
-        for path in (index_path, meta_path):
-            if os.path.exists(path):
-                os.remove(path)
-                deleted = True
+        if not os.path.isdir(coll_dir):
+            return False
 
-        if coll_name in self._collections:
-            del self._collections[coll_name]
-
-        if deleted:
+        import shutil
+        try:
+            shutil.rmtree(coll_dir)
             logger.info(f"Deleted collection: {coll_name}")
-        return deleted
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to delete collection {coll_name}: {e}")
+            return False
 
     def list_collections(self) -> list[dict]:
         """列出所有知识库及其文档数"""
@@ -270,23 +258,29 @@ class VectorStoreManager:
 
         result = []
         try:
-            for filename in os.listdir(self._index_dir):
-                if filename.endswith(".json"):
-                    coll_name = filename[:-5]  # 去掉 .json
-                    if coll_name.startswith("kb_"):
-                        meta_path = os.path.join(self._index_dir, filename)
-                        try:
-                            with open(meta_path, "r", encoding="utf-8") as f:
-                                data = json.load(f)
-                            count = len(data.get("docs", []))
-                            position_name = data.get("position_name", coll_name[3:])
-                        except Exception:
-                            count = 0
-                            position_name = coll_name[3:]
-                        result.append({
-                            "position_name": position_name,
-                            "document_count": count,
-                        })
+            for entry in os.listdir(self._index_dir):
+                coll_dir = os.path.join(self._index_dir, entry)
+                if not os.path.isdir(coll_dir):
+                    continue
+                if not entry.startswith("kb_"):
+                    continue
+
+                # 从 LangChain FAISS 索引读取文档数
+                index_path = os.path.join(coll_dir, "index.faiss")
+                if os.path.exists(index_path):
+                    import faiss
+                    index = faiss.read_index(index_path)
+                    count = index.ntotal
+                else:
+                    count = 0
+
+                # 岗位名称：从元数据文件还原原始名称
+                position_name = self._load_collection_position_name(entry)
+
+                result.append({
+                    "position_name": position_name,
+                    "document_count": count,
+                })
         except Exception as e:
             logger.warning(f"Failed to list collections: {e}")
         return result
@@ -297,11 +291,18 @@ class VectorStoreManager:
             return None
 
         coll_name = self._sanitize_collection_name(position_name)
+        coll_dir = self._get_coll_dir(coll_name)
+
+        if not self._collection_exists(coll_name):
+            return None
+
         try:
-            coll = self._load_collection(coll_name)
+            import faiss
+            index = faiss.read_index(os.path.join(coll_dir, "index.faiss"))
+            display_name = self._load_collection_position_name(coll_name)
             return {
-                "position_name": position_name,
-                "document_count": coll["index"].ntotal,
+                "position_name": display_name,
+                "document_count": index.ntotal,
             }
         except Exception:
             return None

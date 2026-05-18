@@ -1,5 +1,5 @@
 import { request } from './client'
-import type { UploadResponse, ProjectUploadResponse } from '@/types'
+import type { UploadResponse, ProjectUploadResponse, UploadRecord, UploadListResponse } from '@/types'
 
 export async function uploadResume(file: File): Promise<UploadResponse> {
   const formData = new FormData()
@@ -26,4 +26,17 @@ export async function uploadProject(file: File): Promise<ProjectUploadResponse> 
     method: 'POST',
     body: formData,
   })
+}
+
+export async function listUploads(type?: string): Promise<UploadListResponse> {
+  const params = type ? `?type=${type}` : ''
+  return request<UploadListResponse>(`/upload/files${params}`)
+}
+
+export async function getUpload(id: string): Promise<UploadRecord> {
+  return request<UploadRecord>(`/upload/files/${id}`)
+}
+
+export async function deleteUpload(id: string): Promise<void> {
+  return request<void>(`/upload/files/${id}`, { method: 'DELETE' })
 }

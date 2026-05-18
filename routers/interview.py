@@ -41,8 +41,15 @@ async def start_interview(req: InterviewStartRequest):
             raise HTTPException(status_code=404, detail=f"岗位 '{req.position_name}' 不存在")
         prompt_kwargs["position_type"] = pos.position_type
         if pos.jds:
-            jd_text = "\n\n".join(jd.content for jd in pos.jds)
-            prompt_kwargs["jd"] = jd_text
+            # 按 jd_id 过滤：指定了则只取匹配的 JD，否則用全部
+            if req.jd_id:
+                matched_jds = [jd for jd in pos.jds if jd.id == req.jd_id]
+                if matched_jds:
+                    jd_text = "\n\n".join(jd.content for jd in matched_jds)
+                    prompt_kwargs["jd"] = jd_text
+            else:
+                jd_text = "\n\n".join(jd.content for jd in pos.jds)
+                prompt_kwargs["jd"] = jd_text
 
     try:
         system_content = load_prompt(req.mode, **prompt_kwargs)

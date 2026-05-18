@@ -19,6 +19,7 @@ interface ChatState {
   reasoningEffort: 'high' | 'max'
   selectedMode: ChatMode
   selectedPosition: string | null
+  selectedJdId: string | null  // 指定使用某份 JD（null = 使用全部 JD）
   useSearch: boolean
   codingEnabled: boolean
 
@@ -42,6 +43,7 @@ interface ChatState {
   setReasoningEffort: (effort: 'high' | 'max') => void
   setMode: (mode: ChatMode) => void
   setPosition: (name: string | null) => void
+  setJdId: (jdId: string | null) => void
   setUseSearch: (use: boolean) => void
   setCodingEnabled: (enabled: boolean) => void
 
@@ -78,6 +80,7 @@ export const useChatStore = create<ChatState>()(
       reasoningEffort: 'high',
       selectedMode: 'interviewer',
       selectedPosition: null,
+      selectedJdId: null,
       useSearch: false,
       codingEnabled: false,
 
@@ -172,7 +175,8 @@ export const useChatStore = create<ChatState>()(
         })
       },
 
-      setPosition: (name) => set({ selectedPosition: name }),
+      setPosition: (name) => set({ selectedPosition: name, selectedJdId: null }),
+      setJdId: (jdId) => set({ selectedJdId: jdId }),
       setUseSearch: (use) => set({ useSearch: use }),
       setCodingEnabled: (enabled) => set({ codingEnabled: enabled }),
 
@@ -209,6 +213,7 @@ export const useChatStore = create<ChatState>()(
         reasoningEffort: state.reasoningEffort,
         selectedMode: state.selectedMode,
         selectedPosition: state.selectedPosition,
+        selectedJdId: state.selectedJdId,
         useSearch: state.useSearch,
         promptOverrides: state.promptOverrides,
       }),

@@ -1,4 +1,4 @@
-"""对话流式路由 — SSE 流式输出 + 模型列表"""
+"""对话流式路由 — SSE 流式输出 + 模型列表 + LCEL RAG 管线"""
 
 import json
 import logging
@@ -11,9 +11,9 @@ from config import settings
 from models.schemas import ChatRequest, ModelsResponse
 from services.llm_client import stream_chat
 from services.model_registry import get_available_models, validate_model
-from services.vector_store import VectorStoreManager
 from services.agent_tools import search_web
 from services.coding_problem import select_problems, format_problems_for_prompt
+from services.rag_pipeline import build_rag_context
 from utils.prompt_loader import load_prompt
 
 logger = logging.getLogger(__name__)
@@ -47,8 +47,17 @@ async def chat_stream(req: ChatRequest):
                     if pos:
                         prompt_kwargs["position_type"] = pos.position_type
                         if pos.jds:
-                            jd_text = "\n\n".join(jd.content for jd in pos.jds)
-                            prompt_kwargs["jd"] = jd_text
+                            # 按 jd_id 过滤：指定了则只取匹配的 JD，否則用全部
+                            if req.jd_id:
+                                matched_jds = [jd for jd in pos.jds if jd.id == req.jd_id]
+                                if matched_jds:
+                                    jd_text = "\n\n".join(jd.content for jd in matched_jds)
+                                    prompt_kwargs["jd"] = jd_text
+                                else:
+                                    prompt_kwargs["jd"] = "暂无岗位描述"
+                            else:
+                                jd_text = "\n\n".join(jd.content for jd in pos.jds)
+                                prompt_kwargs["jd"] = jd_text
                         else:
                             prompt_kwargs["jd"] = "暂无岗位描述"
                     else:
@@ -63,20 +72,15 @@ async def chat_stream(req: ChatRequest):
                 else:
                     prompt_kwargs["code"] = ""
 
-                # RAG 检索：如果有关联岗位，自动搜索向量知识库
+                # RAG 检索：使用 LCEL 管线（检索 + 格式化一步完成）
                 rag_context = ""
                 if req.position_name and req.messages:
-                    try:
-                        vms = VectorStoreManager(settings)
-                        last_user_msg = req.messages[-1].content
-                        results = vms.search(req.position_name, last_user_msg, settings.VECTOR_SEARCH_TOP_K)
-                        if results:
-                            rag_parts = []
-                            for i, r in enumerate(results):
-                                rag_parts.append(f"[{i + 1}] (相关度: {r['score']:.3f})\n{r['content']}")
-                            rag_context = "\n\n---\n参考知识库：\n" + "\n\n".join(rag_parts)
-                    except Exception as e:
-                        logger.warning(f"RAG search failed (non-blocking): {e}")
+                    last_user_msg = req.messages[-1].content
+                    rag_context = build_rag_context(
+                        position_name=req.position_name,
+                        query=last_user_msg,
+                        top_k=settings.VECTOR_SEARCH_TOP_K,
+                    )
 
                 # 联网搜索
                 search_context = ""

@@ -1,6 +1,8 @@
-"""文档分块服务 — Q&A 拆分 / 滑动窗口"""
+"""文档分块服务 — LangChain Text Splitters + 自定义 Q&A/代码模式"""
 
 import re
+
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
 def chunk_faq_document(text: str) -> list[str]:
@@ -72,7 +74,7 @@ def chunk_code_document(text: str) -> list[str]:
 
 
 def chunk_by_size(text: str, chunk_size: int = 500, overlap: int = 100) -> list[str]:
-    """按字符数滑动窗口分块"""
+    """按字符数滑动窗口分块（保留兼容性）"""
     if len(text) <= chunk_size:
         return [text] if text.strip() else []
 
@@ -87,14 +89,72 @@ def chunk_by_size(text: str, chunk_size: int = 500, overlap: int = 100) -> list[
     return chunks
 
 
-def chunk_document(text: str, doc_type: str) -> list[str]:
+# ========== LangChain Text Splitters（推荐使用） ==========
+
+# FAQ 文档分句分块器
+_faq_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=500,
+    chunk_overlap=100,
+    separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?", "；", ";", " ", ""],
+)
+
+# 代码文档分块器
+_code_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=1000,
+    chunk_overlap=200,
+    separators=[
+        "\nclass ", "\ndef ", "\nasync def ",
+        "\npublic ", "\nprivate ", "\nprotected ",
+        "\n\n", "\n", " ", ""
+    ],
+)
+
+# 通用分块器
+_generic_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=500,
+    chunk_overlap=100,
+)
+
+
+def chunk_document_langchain(text: str, doc_type: str) -> list[str]:
     """
-    统一分块入口。
-    doc_type: "faq" / "code"
+    使用 LangChain RecursiveCharacterTextSplitter 进行智能分块。
+
+    与 chunk_document() 的区别：
+    - FAQ 文档：优先使用自定义 Q&A 模式匹配，失败后使用 LangChain splitter
+    - 代码文档：优先使用自定义函数/类边界匹配，失败后使用 LangChain splitter
+    - 其他类型：直接使用 LangChain splitter
+
+    Args:
+        text: 文档原始文本
+        doc_type: "faq" / "code" / 其他
+
+    Returns:
+        分块后的文本列表
     """
     if doc_type == "faq":
-        return chunk_faq_document(text)
+        # 优先使用 Q&A 模式匹配
+        chunks = chunk_faq_document(text)
+        if len(chunks) >= 2:
+            return chunks
+        return _faq_splitter.split_text(text)
+
     elif doc_type == "code":
-        return chunk_code_document(text)
+        # 优先使用函数/类边界匹配
+        chunks = chunk_code_document(text)
+        if chunks:
+            return chunks
+        return _code_splitter.split_text(text)
+
     else:
-        return chunk_by_size(text)
+        return _generic_splitter.split_text(text)
+
+
+def chunk_document(text: str, doc_type: str) -> list[str]:
+    """
+    统一分块入口（向后兼容）。
+    内部委托给 chunk_document_langchain()。
+
+    doc_type: "faq" / "code" / 其他
+    """
+    return chunk_document_langchain(text, doc_type)

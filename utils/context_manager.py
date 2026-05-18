@@ -1,23 +1,31 @@
-"""上下文窗口管理 — Token 估算与消息裁剪"""
+"""上下文窗口管理 — 基于 LangChain trim_messages + tiktoken"""
 
 from typing import Union
 
+import tiktoken
+from langchain_core.messages import (
+    trim_messages as lc_trim_messages,
+    SystemMessage,
+    HumanMessage,
+    AIMessage,
+    BaseMessage,
+)
+
 from models.schemas import Message
+
+# tiktoken 编码器（cl100k_base 与 DeepSeek/OpenAI 兼容）
+_encoding = tiktoken.get_encoding("cl100k_base")
 
 
 def estimate_tokens(text: str) -> int:
-    """
-    粗略估算 token 数。
-    中文：约 1.5 字符/token；英文：约 4 字符/token。
-    这里取折中：字符数 / 2。
-    """
+    """使用 tiktoken 精确计算 token 数（替代旧版字符数/2 估算）"""
     if not text:
         return 0
-    return max(1, len(text) // 2)
+    return len(_encoding.encode(text))
 
 
 def count_messages_tokens(messages: list[Union[Message, dict]]) -> int:
-    """计算消息列表的估算 token 总数"""
+    """计算消息列表的精确 token 总数"""
     total = 0
     for msg in messages:
         if isinstance(msg, dict):
@@ -27,7 +35,39 @@ def count_messages_tokens(messages: list[Union[Message, dict]]) -> int:
         else:
             content = str(msg)
         total += estimate_tokens(content)
+        # 每条消息额外开销约 4 tokens（role + 格式）
+        total += 4
     return total
+
+
+def _to_langchain_message(msg: Union[Message, dict]) -> BaseMessage:
+    """将内部消息格式转换为 LangChain BaseMessage"""
+    if isinstance(msg, dict):
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+    elif hasattr(msg, "role"):
+        role = msg.role
+        content = getattr(msg, "content", "")
+    else:
+        role = "user"
+        content = str(msg)
+
+    if role == "system":
+        return SystemMessage(content=content)
+    elif role == "assistant":
+        return AIMessage(content=content)
+    else:
+        return HumanMessage(content=content)
+
+
+def _from_langchain_message(msg: BaseMessage) -> dict:
+    """将 LangChain BaseMessage 转换回内部 dict 格式"""
+    if isinstance(msg, SystemMessage):
+        return {"role": "system", "content": msg.content}
+    elif isinstance(msg, AIMessage):
+        return {"role": "assistant", "content": msg.content}
+    else:
+        return {"role": "user", "content": msg.content}
 
 
 def trim_messages(
@@ -35,37 +75,25 @@ def trim_messages(
     max_tokens: int = 6000,
 ) -> list[Union[Message, dict]]:
     """
-    裁剪消息列表，使其不超过 max_tokens。
-    保留 system 消息 + 最近 N 条非 system 消息。
+    使用 LangChain trim_messages 裁剪消息列表。
+
+    策略：保留所有 system 消息 + 最近 N 条对话消息，总 token 数不超过 max_tokens。
     """
     if not messages:
         return messages
 
-    # 分离 system 消息
-    system_msgs = []
-    other_msgs = []
+    # 转换为 LangChain 消息格式
+    lc_messages = [_to_langchain_message(m) for m in messages]
 
-    for msg in messages:
-        role = msg.get("role", "") if isinstance(msg, dict) else getattr(msg, "role", "")
-        if role == "system":
-            system_msgs.append(msg)
-        else:
-            other_msgs.append(msg)
+    # 使用 LangChain 内置裁剪
+    trimmed = lc_trim_messages(
+        lc_messages,
+        max_tokens=max_tokens,
+        token_counter=_encoding,
+        strategy="last",
+        start_on="human",
+        include_system=True,
+    )
 
-    # system 消息 token 开销
-    system_tokens = count_messages_tokens(system_msgs)
-    available_tokens = max_tokens - system_tokens
-
-    # 从后往前保留非 system 消息
-    kept = []
-    current_tokens = 0
-    for msg in reversed(other_msgs):
-        content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
-        msg_tokens = estimate_tokens(content)
-        if current_tokens + msg_tokens <= available_tokens:
-            kept.insert(0, msg)
-            current_tokens += msg_tokens
-        else:
-            break
-
-    return system_msgs + kept
+    # 转换回原始格式
+    return [_from_langchain_message(m) for m in trimmed]

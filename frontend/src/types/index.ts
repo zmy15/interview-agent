@@ -10,6 +10,7 @@ export interface ChatRequest {
   messages: Message[]
   mode?: 'interviewer' | 'candidate'
   position_name?: string
+  jd_id?: string  // 指定使用某份 JD（为空则使用全部 JD）
   use_search?: boolean
   coding_enabled?: boolean
   model?: string
@@ -93,6 +94,21 @@ export interface ProjectUploadResponse {
   total_text: string
   tech_stack: string[]
   type: 'project'
+}
+
+export interface UploadRecord {
+  id: string
+  filename: string
+  type: 'resume' | 'code' | 'project'
+  text: string
+  preview: string
+  file_count: number
+  tech_stack: string[]
+  created_at: string
+}
+
+export interface UploadListResponse {
+  uploads: UploadRecord[]
 }
 
 // ============ 岗位管理 ============

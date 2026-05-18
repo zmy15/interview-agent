@@ -10,7 +10,9 @@ export async function streamChat(
     messages: { role: string; content: string }[]
     mode?: string
     position_name?: string
+    jd_id?: string
     use_search?: boolean
+    coding_enabled?: boolean
     model?: string
     thinking_enabled?: boolean
     reasoning_effort?: string

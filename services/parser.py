@@ -28,17 +28,23 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
 
 
 def extract_text_from_docx(file_bytes: bytes) -> str:
-    """使用 python-docx 解析 Word 文档（含段落、表格、页眉页脚）"""
+    """
+    解析 DOCX 文档。
+    先用 python-docx 提取结构化文本（段落/表格/页眉页脚），
+    再用 XML 正则做全量提取，合并去重后返回最完整的结果。
+    """
     from docx import Document
+
+    # === 第1步：python-docx 结构化提取 ===
     doc = Document(io.BytesIO(file_bytes))
     parts = []
 
-    # 1. 段落文本
+    # 段落文本
     for para in doc.paragraphs:
         if para.text.strip():
             parts.append(para.text)
 
-    # 2. 表格文本
+    # 表格文本
     for table in doc.tables:
         for row in table.rows:
             row_texts = []
@@ -48,20 +54,103 @@ def extract_text_from_docx(file_bytes: bytes) -> str:
             if row_texts:
                 parts.append(" | ".join(row_texts))
 
-    # 3. 页眉页脚
+    # 页眉页脚（含表格）
     for section in doc.sections:
-        header = section.header
-        if header:
-            for para in header.paragraphs:
+        for hf in (section.header, section.footer):
+            if hf is None:
+                continue
+            for para in hf.paragraphs:
                 if para.text.strip():
                     parts.append(para.text)
-        footer = section.footer
-        if footer:
-            for para in footer.paragraphs:
-                if para.text.strip():
-                    parts.append(para.text)
+            for table in hf.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        if cell.text.strip():
+                            parts.append(cell.text.strip())
 
-    return "\n".join(parts)
+    structured = "\n".join(parts).strip()
+
+    # === 第2步：XML 正则全量提取（捕获 python-docx 遗漏的文本） ===
+    raw_text = _extract_docx_xml_fallback(file_bytes)
+
+    # === 第3步：合并结果 ===
+    if not structured:
+        return raw_text
+    if not raw_text:
+        return structured
+
+    # 如果 XML 提取的文本明显多于结构化文本，说明 python-docx 遗漏了内容
+    # 用 XML 结果（纯文本拼接，丢失段落结构但保证完整）
+    if len(raw_text) > len(structured) * 1.2:
+        logger.info(
+            f"XML fallback extracted more text ({len(raw_text)} chars) "
+            f"than python-docx ({len(structured)} chars), using XML result"
+        )
+        return raw_text
+
+    return structured
+
+
+def _extract_docx_xml_fallback(file_bytes: bytes) -> str:
+    """
+    直接解析 DOCX 内部 XML，用正则提取所有 <w:t> 文本节点。
+    不依赖 XML 树结构，能处理 AlternateContent、文本框、深层嵌套等复杂文档。
+    这是 python-docx 返回空文本时的最后回退方案。
+    """
+    import re
+    import xml.etree.ElementTree as ET
+
+    # 优先查找的 XML 文件列表（按优先级）
+    xml_parts = [
+        "word/document.xml",
+        "word/header1.xml", "word/header2.xml", "word/header3.xml",
+        "word/footer1.xml", "word/footer2.xml", "word/footer3.xml",
+        "word/footnotes.xml", "word/endnotes.xml",
+    ]
+
+    all_texts = []
+
+    with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
+        # 方法1：正则直接匹配 <w:t> 文本（最鲁棒，不依赖 XML 结构）
+        for xml_part in xml_parts:
+            if xml_part not in zf.namelist():
+                continue
+            try:
+                xml_content = zf.read(xml_part).decode("utf-8", errors="replace")
+                # 匹配 <w:t ...>text</w:t> 或 <w:t xml:space="preserve">text</w:t>
+                texts = re.findall(r'<w:t[^>]*>([^<]*)</w:t>', xml_content)
+                all_texts.extend(t for t in texts if t)
+            except Exception as e:
+                logger.warning(f"Regex extraction failed for {xml_part}: {e}")
+
+        # 方法2：如果正则也没提取到，用 ElementTree 遍历
+        if not all_texts:
+            for xml_part in xml_parts:
+                if xml_part not in zf.namelist():
+                    continue
+                try:
+                    xml_content = zf.read(xml_part)
+                    root = ET.fromstring(xml_content)
+                    for elem in root.iter():
+                        tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+                        if tag == "t" and elem.text:
+                            all_texts.append(elem.text)
+                except Exception:
+                    continue
+
+        # 方法3：最后的尝试 — 遍历所有 XML 文件
+        if not all_texts:
+            for name in zf.namelist():
+                if not name.endswith(".xml"):
+                    continue
+                try:
+                    xml_content = zf.read(name).decode("utf-8", errors="replace")
+                    texts = re.findall(r'<w:t[^>]*>([^<]*)</w:t>', xml_content)
+                    all_texts.extend(t for t in texts if t)
+                except Exception:
+                    continue
+
+    return "".join(all_texts)
 
 
 def extract_text_from_doc(file_bytes: bytes) -> str:

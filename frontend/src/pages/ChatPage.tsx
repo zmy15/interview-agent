@@ -150,10 +150,20 @@ const ChatPage: React.FC = () => {
 
   // 开始模拟练习
   const handleStartPractice = async () => {
-    if (!interviewPlan) {
-      await handleGetPlan()
+    let plan = interviewPlan
+    if (!plan) {
+      try {
+        plan = await getInterviewPlan({
+          mode: selectedMode,
+          duration_minutes: interviewDuration,
+          answer_length: answerLength,
+        })
+        setInterviewPlan(plan)
+      } catch {
+        message.error('获取面试计划失败')
+        return
+      }
     }
-    const plan = interviewPlan || useChatStore.getState() && null
     setPracticeActive(true)
     setQuestionIndex(0)
     const breakdown = plan?.breakdown
@@ -388,7 +398,6 @@ const ChatPage: React.FC = () => {
                 size="large"
                 icon={<PlayCircleOutlined />}
                 onClick={handleStartPractice}
-                disabled={!interviewPlan}
               >
                 开始模拟练习
               </Button>
