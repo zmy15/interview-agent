@@ -1,4 +1,4 @@
-<p align="center">
+﻿<p align="center">
   <img src="https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" alt="React">
@@ -42,15 +42,21 @@ Interview Agent is an LLM-powered AI mock interview platform supporting both **i
 
 - 🤖 **Dual-Mode AI Chat** — Seamlessly switch between interviewer & candidate modes with SSE streaming
 - 🔑 **Frontend API Key Config** — Configure your DeepSeek API Key directly in the UI; key stored locally only
-- ⏱️ **Interview Time Planning** — Set duration in candidate mode, auto-calculates question count
+- ⏱️ **Interview Time Planning** — Set duration in candidate mode, auto-calculates question count with phase breakdown
 - 🎯 **Practice Flow** — Candidate mode: AI asks → you answer → progress tracking → one-click report
-- �📚 **RAG Knowledge Base** — Upload PDF / Word / text files; FAISS vector search enhances response quality
+- 🧑‍💻 **Coding Challenge Mode** — Tech positions only; intelligently selects LeetCode-style problems with difficulty adaptation
+- 🎓 **Candidate Leveling** — Supports intern / new grad / experienced levels; auto-adjusts question difficulty
+- 🔄 **Interview Rounds** — First / Second / HR round, each with tailored evaluation focus
+- 📚 **RAG Knowledge Base** — Upload PDF / Word / text files; LangChain FAISS vector search enhances response quality
 - 🌐 **Web Search** — DuckDuckGo integration for real-time technical information
-- 📝 **Interview Reports** — Multi-dimensional evaluation (technical skills / communication / overall performance)
-- 🗂️ **Position Management** — Create positions, add JDs, link knowledge bases
-- 🎛️ **Model Selection** — Choose between DeepSeek V4 Pro / Flash, toggle thinking mode
+- 📝 **Interview Reports** — Multi-dimensional evaluation (technical skills / communication / overall performance) with structured per-question assessment
+- 🗂️ **Position Management** — Create positions, add multiple JDs, link knowledge bases, filter by JD
+- 🎛️ **Model Selection** — Choose between DeepSeek V4 Pro / Flash, toggle thinking mode & reasoning effort
+- 🔒 **Security** — CORS domain whitelist + FAISS index SHA-256 integrity verification
+- 📐 **Context Window Management** — tiktoken precise token counting + LangChain trim_messages smart trimming
 - 🖥️ **Modern UI** — React + Ant Design 6 with responsive layout
 - 🐳 **One-Click Deploy** — Local scripts / Docker Compose / Single container — three ways to launch
+
 
 ---
 
@@ -65,6 +71,23 @@ Pick one of three methods:
 | 📦 Single Container | `docker run` | All platforms |
 
 > **First time?** Copy `.env.example` → `.env` and fill in your [DeepSeek API Key](https://platform.deepseek.com/)
+> 
+> **China mainland users**: First launch downloads the Embedding model (~90MB). `.env` includes `HF_ENDPOINT=https://hf-mirror.com` by default — no extra setup needed.
+
+### Key Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEEPSEEK_API_KEY` | — | DeepSeek API Key (required) |
+| `DEEPSEEK_MODEL` | `deepseek-v4-pro` | Default model |
+| `AVAILABLE_MODELS` | `deepseek-v4-pro,deepseek-v4-flash` | Available model list |
+| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Embedding model name |
+| `HF_ENDPOINT` | `https://hf-mirror.com` | HuggingFace mirror (for China users) |
+| `VECTOR_SEARCH_TOP_K` | `3` | RAG retrieval top-K documents |
+| `CORS_ORIGINS` | `http://localhost:5173,...` | Allowed frontend origins (comma-separated) |
+| `FAISS_VERIFY_INTEGRITY` | `true` | FAISS index SHA-256 integrity check |
+| `MAX_CONTEXT_TOKENS` | `800000` | Context window limit (tokens) |
+| `DEEPSEEK_THINKING_ENABLED` | `true` | Enable thinking mode by default |
 
 <details>
 <summary><b>Method 1: Local Script (dev recommended)</b></summary>
@@ -113,10 +136,15 @@ Three-stage build: Node compiles frontend → pip installs deps → FastAPI serv
 | Component | Technology |
 |-----------|------------|
 | Web Framework | FastAPI + Uvicorn |
-| LLM | DeepSeek V4 Pro / Flash |
+| LLM | DeepSeek V4 Pro / Flash (OpenAI-compatible API) |
 | Streaming | Server-Sent Events (SSE) |
-| Vector Store | FAISS + sentence-transformers |
-| Embedding | all-MiniLM-L6-v2 |
+| RAG Pipeline | LangChain LCEL + FAISS |
+| Vector Store | langchain-community FAISS |
+| Embedding | HuggingFace sentence-transformers (all-MiniLM-L6-v2) |
+| Token Counting | tiktoken (cl100k_base) |
+| Context Trimming | LangChain trim_messages |
+| Prompt Templates | LangChain ChatPromptTemplate |
+| Text Splitting | langchain-text-splitters RecursiveCharacterTextSplitter |
 | Web Search | DuckDuckGo Search |
 | Doc Parsing | PyMuPDF + python-docx |
 | Validation | Pydantic v2 |
@@ -149,22 +177,38 @@ interview-agent/
 │
 ├── routers/                 # API routes
 │   ├── chat.py              #   Chat (SSE streaming)
-│   ├── interview.py         #   Interview control
+│   ├── interview.py         #   Interview control (start/stop/report/plan)
 │   ├── position.py          #   Position management
 │   ├── upload.py            #   File upload
 │   └── knowledge.py         #   Knowledge base
 │
 ├── services/                # Business logic
 │   ├── llm_client.py        #   DeepSeek client
-│   ├── vector_store.py      #   FAISS vector store
+│   ├── vector_store.py      #   LangChain FAISS vector store
+│   ├── rag_pipeline.py      #   LCEL RAG retrieval pipeline
 │   ├── chunker.py           #   Document chunking
-│   ├── parser.py            #   File parsing
-│   └── agent_tools.py       #   Search tools
+│   ├── parser.py            #   File parsing (PDF/Word)
+│   ├── agent_tools.py       #   Web search tools
+│   ├── coding_problem.py    #   Coding challenge selector
+│   ├── model_registry.py    #   Model registry
+│   ├── position_store.py    #   Position persistence
+│   └── upload_store.py      #   Upload persistence
+│
+├── utils/                   # Utilities
+│   ├── context_manager.py   #   Context window management (tiktoken)
+│   ├── prompt_loader.py     #   Prompt template loader (LangChain)
+│   └── position_classifier.py  # Position type classifier
+│
+├── models/
+│   └── schemas.py           # Pydantic data models
 │
 ├── prompts/                 # System prompts
 │   ├── interviewer.txt      #   Interviewer persona
 │   ├── candidate.txt        #   Candidate persona
 │   └── report.txt           #   Report generation
+│
+├── data/
+│   └── leetcode_problems.json  # Coding problem bank
 │
 ├── frontend/                # React frontend
 │   ├── Dockerfile           #   Frontend image
@@ -176,7 +220,9 @@ interview-agent/
 │       ├── stores/          #   State
 │       └── hooks/           #   Hooks
 │
-└── tests/                   # Tests
+├── tests/                   # Tests
+└── chroma_data/             # FAISS index storage
+    └── faiss_indexes/       #   Per-collection directories
 ```
 
 ---
@@ -217,11 +263,17 @@ Create Position → Add JD → Upload Knowledge → Upload Resume → Set Durati
   "messages": [{"role": "user", "content": "Tell me about yourself"}],
   "mode": "interviewer",
   "position_name": "Frontend Engineer",
+  "jd_id": "jd_001",
   "use_search": false,
+  "coding_enabled": false,
   "model": "deepseek-v4-pro",
   "thinking_enabled": true,
   "reasoning_effort": "high",
-  "api_key": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  "api_key": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "candidate_level": "experienced",
+  "interview_round": "first",
+  "interview_duration_minutes": 30,
+  "interview_question_count": 10
 }
 ```
 
@@ -229,11 +281,17 @@ Create Position → Add JD → Upload Knowledge → Upload Resume → Set Durati
 |-----------|------|-------------|
 | `mode` | `string` | `"interviewer"` or `"candidate"` |
 | `position_name` | `string` | Linked position name, triggers RAG retrieval |
+| `jd_id` | `string` | Specify a particular JD (empty = use all JDs) |
 | `use_search` | `bool` | Enable web search |
+| `coding_enabled` | `bool` | Enable coding challenge (candidate mode + tech positions only) |
 | `model` | `string` | Model selection; defaults to `deepseek-v4-pro` |
 | `thinking_enabled` | `bool` | Enable deep thinking mode |
 | `reasoning_effort` | `string` | Reasoning depth: `"high"` / `"max"` |
 | `api_key` | `string` | Frontend-configured DeepSeek API Key (optional, takes priority over .env) |
+| `candidate_level` | `string` | Candidate level: `"intern"` / `"new_grad"` / `"experienced"` |
+| `interview_round` | `string` | Interview round: `"first"` / `"second"` / `"hr"` |
+| `interview_duration_minutes` | `int` | Total interview duration (minutes), affects time budget awareness |
+| `interview_question_count` | `int` | Planned question count |
 
 ---
 
@@ -245,11 +303,11 @@ Create Position → Add JD → Upload Knowledge → Upload Resume → Set Durati
 | Chat | `POST` | `/chat/stream` | SSE streaming chat |
 | Position | `GET` `POST` | `/positions` | List / Create positions |
 | Position | `GET` `PUT` `DELETE` | `/positions/{name}` | Position CRUD |
-| Position | `POST` `PUT` `DELETE` | `/positions/{name}/jds` | JD management |
-| Interview | `POST` | `/interview/start` | Start interview |
+| Position | `POST` `PUT` `DELETE` | `/positions/{name}/jds` | JD management (multiple JDs) |
+| Interview | `POST` | `/interview/start` | Start interview (assemble system prompt) |
 | Interview | `POST` | `/interview/stop` | Stop interview |
-| Interview | `POST` | `/interview/report` | Generate report |
-| Interview | `POST` | `/interview/plan` | 🆕 Interview time planning |
+| Interview | `POST` | `/interview/report` | Generate report (structured per-question assessment) |
+| Interview | `POST` | `/interview/plan` | 🆕 Interview time planning (phase breakdown + dynamic replan) |
 | Upload | `POST` | `/upload/resume` | Upload resume |
 | Upload | `POST` | `/upload/code` | Upload code |
 | Knowledge | `POST` | `/knowledge/upload` | Upload document |

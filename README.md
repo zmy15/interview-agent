@@ -1,4 +1,4 @@
-<p align="center">
+﻿<p align="center">
   <img src="https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" alt="React">
@@ -37,14 +37,19 @@ Interview Agent 是一个基于大语言模型的 AI 模拟面试平台，支持
 ## ✨ 功能特性
 
 - 🤖 **双模式 AI 对话** — 面试官 / 求职者自由切换，SSE 流式输出
-- � **前端 API Key 配置** — 在界面中直接配置 DeepSeek API Key，密钥仅存本地
-- ⏱️ **面试时长推算** — 求职者模式下设置面试时长，自动推算问题数量
+- 🔑 **前端 API Key 配置** — 在界面中直接配置 DeepSeek API Key，密钥仅存本地
+- ⏱️ **面试时长推算** — 求职者模式下设置面试时长，自动推算问题数量与阶段拆分
 - 🎯 **模拟练习流程** — 求职者模式：AI 逐题提问 → 你回答 → 进度追踪 → 生成报告
-- �📚 **RAG 向量知识库** — 上传 PDF / Word / 文本，FAISS 向量检索增强回答质量
+- 🧑‍💻 **编程题模式** — 技术岗专属，根据岗位类型智能选题（LeetCode 风格），支持难度自适应
+- 🎓 **候选人分级** — 支持实习 / 校招 / 社招三种级别，自动调整问题难度与深度
+- 🔄 **面试轮次** — 初试 / 复试 / HR 面，不同轮次侧重不同考察方向
+- 📚 **RAG 向量知识库** — 上传 PDF / Word / 文本，LangChain FAISS 向量检索增强回答质量
 - 🌐 **联网搜索** — 集成 DuckDuckGo，实时获取最新技术资讯
-- 📝 **面试报告生成** — 多维度评估（技术能力 / 沟通表达 / 综合素质）
-- 🗂️ **岗位管理** — 创建岗位、添加 JD、关联知识库
-- 🎛️ **模型选择** — 支持 DeepSeek V4 Pro / Flash，可切换思考模式
+- 📝 **面试报告生成** — 多维度评估（技术能力 / 沟通表达 / 综合素质），支持结构化 QA 逐题评估
+- 🗂️ **岗位管理** — 创建岗位、添加多份 JD、关联知识库，支持按 JD 筛选
+- 🎛️ **模型选择** — 支持 DeepSeek V4 Pro / Flash，可切换思考模式与推理强度
+- 🔒 **安全机制** — CORS 域名白名单 + FAISS 索引 SHA-256 完整性校验
+- 📐 **上下文窗口管理** — tiktoken 精确 token 计数 + LangChain trim_messages 智能裁剪
 - 🖥️ **现代化 UI** — React + Ant Design 6，响应式布局
 - 🐳 **一键部署** — 支持本地脚本 / Docker Compose / 单容器三种启动方式
 
@@ -63,6 +68,21 @@ Interview Agent 是一个基于大语言模型的 AI 模拟面试平台，支持
 > **首次使用**：复制 `.env.example` → `.env`，填入 [DeepSeek API Key](https://platform.deepseek.com/)
 > 
 > **国内用户注意**：首次启动需下载 Embedding 模型（约 90MB），`.env` 中已默认配置 HuggingFace 镜像 `HF_ENDPOINT=https://hf-mirror.com`，无需额外操作。
+
+### 主要配置项
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `DEEPSEEK_API_KEY` | — | DeepSeek API Key（必填） |
+| `DEEPSEEK_MODEL` | `deepseek-v4-pro` | 默认模型 |
+| `AVAILABLE_MODELS` | `deepseek-v4-pro,deepseek-v4-flash` | 可选模型列表 |
+| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Embedding 模型名 |
+| `HF_ENDPOINT` | `https://hf-mirror.com` | HuggingFace 镜像（国内用户） |
+| `VECTOR_SEARCH_TOP_K` | `3` | RAG 检索返回文档数 |
+| `CORS_ORIGINS` | `http://localhost:5173,...` | 允许的前端来源（逗号分隔） |
+| `FAISS_VERIFY_INTEGRITY` | `true` | FAISS 索引 SHA-256 完整性校验 |
+| `MAX_CONTEXT_TOKENS` | `800000` | 上下文窗口上限（token） |
+| `DEEPSEEK_THINKING_ENABLED` | `true` | 默认启用思考模式 |
 
 <details>
 <summary><b>方式一：本地脚本（开发推荐）</b></summary>
@@ -111,10 +131,15 @@ docker run -p 8000:8000 --env-file .env interview-agent
 | 组件 | 技术 |
 |------|------|
 | Web 框架 | FastAPI + Uvicorn |
-| LLM | DeepSeek V4 Pro / Flash |
+| LLM | DeepSeek V4 Pro / Flash（OpenAI 兼容协议） |
 | 流式输出 | Server-Sent Events (SSE) |
-| 向量存储 | FAISS + sentence-transformers |
-| Embedding | all-MiniLM-L6-v2 |
+| RAG 管线 | LangChain LCEL + FAISS |
+| 向量存储 | langchain-community FAISS |
+| Embedding | HuggingFace sentence-transformers (all-MiniLM-L6-v2) |
+| Token 计数 | tiktoken (cl100k_base) |
+| 上下文裁剪 | LangChain trim_messages |
+| 提示模板 | LangChain ChatPromptTemplate |
+| 文档分块 | langchain-text-splitters RecursiveCharacterTextSplitter |
 | 联网搜索 | DuckDuckGo Search |
 | 文档解析 | PyMuPDF + python-docx |
 | 数据校验 | Pydantic v2 |
@@ -147,22 +172,38 @@ interview-agent/
 │
 ├── routers/                 # API 路由
 │   ├── chat.py              #   对话 (SSE 流式)
-│   ├── interview.py         #   面试控制
+│   ├── interview.py         #   面试控制（开始/停止/报告/计划）
 │   ├── position.py          #   岗位管理
 │   ├── upload.py            #   文件上传
 │   └── knowledge.py         #   知识库管理
 │
 ├── services/                # 业务逻辑
 │   ├── llm_client.py        #   DeepSeek 客户端
-│   ├── vector_store.py      #   FAISS 向量存储
+│   ├── vector_store.py      #   LangChain FAISS 向量存储
+│   ├── rag_pipeline.py      #   LCEL RAG 检索管线
 │   ├── chunker.py           #   文档分块
-│   ├── parser.py            #   文件解析
-│   └── agent_tools.py       #   搜索工具
+│   ├── parser.py            #   文件解析 (PDF/Word)
+│   ├── agent_tools.py       #   联网搜索工具
+│   ├── coding_problem.py    #   编程题智能选题
+│   ├── model_registry.py    #   模型注册表
+│   ├── position_store.py    #   岗位持久化
+│   └── upload_store.py      #   上传文件持久化
+│
+├── utils/                   # 工具模块
+│   ├── context_manager.py   #   上下文窗口管理 (tiktoken)
+│   ├── prompt_loader.py     #   提示模板加载 (LangChain)
+│   └── position_classifier.py  # 岗位类型分类器
+│
+├── models/
+│   └── schemas.py           # Pydantic 数据模型
 │
 ├── prompts/                 # 系统提示词
 │   ├── interviewer.txt      #   面试官
 │   ├── candidate.txt        #   求职者
 │   └── report.txt           #   报告生成
+│
+├── data/
+│   └── leetcode_problems.json  # 编程题库
 │
 ├── frontend/                # React 前端
 │   ├── Dockerfile           #   前端镜像
@@ -174,7 +215,9 @@ interview-agent/
 │       ├── stores/          #   状态
 │       └── hooks/           #   Hooks
 │
-└── tests/                   # 测试
+├── tests/                   # 测试
+└── chroma_data/             # FAISS 索引存储
+    └── faiss_indexes/       #   按知识库名分目录
 ```
 
 ---
@@ -215,11 +258,17 @@ interview-agent/
   "messages": [{"role": "user", "content": "请介绍一下你自己"}],
   "mode": "interviewer",
   "position_name": "前端工程师",
+  "jd_id": "jd_001",
   "use_search": false,
+  "coding_enabled": false,
   "model": "deepseek-v4-pro",
   "thinking_enabled": true,
   "reasoning_effort": "high",
-  "api_key": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  "api_key": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "candidate_level": "experienced",
+  "interview_round": "first",
+  "interview_duration_minutes": 30,
+  "interview_question_count": 10
 }
 ```
 
@@ -227,11 +276,17 @@ interview-agent/
 |------|------|------|
 | `mode` | `string` | `"interviewer"` 面试官 / `"candidate"` 求职者 |
 | `position_name` | `string` | 关联岗位名称，触发 RAG 检索 |
+| `jd_id` | `string` | 指定使用某份 JD（为空则使用全部 JD） |
 | `use_search` | `bool` | 是否启用联网搜索 |
+| `coding_enabled` | `bool` | 是否启用编程题（仅求职者模式+技术岗生效） |
 | `model` | `string` | 模型选择，默认 `deepseek-v4-pro` |
 | `thinking_enabled` | `bool` | 是否启用深度思考 |
 | `reasoning_effort` | `string` | 推理强度：`"high"` / `"max"` |
 | `api_key` | `string` | 前端配置的 DeepSeek API Key（可选，优先级高于 .env） |
+| `candidate_level` | `string` | 候选人级别：`"intern"` / `"new_grad"` / `"experienced"` |
+| `interview_round` | `string` | 面试轮次：`"first"` / `"second"` / `"hr"` |
+| `interview_duration_minutes` | `int` | 面试总时长（分钟），影响时间预算感知 |
+| `interview_question_count` | `int` | 计划题目数量 |
 
 ---
 
@@ -243,11 +298,11 @@ interview-agent/
 | 对话 | `POST` | `/chat/stream` | SSE 流式对话 |
 | 岗位 | `GET` `POST` | `/positions` | 列表 / 创建岗位 |
 | 岗位 | `GET` `PUT` `DELETE` | `/positions/{name}` | 岗位 CRUD |
-| 岗位 | `POST` `PUT` `DELETE` | `/positions/{name}/jds` | JD 管理 |
-| 面试 | `POST` | `/interview/start` | 开始面试 |
+| 岗位 | `POST` `PUT` `DELETE` | `/positions/{name}/jds` | JD 管理（支持多份 JD） |
+| 面试 | `POST` | `/interview/start` | 开始面试（组装 system prompt） |
 | 面试 | `POST` | `/interview/stop` | 停止面试 |
-| 面试 | `POST` | `/interview/report` | 生成报告 |
-| 面试 | `POST` | `/interview/plan` | 🆕 面试时长推算 |
+| 面试 | `POST` | `/interview/report` | 生成报告（支持结构化 QA 逐题评估） |
+| 面试 | `POST` | `/interview/plan` | 🆕 面试时长推算（含阶段拆分、动态重规划） |
 | 上传 | `POST` | `/upload/resume` | 上传简历 |
 | 上传 | `POST` | `/upload/code` | 上传代码 |
 | 知识库 | `POST` | `/knowledge/upload` | 上传文档 |
