@@ -12,6 +12,7 @@ import {
   Select,
   Tag,
   Tooltip,
+  Progress,
 } from 'antd'
 import {
   SendOutlined,
@@ -32,13 +33,22 @@ import ModelSelector from '@/components/ModelSelector'
 import PositionSelect from '@/components/PositionSelect'
 import PromptEditor from '@/components/PromptEditor'
 import { getInterviewPlan } from '@/api/interview'
-import type { ChatMode, InterviewPlanResponse } from '@/types'
+import type { ChatMode, InterviewPlanResponse, CandidateLevel, InterviewRound, AnswerLength } from '@/types'
 import { CodeOutlined } from '@ant-design/icons'
-
-type AnswerLength = 'short' | 'medium' | 'long'
 
 const { TextArea } = Input
 const { Text } = Typography
+
+/** 中文语速：约250字/分钟（保留用于兼容旧逻辑，主要使用 wall-clock 时间） */
+const CHARS_PER_MINUTE = 250
+
+/** 面试阶段标签 */
+const PHASE_LABELS: Record<string, { label: string; color: string }> = {
+  intro: { label: '自我介绍', color: 'blue' },
+  tech_qa: { label: '技术问答', color: 'processing' },
+  coding: { label: '编程题', color: 'orange' },
+  reverse: { label: '反问环节', color: 'purple' },
+}
 
 const ChatPage: React.FC = () => {
   const {
@@ -50,11 +60,26 @@ const ChatPage: React.FC = () => {
     thinkingEnabled,
     useSearch,
     codingEnabled,
+    candidateLevel,
+    interviewRound,
+    answerLength,
+    practiceActive,
+    practiceStartTime,
+    interviewPlan,
+    qaRecords,
+    totalUserChars,
     clearChat,
     clearAllChats,
     setMode,
     setUseSearch,
     setCodingEnabled,
+    setCandidateLevel,
+    setInterviewRound,
+    setAnswerLength,
+    setPracticeActive,
+    setInterviewPlan,
+    resetPractice,
+    addQARecord,
   } = useChatStore()
 
   const { message } = App.useApp()
@@ -65,10 +90,10 @@ const ChatPage: React.FC = () => {
   const [promptEditorOpen, setPromptEditorOpen] = useState(false)
   const [apiKeyModalOpen, setApiKeyModalOpen] = useState(false)
   const [apiKeyInput, setApiKeyInput] = useState(apiKey)
-  const [interviewPlan, setInterviewPlan] = useState<InterviewPlanResponse | null>(null)
-  const [practiceActive, setPracticeActive] = useState(false)
-  const [questionIndex, setQuestionIndex] = useState(0)
-  const [answerLength, setAnswerLength] = useState<AnswerLength>('medium')
+
+  // 用于追踪上一轮 AI 的提问内容（配对 QA 记录）
+  const lastAIQuestionRef = useRef<string>('')
+
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const chatContainerRef = useRef<HTMLDivElement>(null)
   const [autoScroll, setAutoScroll] = useState(true)
@@ -90,6 +115,17 @@ const ChatPage: React.FC = () => {
   const handleSend = async () => {
     const text = inputValue.trim()
     if (!text || isStreaming) return
+
+    // 记录 QA：如果上一轮 AI 有提问，则将当前用户回答与之配对
+    if (selectedMode === 'candidate' && practiceActive && lastAIQuestionRef.current) {
+      addQARecord({
+        question: lastAIQuestionRef.current,
+        answer: text,
+        answer_chars: text.length,
+      })
+    }
+    lastAIQuestionRef.current = ''
+
     setInputValue('')
     setAutoScroll(true)
     try {
@@ -108,17 +144,15 @@ const ChatPage: React.FC = () => {
 
   const handleClear = () => {
     clearChat()
-    setPracticeActive(false)
-    setQuestionIndex(0)
-    setInterviewPlan(null)
+    resetPractice()
+    lastAIQuestionRef.current = ''
     message.success(`已清空「${selectedMode === 'interviewer' ? '面试官' : '求职者'}」对话`)
   }
 
   const handleClearAll = () => {
     clearAllChats()
-    setPracticeActive(false)
-    setQuestionIndex(0)
-    setInterviewPlan(null)
+    resetPractice()
+    lastAIQuestionRef.current = ''
     message.success('已清空全部对话记录')
   }
 
@@ -140,6 +174,9 @@ const ChatPage: React.FC = () => {
         mode: selectedMode,
         duration_minutes: interviewDuration,
         answer_length: answerLength,
+        candidate_level: candidateLevel || undefined,
+        interview_round: interviewRound || undefined,
+        coding_enabled: codingEnabled,
       })
       setInterviewPlan(plan)
       message.success(plan.description)
@@ -157,6 +194,9 @@ const ChatPage: React.FC = () => {
           mode: selectedMode,
           duration_minutes: interviewDuration,
           answer_length: answerLength,
+          candidate_level: candidateLevel || undefined,
+          interview_round: interviewRound || undefined,
+          coding_enabled: codingEnabled,
         })
         setInterviewPlan(plan)
       } catch {
@@ -165,35 +205,109 @@ const ChatPage: React.FC = () => {
       }
     }
     setPracticeActive(true)
-    setQuestionIndex(0)
-    const breakdown = plan?.breakdown
-    const bdText = breakdown
-      ? `（自我介绍${breakdown['自我介绍']}分钟 + 技术问答${breakdown['技术问答']}分钟 + 反问${breakdown['反问环节']}分钟）`
-      : ''
-    const startMsg = `我准备好了，请开始面试。${bdText}`
+    lastAIQuestionRef.current = ''
+    const startMsg = `我准备好了，请开始面试。`
     await sendMessage(startMsg)
   }
 
   // 结束练习并跳转报告
   const handleEndPractice = () => {
-    setPracticeActive(false)
-    setQuestionIndex(0)
-    setInterviewPlan(null)
+    resetPractice()
+    lastAIQuestionRef.current = ''
     message.success('练习结束，可前往报告页面生成评价')
   }
 
-  // 跟踪问题数量（检测 AI 消息中的问题标记）
+  // 当 AI 完成消息时，如果处于练习模式，记录为潜在提问
+  useEffect(() => {
+    if (!isStreaming && practiceActive && selectedMode === 'candidate') {
+      // 获取最新的 assistant 消息作为问题
+      const assistantMsgs = messages.filter((m) => m.role === 'assistant')
+      if (assistantMsgs.length > 0) {
+        const lastMsg = assistantMsgs[assistantMsgs.length - 1]
+        // 只记录包含问号或明显是提问的消息
+        if (lastMsg.content.includes('？') || lastMsg.content.includes('?')) {
+          lastAIQuestionRef.current = lastMsg.content.slice(0, 500) // 截取前500字
+        }
+      }
+    }
+  }, [isStreaming, practiceActive, selectedMode, messages])
+
+  // 推算已用时间和剩余时间 — 使用 wall-clock 时间（精确计时）
+  const [elapsedSec, setElapsedSec] = useState(0)
+
+  // 每秒更新一次已用时间
+  useEffect(() => {
+    if (!practiceActive || !practiceStartTime) {
+      setElapsedSec(0)
+      return
+    }
+    const timer = setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - practiceStartTime) / 1000))
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [practiceActive, practiceStartTime])
+
+  const elapsedMin = Math.floor(elapsedSec / 60)
+  const remainingMin = Math.max(0, interviewDuration - Math.ceil(elapsedSec / 60))
+
+  // 根据时间和已答题数推断当前阶段
+  const estimatedPhase = (): string => {
+    if (!interviewPlan) return 'intro'
+    if (elapsedMin <= 2) return 'intro'
+
+    const plan = interviewPlan
+    const introEnd = plan.breakdown?.['自我介绍'] || 3
+    const codingMin = plan.coding_reserved_min || 0
+    const reverseMin = plan.breakdown?.['反问环节'] || 3
+    const techQaMin = (plan.breakdown?.['技术问答'] || 0)
+
+    // 反问检测：AI 消息中包含反问关键词
+    const lastAssistantMsgs = messages.filter(m => m.role === 'assistant').slice(-3)
+    const hasReverseSignal = lastAssistantMsgs.some(m =>
+      m.content.includes('有什么问题想问') ||
+      m.content.includes('还有什么问题') ||
+      m.content.includes('反问')
+    )
+
+    if (hasReverseSignal || remainingMin <= reverseMin + 1) return 'reverse'
+    if (codingEnabled && codingMin > 0 && elapsedMin >= introEnd + techQaMin * 0.6) return 'coding'
+    if (elapsedMin >= introEnd) return 'tech_qa'
+    return 'intro'
+  }
+
+  const currentPhase = estimatedPhase()
+  const phaseInfo = PHASE_LABELS[currentPhase] || { label: '未知', color: 'default' }
+
+  // 进度百分比
+  const progressPercent = interviewDuration > 0 ? Math.min(100, Math.round((elapsedSec / 60) / interviewDuration * 100)) : 0
+
+  // 动态调整面试计划（每 5 题或时间过半时重新计算）
+  const [lastPlanRefresh, setLastPlanRefresh] = useState(0)
   useEffect(() => {
     if (!practiceActive || !interviewPlan) return
-    const assistantMsgs = messages.filter((m) => m.role === 'assistant')
-    // 简单估算：每个 assistant 消息代表一个问题
-    const count = Math.min(assistantMsgs.length, interviewPlan.question_count)
-    setQuestionIndex(count)
-    // 达到问题数量时自动提示
-    if (count >= interviewPlan.question_count && assistantMsgs.length > 0) {
-      message.info(`已完成 ${interviewPlan.question_count} 道题目，可以结束练习并生成报告`)
+
+    const shouldRefresh =
+      (qaRecords.length > 0 && qaRecords.length % 5 === 0 && qaRecords.length > lastPlanRefresh) ||
+      (elapsedMin > 0 && elapsedMin % 8 === 0 && elapsedMin > lastPlanRefresh)
+
+    if (shouldRefresh) {
+      setLastPlanRefresh(qaRecords.length > lastPlanRefresh ? qaRecords.length : elapsedMin)
+      getInterviewPlan({
+        mode: selectedMode,
+        duration_minutes: interviewDuration,
+        answer_length: answerLength,
+        candidate_level: candidateLevel || undefined,
+        interview_round: interviewRound || undefined,
+        coding_enabled: codingEnabled,
+        elapsed_minutes: elapsedMin,
+        answered_questions: qaRecords.length,
+      }).then((plan) => {
+        setInterviewPlan(plan)
+      }).catch(() => {
+        // 静默失败，不影响面试流程
+      })
     }
-  }, [messages, practiceActive, interviewPlan])
+  }, [qaRecords.length, elapsedMin, practiceActive])
 
   // 构建流式消息（用于显示正在生成的内容）
   const streamingMessage =
@@ -223,8 +337,6 @@ const ChatPage: React.FC = () => {
           value={selectedMode}
           onChange={(val) => {
             setMode(val as ChatMode)
-            setPracticeActive(false)
-            setInterviewPlan(null)
           }}
           options={[
             { value: 'interviewer', label: '🎯 你是面试官' },
@@ -236,11 +348,47 @@ const ChatPage: React.FC = () => {
         <div style={{ width: 1, height: 24, background: '#d9d9d9' }} />
         <PositionSelect />
 
-        {/* 你是求职者模式：编程题开关 + 面试时长选择器（AI 提问，你回答） */}
+        {/* 你是求职者模式：候选人级别 + 面试轮次 + 编程题 + 时长 */}
         {selectedMode === 'candidate' && (
           <>
-            <div style={{ width: 1, height: 24, background: '#d9d9d9' }} />
-            <Tooltip title="让AI面试官从LeetCode Hot100/面试经典150中出编程题，难度根据岗位和你的回答表现自动调整">
+            <div style={{ width: 1, height: 24, background: '#d9d9d9' }} />            <Space size={4}>
+              <Text type="secondary" style={{ fontSize: 12 }}>👤</Text>
+              <Select
+                size="small"
+                value={candidateLevel || undefined}
+                onChange={(val) => {
+                  setCandidateLevel(val || null)
+                  setInterviewPlan(null)
+                }}
+                placeholder="经验级别"
+                allowClear
+                style={{ width: 90 }}
+                options={[
+                  { value: 'intern', label: '🎓 实习' },
+                  { value: 'new_grad', label: '🎯 校招' },
+                  { value: 'experienced', label: '💼 社招' },
+                ]}
+              />
+            </Space>
+            <Space size={4}>
+              <Text type="secondary" style={{ fontSize: 12 }}>🔄</Text>
+              <Select
+                size="small"
+                value={interviewRound || undefined}
+                onChange={(val) => {
+                  setInterviewRound(val || null)
+                  setInterviewPlan(null)
+                }}
+                placeholder="面试轮次"
+                allowClear
+                style={{ width: 90 }}
+                options={[
+                  { value: 'first', label: '📋 一面' },
+                  { value: 'second', label: '🔍 二面' },
+                  { value: 'hr', label: '🤝 HR面' },
+                ]}
+              />
+            </Space>            <Tooltip title="让AI面试官从LeetCode Hot100/面试经典150中出编程题，难度根据岗位和你的回答表现自动调整">
               <Space size={4}>
                 <Switch
                   size="small"
@@ -288,7 +436,7 @@ const ChatPage: React.FC = () => {
                 { value: 'long', label: '📚 详细' },
               ]}
             />
-            <Tooltip title="根据时长和回答风格推算问题数量">
+            <Tooltip title="根据时长、级别、轮次和回答风格推算问题数量">
               <Button
                 size="small"
                 type="link"
@@ -405,8 +553,8 @@ const ChatPage: React.FC = () => {
           </div>
         )}
 
-        {/* 练习进度条（求职者模式） */}
-        {practiceActive && interviewPlan && (
+        {/* 练习进度条（求职者模式，跨页面持久化） */}
+        {practiceActive && (
           <div
             style={{
               background: '#e6f4ff',
@@ -414,28 +562,83 @@ const ChatPage: React.FC = () => {
               padding: '8px 16px',
               marginBottom: 12,
               display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
+              flexDirection: 'column',
+              gap: 6,
             }}
           >
-            <Space>
-              <PlayCircleOutlined style={{ color: '#1677ff' }} />
-              <Text strong>
-                模拟练习中 · 第 {questionIndex}/{interviewPlan.question_count} 题
-              </Text>
-              <Tag color="processing">{interviewDuration} 分钟</Tag>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                含自我介绍 + 技术问答 + 反问环节
-              </Text>
-            </Space>
-            <Button
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Space size={8} wrap>
+                <PlayCircleOutlined style={{ color: '#1677ff' }} />
+                <Text strong>模拟练习中</Text>
+                <Tag color="processing">{interviewDuration} 分钟</Tag>
+
+                {/* 当前阶段标签 */}
+                <Tag color={phaseInfo.color}>{phaseInfo.label}</Tag>
+
+                {/* 已用时间（wall-clock） */}
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  已过 {elapsedMin} 分 {elapsedSec % 60} 秒
+                </Text>
+
+                {/* 剩余时间 */}
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  · 剩余约 {remainingMin} 分钟
+                </Text>
+
+                {/* 已答题数 / 计划题数 */}
+                {interviewPlan && (
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    · 已答 {qaRecords.length}/{interviewPlan.question_count} 题
+                    {interviewPlan.remaining_questions < interviewPlan.question_count &&
+                      <span style={{ color: '#fa8c16' }}>
+                        {' '}(剩余约{interviewPlan.remaining_questions}题)
+                      </span>
+                    }
+                  </Text>
+                )}
+
+                {/* 编程题时间提示 */}
+                {codingEnabled && interviewPlan && interviewPlan.coding_reserved_min > 0 && (
+                  <Tag color="orange" style={{ fontSize: 11 }}>
+                    编程题 ~{interviewPlan.coding_reserved_min}min
+                  </Tag>
+                )}
+              </Space>
+              <Button
+                size="small"
+                danger
+                icon={<PauseCircleOutlined />}
+                onClick={handleEndPractice}
+              >
+                结束练习
+              </Button>
+            </div>
+
+            {/* 时间进度条 */}
+            <Progress
+              percent={progressPercent}
               size="small"
-              danger
-              icon={<PauseCircleOutlined />}
-              onClick={handleEndPractice}
-            >
-              结束练习
-            </Button>
+              status={remainingMin <= 5 ? 'exception' : 'active'}
+              showInfo={false}
+              strokeColor={remainingMin <= 5 ? '#ff4d4f' : remainingMin <= 10 ? '#faad14' : '#1677ff'}
+            />
+
+            {/* 动态提示 */}
+            {remainingMin <= 5 && currentPhase !== 'reverse' && (
+              <Text type="danger" style={{ fontSize: 11 }}>
+                ⚠️ 时间即将用完，建议面试官尽快收尾进入反问环节
+              </Text>
+            )}
+            {currentPhase === 'reverse' && remainingMin > 5 && (
+              <Text type="secondary" style={{ fontSize: 11 }}>
+                💡 已进入反问环节，可向面试官提问团队、技术栈、发展空间等
+              </Text>
+            )}
+            {currentPhase === 'coding' && (
+              <Text type="secondary" style={{ fontSize: 11 }}>
+                💻 编程题进行中，请认真思考后作答
+              </Text>
+            )}
           </div>
         )}
 

@@ -6,11 +6,15 @@ export interface Message {
   reasoning?: string  // 思维链内容（前端用）
 }
 
+export type CandidateLevel = 'intern' | 'new_grad' | 'experienced'
+export type InterviewRound = 'first' | 'second' | 'hr'
+export type AnswerLength = 'short' | 'medium' | 'long'
+
 export interface ChatRequest {
   messages: Message[]
   mode?: 'interviewer' | 'candidate'
   position_name?: string
-  jd_id?: string  // 指定使用某份 JD（为空则使用全部 JD）
+  jd_id?: string
   use_search?: boolean
   coding_enabled?: boolean
   model?: string
@@ -20,14 +24,15 @@ export interface ChatRequest {
   api_key?: string
   resume_text?: string
   code_context?: string
+  candidate_level?: CandidateLevel
+  interview_round?: InterviewRound
+  // 面试计划参数（用于时间预算感知）
+  interview_duration_minutes?: number
+  interview_question_count?: number
+  interview_coding_min?: number
 }
 
 export type ChatMode = 'interviewer' | 'candidate'
-
-export interface PromptTemplates {
-  interviewer?: string
-  candidate?: string
-}
 
 // ============ 模型相关 ============
 
@@ -44,10 +49,19 @@ export interface ModelsResponse {
 
 // ============ 面试相关 ============
 
+export interface QARecord {
+  question: string
+  answer: string
+  answer_chars: number
+}
+
 export interface ReportRequest {
   messages: Message[]
   mode: string
   api_key?: string
+  candidate_level?: CandidateLevel
+  interview_round?: InterviewRound
+  qa_records?: QARecord[]
 }
 
 export interface ReportResponse {
@@ -59,7 +73,12 @@ export interface ReportResponse {
 export interface InterviewPlanRequest {
   mode: string
   duration_minutes: number
-  answer_length: 'short' | 'medium' | 'long'
+  answer_length: AnswerLength
+  candidate_level?: CandidateLevel
+  interview_round?: InterviewRound
+  coding_enabled?: boolean
+  elapsed_minutes?: number
+  answered_questions?: number
 }
 
 export interface InterviewPlanResponse {
@@ -68,6 +87,9 @@ export interface InterviewPlanResponse {
   avg_time_per_question: number
   description: string
   breakdown: Record<string, number>
+  coding_reserved_min: number
+  current_phase: string
+  remaining_questions: number
 }
 
 // ============ 上传相关 ============

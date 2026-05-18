@@ -3,6 +3,9 @@ import { useChatStore } from '@/stores/chatStore'
 import { useAppStore } from '@/stores/appStore'
 import { streamChat } from '@/api/chat'
 
+/** 单次发送最大消息数（含 system 消息发送约 30 轮对话，DeepSeek 1M 窗口绰绰有余） */
+const MAX_SEND_MESSAGES = 80
+
 export function useSSE() {
   const abortRef = useRef<AbortController | null>(null)
   const {
@@ -21,6 +24,9 @@ export function useSSE() {
     codingEnabled,
     promptOverrides,
     messages,
+    candidateLevel,
+    interviewRound,
+    interviewPlan,
   } = useChatStore()
 
   const sendMessage = useCallback(
@@ -34,8 +40,11 @@ export function useSSE() {
       const userMsg = { role: 'user' as const, content }
       addMessage(userMsg)
 
-      // 构建请求 messages
+      // 构建请求 messages（裁剪到最近 N 条，保留 system 消息由后端自动注入）
       const allMessages = [...store.messages, userMsg]
+      const trimmedMessages = allMessages.length > MAX_SEND_MESSAGES
+        ? allMessages.slice(-MAX_SEND_MESSAGES)
+        : allMessages
 
       // 获取有效的 prompt override
       const promptOverride = store.promptOverrides[store.selectedMode] || undefined
@@ -45,7 +54,7 @@ export function useSSE() {
 
       await streamChat(
         {
-          messages: allMessages.map((m) => ({
+          messages: trimmedMessages.map((m) => ({
             role: m.role,
             content: m.content,
           })),
@@ -61,6 +70,12 @@ export function useSSE() {
           api_key: appStore.apiKey || undefined,
           resume_text: appStore.resumeText || undefined,
           code_context: appStore.codeText || undefined,
+          candidate_level: candidateLevel || undefined,
+          interview_round: interviewRound || undefined,
+          // 传递面试计划参数给后端生成时间预算感知的 prompt
+          interview_duration_minutes: appStore.interviewDuration,
+          interview_question_count: interviewPlan?.question_count || 0,
+          interview_coding_min: interviewPlan?.coding_reserved_min || 0,
         },
         (chunk) => appendReasoning(chunk),
         (chunk) => appendContent(chunk),

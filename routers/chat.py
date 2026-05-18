@@ -1,4 +1,4 @@
-"""对话流式路由 — SSE 流式输出 + 模型列表 + LCEL RAG 管线"""
+"""对话流式路由 — SSE 流式输出 + 模型列表 + LCEL RAG 管线 + 上下文窗口管理"""
 
 import json
 import logging
@@ -15,6 +15,7 @@ from services.agent_tools import search_web
 from services.coding_problem import select_problems, format_problems_for_prompt
 from services.rag_pipeline import build_rag_context
 from utils.prompt_loader import load_prompt
+from utils.context_manager import estimate_tokens, trim_messages
 
 logger = logging.getLogger(__name__)
 
@@ -27,111 +28,190 @@ async def list_models():
     return ModelsResponse(models=get_available_models())
 
 
+# ============ 辅助函数 ============
+
+def _build_dynamic_context(req: ChatRequest, prompt_kwargs: dict) -> str:
+    """构建每轮动态上下文（RAG + 搜索 + 编程题），这些内容每轮都可能变化"""
+    parts = []
+
+    # RAG 检索
+    if req.position_name and req.messages:
+        last_user_msg = req.messages[-1].content
+        rag_context = build_rag_context(
+            position_name=req.position_name,
+            query=last_user_msg,
+            top_k=settings.VECTOR_SEARCH_TOP_K,
+        )
+        if rag_context:
+            parts.append(rag_context.strip())
+
+    # 联网搜索
+    if req.use_search and req.messages:
+        try:
+            last_user_msg = req.messages[-1].content
+            search_result = search_web(last_user_msg)
+            if search_result:
+                parts.append("网络搜索结果：\n" + search_result)
+        except Exception as e:
+            logger.warning(f"Web search failed (non-blocking): {e}")
+
+    # 编程题（仅求职者模式 + 技术岗）
+    if req.coding_enabled and req.mode == "candidate":
+        try:
+            pos_type = prompt_kwargs.get("position_type", "未知")
+            pos_name = req.position_name or ""
+            conv_history = [m.content for m in req.messages[-10:]]
+            problems = select_problems(
+                position_type=pos_type,
+                position_name=pos_name,
+                conversation_history=conv_history,
+                count=3,
+            )
+            if problems:
+                parts.append(format_problems_for_prompt(problems))
+        except Exception as e:
+            logger.warning(f"Coding problem selection failed (non-blocking): {e}")
+
+    return "\n\n---\n".join(parts) if parts else ""
+
+
+def _build_prompt_kwargs(req: ChatRequest) -> dict:
+    """构建静态 prompt 参数（JD / 简历 / 岗位类型 / 代码 / 时间预算）"""
+    kwargs: dict = {
+        "jd": "暂无岗位描述",
+        "resume": req.resume_text or "",
+        "code": "",
+        "position_type": "未知",
+        # 时间预算默认值（会被前端传入覆盖）
+        "duration_minutes": "30",
+        "intro_min": "3",
+        "tech_qa_min": "24",
+        "coding_min": "0（无编程题）",
+        "reverse_min": "3",
+        "question_count": "8",
+        "avg_time_per_question": "3",
+    }
+
+    if req.position_name:
+        from services.position_store import PositionStore
+        store = PositionStore()
+        pos = store.get(req.position_name)
+        if pos:
+            kwargs["position_type"] = pos.position_type
+            if pos.jds:
+                if req.jd_id:
+                    matched = [jd for jd in pos.jds if jd.id == req.jd_id]
+                    if matched:
+                        kwargs["jd"] = "\n\n".join(jd.content for jd in matched)
+                else:
+                    kwargs["jd"] = "\n\n".join(jd.content for jd in pos.jds)
+
+    # 代码上下文：仅面试官模式可见
+    if req.mode == "interviewer":
+        kwargs["code"] = req.code_context or ""
+
+    # 面试时间预算（从请求参数中获取）
+    if req.interview_duration_minutes > 0:
+        kwargs["duration_minutes"] = str(req.interview_duration_minutes)
+        # 计算各环节时间分配
+        intro_min = 3
+        reverse_min = 3
+        coding_min = req.interview_coding_min if req.coding_enabled else 0
+        tech_qa_min = max(1, req.interview_duration_minutes - intro_min - reverse_min - coding_min)
+        kwargs["intro_min"] = str(intro_min)
+        kwargs["reverse_min"] = str(reverse_min)
+        kwargs["tech_qa_min"] = str(tech_qa_min)
+        kwargs["coding_min"] = f"{coding_min}" if coding_min > 0 else "0（无编程题）"
+        kwargs["question_count"] = str(req.interview_question_count) if req.interview_question_count > 0 else "8"
+        if req.interview_question_count > 0:
+            kwargs["avg_time_per_question"] = str(round(tech_qa_min / req.interview_question_count, 1))
+        else:
+            kwargs["avg_time_per_question"] = "3"
+
+    return kwargs
+
+
+# ============ 路由 ============
+
 @router.post("/stream")
 async def chat_stream(req: ChatRequest):
-    """SSE 流式对话接口"""
+    """SSE 流式对话接口（含上下文窗口管理）"""
 
     async def event_generator():
         messages = [m.model_dump() for m in req.messages]
 
-        # 自动注入 system 提示（如果 mode 有值且消息列表中没有 system 消息）
+        # ====== Phase 1: 构建/维护对话上下文 ======
         has_system = any(m["role"] == "system" for m in messages)
-        if req.mode and not has_system:
-            try:
-                prompt_kwargs = {}
-                # 如果传了 position_name，从岗位管理获取 JD 和岗位类型
-                if req.position_name:
-                    from services.position_store import PositionStore
-                    store = PositionStore()
-                    pos = store.get(req.position_name)
-                    if pos:
-                        prompt_kwargs["position_type"] = pos.position_type
-                        if pos.jds:
-                            # 按 jd_id 过滤：指定了则只取匹配的 JD，否則用全部
-                            if req.jd_id:
-                                matched_jds = [jd for jd in pos.jds if jd.id == req.jd_id]
-                                if matched_jds:
-                                    jd_text = "\n\n".join(jd.content for jd in matched_jds)
-                                    prompt_kwargs["jd"] = jd_text
-                                else:
-                                    prompt_kwargs["jd"] = "暂无岗位描述"
-                            else:
-                                jd_text = "\n\n".join(jd.content for jd in pos.jds)
-                                prompt_kwargs["jd"] = jd_text
-                        else:
-                            prompt_kwargs["jd"] = "暂无岗位描述"
-                    else:
-                        prompt_kwargs["jd"] = "暂无岗位描述"
 
-                # 简历文本：两个模式都能看到
-                prompt_kwargs["resume"] = req.resume_text or ""
+        if req.mode:
+            if not has_system:
+                # 第一轮：构建完整 system 消息（静态部分只注入一次）
+                prompt_kwargs = _build_prompt_kwargs(req)
+                system_content = load_prompt(
+                    req.mode,
+                    candidate_level=req.candidate_level or "",
+                    interview_round=req.interview_round or "",
+                    **prompt_kwargs,
+                )
 
-                # 代码上下文：仅面试官模式可见
-                if req.mode == "interviewer":
-                    prompt_kwargs["code"] = req.code_context or ""
-                else:
-                    prompt_kwargs["code"] = ""
-
-                # RAG 检索：使用 LCEL 管线（检索 + 格式化一步完成）
-                rag_context = ""
-                if req.position_name and req.messages:
-                    last_user_msg = req.messages[-1].content
-                    rag_context = build_rag_context(
-                        position_name=req.position_name,
-                        query=last_user_msg,
-                        top_k=settings.VECTOR_SEARCH_TOP_K,
-                    )
-
-                # 联网搜索
-                search_context = ""
-                if req.use_search and req.messages:
-                    try:
-                        last_user_msg = req.messages[-1].content
-                        search_result = search_web(last_user_msg)
-                        if search_result:
-                            search_context = "\n\n---\n网络搜索结果：\n" + search_result
-                    except Exception as e:
-                        logger.warning(f"Web search failed (non-blocking): {e}")
-
-                # 编程题注入（仅求职者模式 + 开关开启 + 技术岗/未知）
-                coding_context = ""
-                if req.coding_enabled and req.mode == "candidate":
-                    try:
-                        pos_type = prompt_kwargs.get("position_type", "未知")
-                        pos_name = req.position_name or ""
-                        # 获取最近的对话内容用于自适应难度
-                        conv_history = [m.content for m in req.messages[-10:]]
-                        problems = select_problems(
-                            position_type=pos_type,
-                            position_name=pos_name,
-                            conversation_history=conv_history,
-                            count=3,
-                        )
-                        if problems:
-                            coding_context = format_problems_for_prompt(problems)
-                    except Exception as e:
-                        logger.warning(f"Coding problem selection failed (non-blocking): {e}")
-
-                system_content = load_prompt(req.mode, **prompt_kwargs)
-                if rag_context:
-                    system_content += rag_context
-                if search_context:
-                    system_content += search_context
-                if coding_context:
-                    system_content += coding_context
+                # 第一轮也注入动态上下文到 system 消息中
+                dynamic_ctx = _build_dynamic_context(req, prompt_kwargs)
+                if dynamic_ctx:
+                    system_content += "\n\n---\n" + dynamic_ctx
 
                 messages.insert(0, {"role": "system", "content": system_content})
-            except FileNotFoundError:
-                pass  # 模板文件不存在时跳过自动注入
+            else:
+                # 后续轮次：动态上下文注入到最后一条 user 消息前
+                prompt_kwargs = _build_prompt_kwargs(req)
+                dynamic_ctx = _build_dynamic_context(req, prompt_kwargs)
+                if dynamic_ctx:
+                    # 找到最后一条 user 消息，在前面追加动态上下文
+                    for i in range(len(messages) - 1, -1, -1):
+                        if messages[i]["role"] == "user":
+                            messages[i]["content"] = (
+                                "【参考上下文】\n" + dynamic_ctx + "\n\n---\n【用户消息】\n" + messages[i]["content"]
+                            )
+                            break
 
-        # 验证 model 参数
+        # ====== Phase 2: Token 窗口裁剪 ======
+        max_tokens = settings.MAX_CONTEXT_TOKENS
+        system_reserved = settings.SYSTEM_RESERVED_TOKENS
+
+        # 计算 system 消息占用的 token 数
+        system_tokens = 0
+        for m in messages:
+            if m["role"] == "system":
+                system_tokens += estimate_tokens(m["content"]) + 4
+
+        # 为对话历史保留的 token 预算
+        dialogue_budget = max(max_tokens - system_tokens - system_reserved, 4096)
+
+        # 分离 system 消息和对话消息
+        system_msgs = [m for m in messages if m["role"] == "system"]
+        dialogue_msgs = [m for m in messages if m["role"] != "system"]
+
+        # 裁剪对话历史（保留最近的消息）
+        if dialogue_msgs:
+            trimmed_dialogue = trim_messages(dialogue_msgs, max_tokens=dialogue_budget)
+        else:
+            trimmed_dialogue = []
+
+        # 重新组装：system 消息始终保留在最前
+        messages = system_msgs + trimmed_dialogue
+
+        total_tokens = system_tokens + sum(estimate_tokens(m["content"]) + 4 for m in trimmed_dialogue)
+        logger.info(
+            f"Context: {len(messages)} messages, ~{total_tokens} tokens "
+            f"(budget={max_tokens}, system={system_tokens})"
+        )
+
+        # ====== Phase 3: 验证 & 流式输出 ======
         model = req.model
         if model and not validate_model(model):
             yield f"data: {json.dumps({'type': 'error', 'content': f'模型 {model} 不可用'}, ensure_ascii=False)}\n\n"
             yield f"data: [DONE]\n\n"
             return
 
-        # 流式输出
         async for chunk in stream_chat(
             messages=messages,
             model=req.model,

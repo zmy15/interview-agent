@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { Message, ChatMode, PromptTemplates } from '@/types'
+import type { Message, ChatMode, PromptTemplates, CandidateLevel, InterviewRound, QARecord, InterviewPlanResponse, AnswerLength } from '@/types'
 
 interface ChatState {
   // 按模式分别存储的消息历史
@@ -19,9 +19,23 @@ interface ChatState {
   reasoningEffort: 'high' | 'max'
   selectedMode: ChatMode
   selectedPosition: string | null
-  selectedJdId: string | null  // 指定使用某份 JD（null = 使用全部 JD）
+  selectedJdId: string | null
   useSearch: boolean
   codingEnabled: boolean
+
+  // 面试配置（新增）
+  candidateLevel: CandidateLevel | null
+  interviewRound: InterviewRound | null
+  answerLength: AnswerLength
+
+  // 练习状态（持久化，跨页面保持）
+  practiceActive: boolean
+  practiceStartTime: number | null  // 练习开始时间戳（毫秒），用于精确计时
+  interviewPlan: InterviewPlanResponse | null
+
+  // QA 记录（用于报告生成）
+  qaRecords: QARecord[]
+  totalUserChars: number  // 候选人累计回答字数（保留兼容，但主要用 wall-clock 计时）
 
   // Prompt 微调
   promptOverrides: PromptTemplates
@@ -46,6 +60,21 @@ interface ChatState {
   setJdId: (jdId: string | null) => void
   setUseSearch: (use: boolean) => void
   setCodingEnabled: (enabled: boolean) => void
+
+  // Actions — 面试配置
+  setCandidateLevel: (level: CandidateLevel | null) => void
+  setInterviewRound: (round: InterviewRound | null) => void
+  setAnswerLength: (length: AnswerLength) => void
+
+  // Actions — 练习状态
+  setPracticeActive: (active: boolean) => void
+  setInterviewPlan: (plan: InterviewPlanResponse | null) => void
+  resetPractice: () => void
+
+  // Actions — QA 记录
+  addQARecord: (record: QARecord) => void
+  clearQARecords: () => void
+  addUserChars: (chars: number) => void
 
   // Actions — Prompt
   setPromptOverride: (mode: 'interviewer' | 'candidate', template: string) => void
@@ -83,6 +112,17 @@ export const useChatStore = create<ChatState>()(
       selectedJdId: null,
       useSearch: false,
       codingEnabled: false,
+
+      candidateLevel: null,
+      interviewRound: null,
+      answerLength: 'medium' as AnswerLength,
+
+      practiceActive: false,
+      practiceStartTime: null,
+      interviewPlan: null,
+
+      qaRecords: [],
+      totalUserChars: 0,
 
       promptOverrides: {},
 
@@ -180,6 +220,35 @@ export const useChatStore = create<ChatState>()(
       setUseSearch: (use) => set({ useSearch: use }),
       setCodingEnabled: (enabled) => set({ codingEnabled: enabled }),
 
+      // 面试配置 actions
+      setCandidateLevel: (level) => set({ candidateLevel: level }),
+      setInterviewRound: (round) => set({ interviewRound: round }),
+      setAnswerLength: (length) => set({ answerLength: length }),
+
+      // 练习状态 actions
+      setPracticeActive: (active) => set({
+        practiceActive: active,
+        practiceStartTime: active ? Date.now() : null,
+      }),
+      setInterviewPlan: (plan) => set({ interviewPlan: plan }),
+      resetPractice: () => set({
+        practiceActive: false,
+        practiceStartTime: null,
+        interviewPlan: null,
+        qaRecords: [],
+        totalUserChars: 0,
+      }),
+
+      // QA 记录 actions
+      addQARecord: (record) =>
+        set((state) => ({
+          qaRecords: [...state.qaRecords, record],
+          totalUserChars: state.totalUserChars + record.answer_chars,
+        })),
+      clearQARecords: () => set({ qaRecords: [], totalUserChars: 0 }),
+      addUserChars: (chars) =>
+        set((state) => ({ totalUserChars: state.totalUserChars + chars })),
+
       // Prompt actions
       setPromptOverride: (mode, template) =>
         set((state) => ({
@@ -206,8 +275,8 @@ export const useChatStore = create<ChatState>()(
     {
       name: 'interview-agent-chat-state',
       partialize: (state) => ({
-        interviewerMessages: state.interviewerMessages,
-        candidateMessages: state.candidateMessages,
+        interviewerMessages: state.interviewerMessages.slice(-100),
+        candidateMessages: state.candidateMessages.slice(-100),
         selectedModel: state.selectedModel,
         thinkingEnabled: state.thinkingEnabled,
         reasoningEffort: state.reasoningEffort,
@@ -215,6 +284,14 @@ export const useChatStore = create<ChatState>()(
         selectedPosition: state.selectedPosition,
         selectedJdId: state.selectedJdId,
         useSearch: state.useSearch,
+        codingEnabled: state.codingEnabled,
+        candidateLevel: state.candidateLevel,
+        interviewRound: state.interviewRound,
+        answerLength: state.answerLength,
+        practiceActive: state.practiceActive,
+        interviewPlan: state.interviewPlan,
+        qaRecords: state.qaRecords.slice(-30),
+        totalUserChars: state.totalUserChars,
         promptOverrides: state.promptOverrides,
       }),
       onRehydrateStorage: () => (state) => {
