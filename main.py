@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from config import settings
 from routers import chat, upload, interview, position, knowledge
 
 # ============ 日志配置 ============
@@ -34,9 +35,11 @@ app = FastAPI(
 )
 
 # CORS 中间件（允许前端跨域访问）
+# 注意：allow_credentials=True 时不能使用 "*"，必须指定具体域名
+cors_origins = [origin.strip() for origin in settings.CORS_ORIGINS.split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

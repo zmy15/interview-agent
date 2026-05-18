@@ -32,6 +32,12 @@ class Settings:
     CHROMA_PERSIST_PATH: str = os.getenv("CHROMA_PERSIST_PATH", "./chroma_data")
     VECTOR_SEARCH_TOP_K: int = int(os.getenv("VECTOR_SEARCH_TOP_K", "3"))
 
+    # CORS 允许的前端来源（逗号分隔），生产环境应指定具体域名
+    CORS_ORIGINS: str = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173")
+
+    # FAISS 索引完整性校验（生产环境必须开启）
+    FAISS_VERIFY_INTEGRITY: bool = os.getenv("FAISS_VERIFY_INTEGRITY", "true").lower() == "true"
+
     # 上下文窗口管理（DeepSeek V4 支持 1M tokens，默认 800K 留安全余量）
     MAX_CONTEXT_TOKENS: int = int(os.getenv("MAX_CONTEXT_TOKENS", "800000"))
     SYSTEM_RESERVED_TOKENS: int = int(os.getenv("SYSTEM_RESERVED_TOKENS", "8000"))

@@ -1,5 +1,13 @@
-"""向量存储服务 — LangChain FAISS + HuggingFaceEmbeddings"""
+"""向量存储服务 — LangChain FAISS + HuggingFaceEmbeddings
 
+安全说明：
+  FAISS 的 save_local/load_local 内部使用 pickle 序列化文档元数据（index.pkl）。
+  为防止恶意篡改导致的反序列化代码执行（RCE），本模块在保存索引时对 index.pkl
+  计算 SHA-256 哈希并存入 index.pkl.sha256，加载前校验完整性。
+  校验失败时拒绝加载并抛出 RuntimeError。
+"""
+
+import hashlib
 import json
 import logging
 import os
@@ -101,6 +109,14 @@ class VectorStoreManager:
             os.path.join(coll_dir, "index.faiss")
         )
 
+    def _get_pkl_path(self, coll_name: str) -> str:
+        """获取 FAISS index.pkl 文件路径"""
+        return os.path.join(self._get_coll_dir(coll_name), "index.pkl")
+
+    def _get_sig_path(self, coll_name: str) -> str:
+        """获取完整性签名文件路径"""
+        return os.path.join(self._get_coll_dir(coll_name), "index.pkl.sha256")
+
     def _get_meta_path(self, coll_name: str) -> str:
         """获取 collection 元数据文件路径"""
         return os.path.join(self._get_coll_dir(coll_name), "collection_meta.json")
@@ -125,6 +141,94 @@ class VectorStoreManager:
         except Exception:
             pass
         return coll_name[3:]  # 回退：去 kb_ 前缀
+
+    # ========== 完整性校验（防 pickle 反序列化攻击） ==========
+
+    def _compute_pkl_hash(self, coll_name: str) -> str:
+        """计算 index.pkl 文件的 SHA-256 哈希"""
+        pkl_path = self._get_pkl_path(coll_name)
+        sha256 = hashlib.sha256()
+        with open(pkl_path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                sha256.update(chunk)
+        return sha256.hexdigest()
+
+    def _sign_index(self, coll_name: str):
+        """对 index.pkl 签名，写入 .sha256 文件"""
+        pkl_path = self._get_pkl_path(coll_name)
+        if not os.path.exists(pkl_path):
+            logger.warning(f"Cannot sign: {pkl_path} does not exist")
+            return
+        digest = self._compute_pkl_hash(coll_name)
+        sig_path = self._get_sig_path(coll_name)
+        with open(sig_path, "w", encoding="utf-8") as f:
+            f.write(digest)
+        logger.debug(f"Signed {pkl_path} -> {sig_path}")
+
+    def _verify_index_integrity(self, coll_name: str):
+        """
+        校验 index.pkl 完整性，防止 pickle 反序列化攻击。
+
+        策略：
+        1. 若 .sha256 签名文件不存在 → 旧数据迁移场景：
+           - 发出警告，自动生成签名（信任当前文件）
+        2. 若签名文件存在但不匹配 → 文件被篡改：
+           - 抛出 RuntimeError 拒绝加载
+        3. 签名匹配 → 正常通过
+
+        可通过 FAISS_VERIFY_INTEGRITY=false 关闭校验（仅开发环境）。
+        """
+        if not self._settings.FAISS_VERIFY_INTEGRITY:
+            logger.warning("FAISS integrity verification is DISABLED — 仅开发环境允许")
+            return
+
+        pkl_path = self._get_pkl_path(coll_name)
+        if not os.path.exists(pkl_path):
+            raise RuntimeError(f"FAISS index.pkl not found: {pkl_path}")
+
+        sig_path = self._get_sig_path(coll_name)
+        current_digest = self._compute_pkl_hash(coll_name)
+
+        if not os.path.exists(sig_path):
+            # 旧数据迁移：信任当前文件并自动签名
+            logger.warning(
+                f"No signature found for {coll_name} — auto-signing existing index "
+                f"(assuming trusted, digest={current_digest[:16]}...)"
+            )
+            with open(sig_path, "w", encoding="utf-8") as f:
+                f.write(current_digest)
+            return
+
+        with open(sig_path, "r", encoding="utf-8") as f:
+            expected_digest = f.read().strip()
+
+        if not expected_digest:
+            raise RuntimeError(f"Empty signature file for {coll_name}")
+
+        # 使用 hmac.compare_digest 做常量时间比较，防止时序侧信道攻击
+        import hmac
+        if not hmac.compare_digest(current_digest, expected_digest):
+            raise RuntimeError(
+                f"FAISS index integrity check FAILED for {coll_name}! "
+                f"The index.pkl file may have been tampered with. "
+                f"If you trust this file, delete {sig_path} and reload."
+            )
+
+    def _load_faiss_safe(self, coll_name: str, coll_dir: str):
+        """
+        安全加载 FAISS 索引：先校验 index.pkl 完整性，再反序列化。
+
+        这是所有 FAISS.load_local() 调用的唯一入口，
+        确保每次都经过完整性校验。
+        """
+        from langchain_community.vectorstores import FAISS
+
+        self._verify_index_integrity(coll_name)
+        return FAISS.load_local(
+            coll_dir,
+            self.embeddings,
+            allow_dangerous_deserialization=True,
+        )
 
     # ========== 公开 API ==========
 
@@ -163,11 +267,7 @@ class VectorStoreManager:
 
         if self._collection_exists(coll_name):
             logger.info(f"Loading existing FAISS index for incremental add: {coll_name}")
-            vectorstore = FAISS.load_local(
-                coll_dir,
-                self.embeddings,
-                allow_dangerous_deserialization=True,
-            )
+            vectorstore = self._load_faiss_safe(coll_name, coll_dir)
             vectorstore.add_texts(chunks, metadatas=metadatas)
         else:
             logger.info(f"Creating new FAISS index: {coll_name}")
@@ -180,6 +280,9 @@ class VectorStoreManager:
         # 持久化到磁盘
         os.makedirs(coll_dir, exist_ok=True)
         vectorstore.save_local(coll_dir)
+
+        # 对新写入的 index.pkl 签名（防篡改）
+        self._sign_index(coll_name)
 
         # 额外保存 collection 元数据（含原始岗位名称）
         self._save_collection_meta(coll_name, position_name)
@@ -208,13 +311,7 @@ class VectorStoreManager:
         if not self._collection_exists(coll_name):
             return []
 
-        from langchain_community.vectorstores import FAISS
-
-        vectorstore = FAISS.load_local(
-            coll_dir,
-            self.embeddings,
-            allow_dangerous_deserialization=True,
-        )
+        vectorstore = self._load_faiss_safe(coll_name, coll_dir)
 
         # similarity_search_with_score: normalize_embeddings=True 时，
         # FAISS 内部使用 IndexFlatIP，score 为余弦相似度

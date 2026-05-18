@@ -86,10 +86,12 @@ def trim_messages(
     lc_messages = [_to_langchain_message(m) for m in messages]
 
     # 使用 LangChain 内置裁剪
+    # 注意：新版 langchain_core 要求 token_counter 是 BaseChatModel 或 callable，
+    # 不能直接传 tiktoken.Encoding 对象
     trimmed = lc_trim_messages(
         lc_messages,
         max_tokens=max_tokens,
-        token_counter=_encoding,
+        token_counter=count_messages_tokens,
         strategy="last",
         start_on="human",
         include_system=True,
