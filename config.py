@@ -22,6 +22,12 @@ class Settings:
     # Embedding
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 
+    # HuggingFace 镜像（国内用户设置此变量可解决无法访问 huggingface.co 的问题）
+    # 推荐镜像: https://hf-mirror.com
+    HF_ENDPOINT: str = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
+    # 本地缓存目录，避免重复下载
+    HF_HOME: str = os.getenv("HF_HOME", os.path.join(os.path.dirname(__file__), "hf_cache"))
+
     # FAISS 向量存储（兼容旧 CHROMA_PERSIST_PATH 配置名）
     CHROMA_PERSIST_PATH: str = os.getenv("CHROMA_PERSIST_PATH", "./chroma_data")
     VECTOR_SEARCH_TOP_K: int = int(os.getenv("VECTOR_SEARCH_TOP_K", "3"))

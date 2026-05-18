@@ -50,9 +50,35 @@ class VectorStoreManager:
         if not self._available:
             raise RuntimeError("Vector store is not available: sentence-transformers/torch not installed")
         if self._embedding_model is None:
+            # ---------- 国内用户：设置 HuggingFace 镜像 ----------
+            # 必须在 import sentence_transformers 之前设置环境变量
+            hf_endpoint = getattr(self._settings, "HF_ENDPOINT", "https://hf-mirror.com")
+            hf_home = getattr(self._settings, "HF_HOME", None)
+            if hf_endpoint:
+                os.environ["HF_ENDPOINT"] = hf_endpoint
+                logger.info(f"HF_ENDPOINT set to: {hf_endpoint}")
+            if hf_home:
+                os.environ["HF_HOME"] = hf_home
+                os.makedirs(hf_home, exist_ok=True)
+
             from sentence_transformers import SentenceTransformer
-            logger.info(f"Loading embedding model: {self._settings.EMBEDDING_MODEL}")
-            self._embedding_model = SentenceTransformer(self._settings.EMBEDDING_MODEL)
+
+            model_name = self._settings.EMBEDDING_MODEL
+            logger.info(f"Loading embedding model: {model_name}")
+
+            # 尝试从本地缓存加载，失败则从镜像下载
+            try:
+                self._embedding_model = SentenceTransformer(
+                    model_name,
+                    local_files_only=False,  # 允许从网络下载（会走镜像）
+                )
+            except Exception as e:
+                logger.warning(f"Failed to load model from network: {e}")
+                logger.info("Trying to load from local cache only...")
+                self._embedding_model = SentenceTransformer(
+                    model_name,
+                    local_files_only=True,
+                )
         return self._embedding_model
 
     @property

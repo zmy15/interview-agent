@@ -61,6 +61,8 @@ Interview Agent 是一个基于大语言模型的 AI 模拟面试平台，支持
 | 📦 单容器 | `docker run` | 全平台 |
 
 > **首次使用**：复制 `.env.example` → `.env`，填入 [DeepSeek API Key](https://platform.deepseek.com/)
+> 
+> **国内用户注意**：首次启动需下载 Embedding 模型（约 90MB），`.env` 中已默认配置 HuggingFace 镜像 `HF_ENDPOINT=https://hf-mirror.com`，无需额外操作。
 
 <details>
 <summary><b>方式一：本地脚本（开发推荐）</b></summary>
