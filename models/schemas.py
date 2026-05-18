@@ -16,6 +16,7 @@ class ChatRequest(BaseModel):
     mode: Optional[str] = None  # "interviewer" / "candidate"
     position_name: Optional[str] = None  # 关联岗位，触发 RAG 检索
     use_search: bool = False
+    coding_enabled: bool = False  # 是否启用编程题（仅求职者模式+技术岗生效）
     model: Optional[str] = None  # 覆盖默认模型
     thinking_enabled: Optional[bool] = None  # 覆盖默认思考开关
     reasoning_effort: Optional[str] = None  # "high" / "max"
@@ -115,6 +116,7 @@ class JDResponse(BaseModel):
 class PositionResponse(BaseModel):
     name: str
     description: str
+    position_type: str = "未知"  # "技术岗" / "非技术岗" / "未知"
     jds: list[JDResponse] = []
     created_at: str
     updated_at: str

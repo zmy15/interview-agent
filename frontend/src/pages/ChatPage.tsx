@@ -33,6 +33,7 @@ import PositionSelect from '@/components/PositionSelect'
 import PromptEditor from '@/components/PromptEditor'
 import { getInterviewPlan } from '@/api/interview'
 import type { ChatMode, InterviewPlanResponse } from '@/types'
+import { CodeOutlined } from '@ant-design/icons'
 
 type AnswerLength = 'short' | 'medium' | 'long'
 
@@ -48,9 +49,11 @@ const ChatPage: React.FC = () => {
     selectedMode,
     thinkingEnabled,
     useSearch,
+    codingEnabled,
     clearChat,
     setMode,
     setUseSearch,
+    setCodingEnabled,
   } = useChatStore()
 
   const { message } = App.useApp()
@@ -214,9 +217,22 @@ const ChatPage: React.FC = () => {
         <div style={{ width: 1, height: 24, background: '#d9d9d9' }} />
         <PositionSelect />
 
-        {/* 你是求职者模式：面试时长选择器（AI 提问，你回答） */}
+        {/* 你是求职者模式：编程题开关 + 面试时长选择器（AI 提问，你回答） */}
         {selectedMode === 'candidate' && (
           <>
+            <div style={{ width: 1, height: 24, background: '#d9d9d9' }} />
+            <Tooltip title="让AI面试官从LeetCode Hot100/面试经典150中出编程题，难度根据岗位和你的回答表现自动调整">
+              <Space size={4}>
+                <Switch
+                  size="small"
+                  checked={codingEnabled}
+                  onChange={setCodingEnabled}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  <CodeOutlined /> 编程题
+                </Text>
+              </Space>
+            </Tooltip>
             <div style={{ width: 1, height: 24, background: '#d9d9d9' }} />
             <Space size={4}>
               <ClockCircleOutlined style={{ color: '#1677ff' }} />

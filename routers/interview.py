@@ -39,6 +39,7 @@ async def start_interview(req: InterviewStartRequest):
         pos = store.get(req.position_name)
         if not pos:
             raise HTTPException(status_code=404, detail=f"岗位 '{req.position_name}' 不存在")
+        prompt_kwargs["position_type"] = pos.position_type
         if pos.jds:
             jd_text = "\n\n".join(jd.content for jd in pos.jds)
             prompt_kwargs["jd"] = jd_text

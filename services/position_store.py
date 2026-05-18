@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from models.schemas import PositionResponse, JDResponse
+from utils.position_classifier import classify_position
 
 DEFAULT_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "positions.json")
 
@@ -59,6 +60,7 @@ class PositionStore:
             self._data["positions"][name] = {
                 "name": name,
                 "description": description,
+                "position_type": classify_position(name),
                 "jds": [],
                 "created_at": now,
                 "updated_at": now,
@@ -147,6 +149,7 @@ class PositionStore:
         return PositionResponse(
             name=pos["name"],
             description=pos.get("description", ""),
+            position_type=pos.get("position_type", "未知"),
             jds=[JDResponse(**j) for j in pos.get("jds", [])],
             created_at=pos.get("created_at", ""),
             updated_at=pos.get("updated_at", ""),

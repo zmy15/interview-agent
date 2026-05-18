@@ -17,6 +17,7 @@ export function useSSE() {
     selectedMode,
     selectedPosition,
     useSearch,
+    codingEnabled,
     promptOverrides,
     messages,
   } = useChatStore()
@@ -50,6 +51,7 @@ export function useSSE() {
           mode: selectedMode,
           position_name: selectedPosition || undefined,
           use_search: useSearch,
+          coding_enabled: codingEnabled,
           model: selectedModel || undefined,
           thinking_enabled: thinkingEnabled || undefined,
           reasoning_effort: thinkingEnabled ? reasoningEffort : undefined,
@@ -85,6 +87,7 @@ export function useSSE() {
       selectedMode,
       selectedPosition,
       useSearch,
+      codingEnabled,
       promptOverrides,
       messages.length,
     ],

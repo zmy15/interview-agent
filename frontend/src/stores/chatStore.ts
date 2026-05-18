@@ -16,6 +16,7 @@ interface ChatState {
   selectedMode: ChatMode
   selectedPosition: string | null
   useSearch: boolean
+  codingEnabled: boolean
 
   // Prompt 微调
   promptOverrides: PromptTemplates
@@ -37,6 +38,7 @@ interface ChatState {
   setMode: (mode: ChatMode) => void
   setPosition: (name: string | null) => void
   setUseSearch: (use: boolean) => void
+  setCodingEnabled: (enabled: boolean) => void
 
   // Actions — Prompt
   setPromptOverride: (mode: 'interviewer' | 'candidate', template: string) => void
@@ -61,6 +63,7 @@ export const useChatStore = create<ChatState>()(
       selectedMode: 'interviewer',
       selectedPosition: null,
       useSearch: false,
+      codingEnabled: false,
 
       promptOverrides: {},
 
@@ -118,6 +121,7 @@ export const useChatStore = create<ChatState>()(
       setMode: (mode) => set({ selectedMode: mode }),
       setPosition: (name) => set({ selectedPosition: name }),
       setUseSearch: (use) => set({ useSearch: use }),
+      setCodingEnabled: (enabled) => set({ codingEnabled: enabled }),
 
       // Prompt actions
       setPromptOverride: (mode, template) =>

@@ -29,6 +29,7 @@ def load_prompt(template_name: str, **kwargs) -> str:
         "resume": "",
         "code": "",
         "history": "",
+        "position_type": "未知",
     }
     for key, default_value in defaults.items():
         if key not in kwargs:

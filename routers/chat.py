@@ -13,6 +13,7 @@ from services.llm_client import stream_chat
 from services.model_registry import get_available_models, validate_model
 from services.vector_store import VectorStoreManager
 from services.agent_tools import search_web
+from services.coding_problem import select_problems, format_problems_for_prompt
 from utils.prompt_loader import load_prompt
 
 logger = logging.getLogger(__name__)
@@ -38,14 +39,18 @@ async def chat_stream(req: ChatRequest):
         if req.mode and not has_system:
             try:
                 prompt_kwargs = {}
-                # 如果传了 position_name，从岗位管理获取 JD
+                # 如果传了 position_name，从岗位管理获取 JD 和岗位类型
                 if req.position_name:
                     from services.position_store import PositionStore
                     store = PositionStore()
                     pos = store.get(req.position_name)
-                    if pos and pos.jds:
-                        jd_text = "\n\n".join(jd.content for jd in pos.jds)
-                        prompt_kwargs["jd"] = jd_text
+                    if pos:
+                        prompt_kwargs["position_type"] = pos.position_type
+                        if pos.jds:
+                            jd_text = "\n\n".join(jd.content for jd in pos.jds)
+                            prompt_kwargs["jd"] = jd_text
+                        else:
+                            prompt_kwargs["jd"] = "暂无岗位描述"
                     else:
                         prompt_kwargs["jd"] = "暂无岗位描述"
 
@@ -84,11 +89,32 @@ async def chat_stream(req: ChatRequest):
                     except Exception as e:
                         logger.warning(f"Web search failed (non-blocking): {e}")
 
+                # 编程题注入（仅求职者模式 + 开关开启 + 技术岗/未知）
+                coding_context = ""
+                if req.coding_enabled and req.mode == "candidate":
+                    try:
+                        pos_type = prompt_kwargs.get("position_type", "未知")
+                        pos_name = req.position_name or ""
+                        # 获取最近的对话内容用于自适应难度
+                        conv_history = [m.content for m in req.messages[-10:]]
+                        problems = select_problems(
+                            position_type=pos_type,
+                            position_name=pos_name,
+                            conversation_history=conv_history,
+                            count=3,
+                        )
+                        if problems:
+                            coding_context = format_problems_for_prompt(problems)
+                    except Exception as e:
+                        logger.warning(f"Coding problem selection failed (non-blocking): {e}")
+
                 system_content = load_prompt(req.mode, **prompt_kwargs)
                 if rag_context:
                     system_content += rag_context
                 if search_context:
                     system_content += search_context
+                if coding_context:
+                    system_content += coding_context
 
                 messages.insert(0, {"role": "system", "content": system_content})
             except FileNotFoundError:

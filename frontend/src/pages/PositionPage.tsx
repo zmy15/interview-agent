@@ -122,6 +122,20 @@ const PositionPage: React.FC = () => {
       render: (name: string) => <Text strong>{name}</Text>,
     },
     {
+      title: '岗位类型',
+      dataIndex: 'position_type',
+      key: 'position_type',
+      width: 100,
+      render: (t: string) => {
+        const colorMap: Record<string, string> = {
+          '技术岗': 'blue',
+          '非技术岗': 'green',
+          '未知': 'default',
+        }
+        return <Tag color={colorMap[t] || 'default'}>{t}</Tag>
+      },
+    },
+    {
       title: '描述',
       dataIndex: 'description',
       key: 'description',

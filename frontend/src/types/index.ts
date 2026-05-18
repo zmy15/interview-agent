@@ -11,6 +11,7 @@ export interface ChatRequest {
   mode?: 'interviewer' | 'candidate'
   position_name?: string
   use_search?: boolean
+  coding_enabled?: boolean
   model?: string
   thinking_enabled?: boolean
   reasoning_effort?: 'high' | 'max'
@@ -100,6 +101,7 @@ export interface JDResponse {
 export interface PositionResponse {
   name: string
   description: string
+  position_type: string  // "技术岗" / "非技术岗" / "未知"
   jds: JDResponse[]
   created_at: string
   updated_at: string
