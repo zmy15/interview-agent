@@ -259,7 +259,8 @@ const ChatPage: React.FC = () => {
     const introEnd = plan.breakdown?.['自我介绍'] || 3
     const codingMin = plan.coding_reserved_min || 0
     const reverseMin = plan.breakdown?.['反问环节'] || 3
-    const techQaMin = (plan.breakdown?.['技术问答'] || 0)
+    // 兼容「技术问答」和「综合素质问答」两种 key
+    const techQaMin = (plan.breakdown?.['技术问答'] || plan.breakdown?.['综合素质问答'] || 0)
 
     // 优先使用后端计划推算的 current_phase
     const backendPhase = plan.current_phase
@@ -284,7 +285,15 @@ const ChatPage: React.FC = () => {
   }
 
   const currentPhase = estimatedPhase()
-  const phaseInfo = PHASE_LABELS[currentPhase] || { label: '未知', color: 'default' }
+  const phaseInfo = (() => {
+    const base = PHASE_LABELS[currentPhase]
+    if (!base) return { label: '未知', color: 'default' as const }
+    // HR面时「技术问答」→「综合素质问答」
+    if (currentPhase === 'tech_qa' && interviewRound === 'hr') {
+      return { label: '综合素质问答', color: 'green' }
+    }
+    return base
+  })()
 
   // 进度百分比
   const progressPercent = interviewDuration > 0 ? Math.min(100, Math.round((elapsedSec / 60) / interviewDuration * 100)) : 0
@@ -394,47 +403,53 @@ const ChatPage: React.FC = () => {
         <div style={{ width: 1, height: 24, background: '#d9d9d9' }} />
         <PositionSelect />
 
-        {/* 你是求职者模式：候选人级别 + 面试轮次 + 编程题 + 时长 */}
+        {/* 共用：候选人经验级别（影响AI的答题/提问策略） */}
+        <div style={{ width: 1, height: 24, background: '#d9d9d9' }} />
+        <Space size={4}>
+          <Text type="secondary" style={{ fontSize: 12 }}>👤</Text>
+          <Select
+            size="small"
+            value={candidateLevel || undefined}
+            onChange={(val) => {
+              setCandidateLevel(val || null)
+              setInterviewPlan(null)
+            }}
+            placeholder="经验级别"
+            allowClear
+            style={{ width: 90 }}
+            options={[
+              { value: 'intern', label: '🎓 实习' },
+              { value: 'new_grad', label: '🎯 校招' },
+              { value: 'experienced', label: '💼 社招' },
+            ]}
+          />
+        </Space>
+
+        {/* 共用：面试轮次（决定一面广筛/二面深挖/HR综合素质） */}
+        <Space size={4}>
+          <Text type="secondary" style={{ fontSize: 12 }}>🔄</Text>
+          <Select
+            size="small"
+            value={interviewRound || undefined}
+            onChange={(val) => {
+              setInterviewRound(val || null)
+              setInterviewPlan(null)
+            }}
+            placeholder="面试轮次"
+            allowClear
+            style={{ width: 90 }}
+            options={[
+              { value: 'first', label: '📋 一面' },
+              { value: 'second', label: '🔍 二面' },
+              { value: 'hr', label: '🤝 HR面' },
+            ]}
+          />
+        </Space>
+
+        {/* 仅求职者模式：编程题 + 时长 + 回答风格 + 推算 */}
         {selectedMode === 'candidate' && (
           <>
-            <div style={{ width: 1, height: 24, background: '#d9d9d9' }} />            <Space size={4}>
-              <Text type="secondary" style={{ fontSize: 12 }}>👤</Text>
-              <Select
-                size="small"
-                value={candidateLevel || undefined}
-                onChange={(val) => {
-                  setCandidateLevel(val || null)
-                  setInterviewPlan(null)
-                }}
-                placeholder="经验级别"
-                allowClear
-                style={{ width: 90 }}
-                options={[
-                  { value: 'intern', label: '🎓 实习' },
-                  { value: 'new_grad', label: '🎯 校招' },
-                  { value: 'experienced', label: '💼 社招' },
-                ]}
-              />
-            </Space>
-            <Space size={4}>
-              <Text type="secondary" style={{ fontSize: 12 }}>🔄</Text>
-              <Select
-                size="small"
-                value={interviewRound || undefined}
-                onChange={(val) => {
-                  setInterviewRound(val || null)
-                  setInterviewPlan(null)
-                }}
-                placeholder="面试轮次"
-                allowClear
-                style={{ width: 90 }}
-                options={[
-                  { value: 'first', label: '📋 一面' },
-                  { value: 'second', label: '🔍 二面' },
-                  { value: 'hr', label: '🤝 HR面' },
-                ]}
-              />
-            </Space>            <Tooltip title="让AI面试官从LeetCode Hot100/面试经典150中出编程题，难度根据岗位和你的回答表现自动调整">
+            <Tooltip title="让AI面试官从LeetCode Hot100/面试经典150中出编程题，难度根据岗位和你的回答表现自动调整">
               <Space size={4}>
                 <Switch
                   size="small"

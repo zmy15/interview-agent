@@ -64,6 +64,11 @@ def load_prompt(template_name: str, **kwargs) -> str:
         "reverse_min": "3",
         "question_count": "8",
         "avg_time_per_question": "3",
+        # 动态环节标签（一面/二面 vs HR面）
+        "qa_section_label": "技术问答环节",
+        "qa_section_instruction": "根据JD中的职责要求和能力要求，结合候选人的经验级别和面试轮次，逐一考察候选人的专业能力",
+        "coding_section_note": "仅技术岗",
+        "coding_section_instruction": "如果系统提示中包含了\"可选编程题\"，请在专业问答进行一半后，择机插入一道编程题",
     }
     for key, default_value in defaults.items():
         kwargs.setdefault(key, default_value)
@@ -88,6 +93,9 @@ def load_prompt(template_name: str, **kwargs) -> str:
     interview_round = kwargs.get("interview_round", "")
     if not kwargs.get("interview_round_guide"):
         kwargs["interview_round_guide"] = _build_interview_round_guide(interview_round)
+
+    # 生成动态环节标签（HR面 vs 技术面）
+    _apply_round_section_labels(kwargs, interview_round)
 
     # LangChain ChatPromptTemplate.format() 返回格式化后的消息字符串
     formatted = prompt.format(**kwargs)
@@ -130,29 +138,48 @@ def _build_interview_round_guide(round: str) -> str:
         return ""
     guides = {
         "first": (
-            "\n【面试轮次：一面（技术初筛）】\n"
-            "- 目标：快速筛选基础能力合格的候选人\n"
-            "- 侧重：基础知识扎实度、编程能力、学习能力\n"
-            "- 提问数量：8-12 个技术问题，覆盖面要广\n"
-            "- 深度：中浅，确认候选人具备岗位所需的基本技能\n"
+            "\n【面试轮次：一面（基础初筛）】\n"
+            "- 目标：快速验证候选人基础能力是否达标\n"
+            "- 侧重：计算机基础（网络/OS/数据库）、编程语言基础、数据结构与算法、基本概念和八股文\n"
+            "- 提问数量：8-12 个基础问题，覆盖面要广\n"
+            "- 深度：中浅，确认候选人具备岗位所需的基本功，不要深挖\n"
+            "- 禁止：不要问系统设计、架构权衡、项目难点等深度问题（留给二面）\n"
         ),
         "second": (
-            "\n【面试轮次：二面（技术深挖）】\n"
-            "- 目标：深度评估候选人的技术深度和项目经验\n"
-            "- 侧重：系统设计、架构能力、项目难点攻克、技术视野\n"
-            "- 提问数量：4-6 个深度问题，每个问题要充分追问\n"
-            "- 深度：深入挖掘，关注候选人的思考过程和解决方案\n"
+            "\n【面试轮次：二面（工程实战深挖）】\n"
+            "- 目标：深度评估候选人的工程实战经验和解决复杂问题的能力\n"
+            "- 侧重：系统设计、架构选型与权衡、项目落地经验、性能优化、难点攻克、技术视野\n"
+            "- 提问数量：4-6 个深度问题，每个问题要充分追问 2-3 层\n"
+            "- 深度：深入挖掘，重点关注候选人的思考过程、技术决策理由（why）和 trade-off\n"
+            "- 禁止：不要再问基础概念和八股文（一面已覆盖），聚焦实际项目经验和工程能力\n"
         ),
         "hr": (
-            "\n【面试轮次：HR面】\n"
-            "- 目标：评估候选人的综合素质、文化匹配度和职业规划\n"
-            "- 侧重：沟通能力、团队协作、职业发展规划、薪资期望、离职原因、价值观\n"
-            "- 提问数量：6-10 个问题\n"
-            "- 深度：中等，以开放式问题为主，观察候选人的表达和态度\n"
-            "- 注意：HR面不涉及技术细节，主要关注软技能和综合素质，但对技术岗可简单了解项目经历\n"
+            "\n【面试轮次：HR面（综合素质评估）】\n"
+            "- 目标：评估候选人的综合素质、文化匹配度、稳定性和发展潜力\n"
+            "- 侧重：职业发展规划、薪资期望、团队协作与沟通能力、抗压能力与冲突处理、离职原因、价值观与企业文化匹配度\n"
+            "- 提问数量：6-10 个问题，以开放式行为问题为主\n"
+            "- 深度：中等，通过候选人的叙述观察其思维方式、态度和情商\n"
+            "- ⚠️ 严格禁止：HR面绝不涉及任何技术内容（不问八股文、不问算法、不问系统设计、不问项目技术细节）\n"
+            "- ⚠️ 如果候选人主动提及技术细节，礼貌引导回综合素质话题\n"
+            "- ⚠️ 时长严格控制在 30 分钟以内，不包含编程题环节\n"
         ),
     }
     return guides.get(round, "")
+
+
+def _apply_round_section_labels(kwargs: dict, interview_round: str):
+    """根据面试轮次覆盖环节标签和说明文本"""
+    if interview_round == "hr":
+        kwargs["qa_section_label"] = "综合素质问答环节"
+        kwargs["qa_section_instruction"] = (
+            "严格不涉及任何技术内容！围绕职业规划、薪资期望、团队协作、"
+            "抗压能力、冲突处理、离职原因、价值观等维度提问，以开放式行为问题为主"
+        )
+        kwargs["coding_section_note"] = "HR面不包含此环节"
+        kwargs["coding_section_instruction"] = "HR面不包含编程题，请严格跳过此环节，不要出任何编程题"
+    else:
+        # 技术面（一面/二面）保持默认值
+        pass
 
 
 def invalidate_cache():

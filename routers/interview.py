@@ -128,13 +128,24 @@ def _compute_interview_plan(
     """
     核心计划算法：根据参数推算题目数量和时间分配。
     支持动态重新规划（传入已用时间和已答题数）。
+
+    HR面特殊规则：
+    - 时长强制上限 30 分钟
+    - 强制禁用编程题
+    - 问答环节标记为「综合素质问答」
     """
+    # HR面：强制约束
+    is_hr_round = interview_round == "hr"
+    if is_hr_round:
+        duration_minutes = min(duration_minutes, 30)
+        coding_enabled = False
+
     # 固定环节时间
     INTRO_MIN = 3      # 自我介绍
     REVERSE_MIN = 3    # 反问环节（弹性，候选人可多问）
     FIXED_MIN = INTRO_MIN + REVERSE_MIN
 
-    # 编程题预留时间（仅在启用编程题且为技术岗时生效）
+    # 编程题预留时间（仅在启用编程题且为技术岗时生效；HR面强制为0）
     CODING_RESERVE_MIN = 0
     if coding_enabled:
         # 根据级别和时长决定编程题预留时间
@@ -173,11 +184,11 @@ def _compute_interview_plan(
     # 面试轮次的题量调整系数
     round_multiplier = 1.0
     if interview_round == "first":
-        round_multiplier = 1.2   # 一面覆盖面广
+        round_multiplier = 1.2   # 一面覆盖面广，基础题耗时短可多问
     elif interview_round == "second":
-        round_multiplier = 0.7   # 二面每个问题深挖
+        round_multiplier = 0.7   # 二面每个问题深挖，耗时长
     elif interview_round == "hr":
-        round_multiplier = 0.9   # HR 面中等
+        round_multiplier = 1.0   # HR面每题耗时中等
 
     # 技术问答可用时间（扣除固定环节和编程题预留）
     total_reserved = FIXED_MIN + CODING_RESERVE_MIN
@@ -236,9 +247,13 @@ def _compute_interview_plan(
     actual_tech_min = total_question_count * speed_per_q // 60
     avg_time = round(duration_minutes / total_question_count, 1) if total_question_count > 0 else 0
 
+    # HR面使用不同标签
+    qa_label = "综合素质问答" if is_hr_round else "技术问答"
+    question_label = "综合素质题" if is_hr_round else "技术题"
+
     breakdown = {
         "自我介绍": INTRO_MIN,
-        "技术问答": min(actual_tech_min, remaining_min),
+        qa_label: min(actual_tech_min, remaining_min),
         "编程题": CODING_RESERVE_MIN,
         "反问环节": REVERSE_MIN,
     }
@@ -254,8 +269,8 @@ def _compute_interview_plan(
         meta_parts.append(f"「{round_label}」")
     meta_str = " · ".join(meta_parts)
 
-    desc_parts = [f"{meta_str} → 预计 {total_question_count} 道技术题"]
-    if coding_enabled:
+    desc_parts = [f"{meta_str} → 预计 {total_question_count} 道{question_label}"]
+    if coding_enabled and not is_hr_round:
         desc_parts.append(f"+ 编程题（约{CODING_RESERVE_MIN}分钟）")
     desc_parts.append("含自我介绍+反问环节")
 

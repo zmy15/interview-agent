@@ -49,6 +49,11 @@ export function useSSE() {
       // 获取有效的 prompt override
       const promptOverride = store.promptOverrides[store.selectedMode] || undefined
 
+      // 使用 getState() 获取最新值，避免 useCallback 闭包过期
+      const latestCandidateLevel = store.candidateLevel || undefined
+      const latestInterviewRound = store.interviewRound || undefined
+      const latestInterviewPlan = store.interviewPlan
+
       // 创建 AbortController
       abortRef.current = new AbortController()
 
@@ -58,24 +63,24 @@ export function useSSE() {
             role: m.role,
             content: m.content,
           })),
-          mode: selectedMode,
-          position_name: selectedPosition || undefined,
-          jd_id: selectedJdId || undefined,
-          use_search: useSearch,
-          coding_enabled: codingEnabled,
-          model: selectedModel || undefined,
-          thinking_enabled: thinkingEnabled || undefined,
-          reasoning_effort: thinkingEnabled ? reasoningEffort : undefined,
+          mode: store.selectedMode,
+          position_name: store.selectedPosition || undefined,
+          jd_id: store.selectedJdId || undefined,
+          use_search: store.useSearch,
+          coding_enabled: store.codingEnabled,
+          model: store.selectedModel || undefined,
+          thinking_enabled: store.thinkingEnabled || undefined,
+          reasoning_effort: store.thinkingEnabled ? store.reasoningEffort : undefined,
           prompt_override: promptOverride,
           api_key: appStore.apiKey || undefined,
           resume_text: appStore.resumeText || undefined,
           code_context: appStore.codeText || undefined,
-          candidate_level: candidateLevel || undefined,
-          interview_round: interviewRound || undefined,
+          candidate_level: latestCandidateLevel,
+          interview_round: latestInterviewRound,
           // 传递面试计划参数给后端生成时间预算感知的 prompt
           interview_duration_minutes: appStore.interviewDuration,
-          interview_question_count: interviewPlan?.question_count || 0,
-          interview_coding_min: interviewPlan?.coding_reserved_min || 0,
+          interview_question_count: latestInterviewPlan?.question_count || 0,
+          interview_coding_min: latestInterviewPlan?.coding_reserved_min || 0,
         },
         (chunk) => appendReasoning(chunk),
         (chunk) => appendContent(chunk),
@@ -92,23 +97,8 @@ export function useSSE() {
         abortRef.current.signal,
       )
     },
-    [
-      isStreaming,
-      addMessage,
-      appendReasoning,
-      appendContent,
-      finishMessage,
-      selectedModel,
-      thinkingEnabled,
-      reasoningEffort,
-      selectedMode,
-      selectedPosition,
-      selectedJdId,
-      useSearch,
-      codingEnabled,
-      promptOverrides,
-      messages.length,
-    ],
+    // 仅保留 isStreaming 用于发送守卫；其余动态值改用 getState() 实时读取，避免闭包过期
+    [isStreaming],
   )
 
   const abort = useCallback(() => {
