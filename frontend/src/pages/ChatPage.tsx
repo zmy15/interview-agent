@@ -250,7 +250,7 @@ const ChatPage: React.FC = () => {
   const elapsedMin = Math.floor(elapsedSec / 60)
   const remainingMin = Math.max(0, interviewDuration - Math.ceil(elapsedSec / 60))
 
-  // 根据时间和已答题数推断当前阶段
+  // 根据时间、面试计划和 AI 消息推断当前阶段
   const estimatedPhase = (): string => {
     if (!interviewPlan) return 'intro'
     if (elapsedMin <= 2) return 'intro'
@@ -261,15 +261,23 @@ const ChatPage: React.FC = () => {
     const reverseMin = plan.breakdown?.['反问环节'] || 3
     const techQaMin = (plan.breakdown?.['技术问答'] || 0)
 
-    // 反问检测：AI 消息中包含反问关键词
+    // 优先使用后端计划推算的 current_phase
+    const backendPhase = plan.current_phase
+
+    // 反问检测：仅匹配面试官明确发出的反问邀请句式，避免误判
+    // 「你有什么问题想问我的吗？」— 来自 interviewer prompt 的固定话术
     const lastAssistantMsgs = messages.filter(m => m.role === 'assistant').slice(-3)
     const hasReverseSignal = lastAssistantMsgs.some(m =>
-      m.content.includes('有什么问题想问') ||
-      m.content.includes('还有什么问题') ||
-      m.content.includes('反问')
+      m.content.includes('你有什么问题想问我的吗') ||
+      m.content.includes('你还有什么问题想问') ||
+      m.content.includes('还有其他问题吗')
     )
 
-    if (hasReverseSignal || remainingMin <= reverseMin + 1) return 'reverse'
+    // 进入反问阶段的条件（满足任一）：
+    // 1. AI 明确发出了反问邀请
+    // 2. 剩余时间已进入反问窗口（reverseMin + 2分钟内）
+    // 3. 后端计划已判定为反问阶段
+    if (hasReverseSignal || remainingMin <= reverseMin + 2 || backendPhase === 'reverse') return 'reverse'
     if (codingEnabled && codingMin > 0 && elapsedMin >= introEnd + techQaMin * 0.6) return 'coding'
     if (elapsedMin >= introEnd) return 'tech_qa'
     return 'intro'
@@ -280,6 +288,40 @@ const ChatPage: React.FC = () => {
 
   // 进度百分比
   const progressPercent = interviewDuration > 0 ? Math.min(100, Math.round((elapsedSec / 60) / interviewDuration * 100)) : 0
+
+  // 自动检测面试结束 / 清理持久化残留 → 自动关闭练习状态
+  useEffect(() => {
+    if (!practiceActive) return
+
+    // 清理持久化残留：practiceStartTime 未持久化，刷新后为 null，
+    // 若 practiceActive 被 localStorage 恢复但计时器无法启动，则自动重置
+    if (!practiceStartTime) {
+      resetPractice()
+      return
+    }
+
+    // 流式输出进行中不检测，等 AI 说完再判断
+    if (isStreaming) return
+
+    // 条件1：时间已耗尽（已过时间 ≥ 设定时长 + 1分钟缓冲）
+    const timeExpired = elapsedMin > 0 && remainingMin <= 0 && elapsedMin >= interviewDuration + 1
+
+    // 条件2：AI 最近的消息中包含面试结束语
+    const lastAssistantMsgs = messages.filter(m => m.role === 'assistant').slice(-2)
+    const farewellKeywords = [
+      '面试到此结束', '面试结束', '感谢参加', '感谢你参加',
+      '我们会尽快反馈', '面试结果', '祝你好运', '期待与你',
+      '今天的面试就到这里', '本次面试', '再见', '保持联系',
+    ]
+    const hasFarewell = lastAssistantMsgs.some(m =>
+      farewellKeywords.some(kw => m.content.includes(kw))
+    )
+
+    if (timeExpired || hasFarewell) {
+      resetPractice()
+      lastAIQuestionRef.current = ''
+    }
+  }, [messages, elapsedMin, remainingMin, practiceActive, interviewDuration, isStreaming])
 
   // 动态调整面试计划（每 5 题或时间过半时重新计算）
   const [lastPlanRefresh, setLastPlanRefresh] = useState(0)
@@ -336,6 +378,10 @@ const ChatPage: React.FC = () => {
         <Segmented
           value={selectedMode}
           onChange={(val) => {
+            // 切换模式前先中止正在进行的流式输出，防止内容串到新模式界面
+            if (isStreaming) {
+              abort()
+            }
             setMode(val as ChatMode)
           }}
           options={[
@@ -516,6 +562,87 @@ const ChatPage: React.FC = () => {
         </Popconfirm>
       </div>
 
+      {/* 练习进度条（悬浮置顶，对话滚动时始终可见） */}
+      {practiceActive && (
+        <div
+          style={{
+            position: 'sticky',
+            top: 0,
+            zIndex: 10,
+            background: '#e6f4ff',
+            borderRadius: 8,
+            padding: '8px 16px',
+            marginBottom: 12,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 6,
+            boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Space size={8} wrap>
+              <PlayCircleOutlined style={{ color: '#1677ff' }} />
+              <Text strong>模拟练习中</Text>
+              <Tag color="processing">{interviewDuration} 分钟</Tag>
+
+              {/* 当前阶段标签 */}
+              <Tag color={phaseInfo.color}>{phaseInfo.label}</Tag>
+
+              {/* 已用时间（wall-clock） */}
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                已过 {elapsedMin} 分 {elapsedSec % 60} 秒
+              </Text>
+
+              {/* 剩余时间 */}
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                · 剩余约 {remainingMin} 分钟
+              </Text>
+
+              {/* 编程题时间提示 */}
+              {codingEnabled && interviewPlan && interviewPlan.coding_reserved_min > 0 && (
+                <Tag color="orange" style={{ fontSize: 11 }}>
+                  编程题 ~{interviewPlan.coding_reserved_min}min
+                </Tag>
+              )}
+            </Space>
+            <Button
+              size="small"
+              danger
+              icon={<PauseCircleOutlined />}
+              onClick={handleEndPractice}
+            >
+              结束练习
+            </Button>
+          </div>
+
+          {/* 时间进度条 */}
+          <Progress
+            percent={progressPercent}
+            size="small"
+            status={remainingMin <= 5 ? 'exception' : 'active'}
+            showInfo={false}
+            strokeColor={remainingMin <= 5 ? '#ff4d4f' : remainingMin <= 10 ? '#faad14' : '#1677ff'}
+          />
+
+          {/* 动态提示 */}
+          {remainingMin <= 5 && currentPhase !== 'reverse' && (
+            <Text type="danger" style={{ fontSize: 11 }}>
+              ⚠️ 时间即将用完，建议面试官尽快收尾进入反问环节
+            </Text>
+          )}
+          {currentPhase === 'reverse' && remainingMin > 5 && (
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              💡 已进入反问环节，可向面试官提问团队、技术栈、发展空间等
+            </Text>
+          )}
+          {currentPhase === 'coding' && (
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              💻 编程题进行中，请认真思考后作答
+            </Text>
+          )}
+        </div>
+      )}
+
       {/* 消息列表 */}
       <div
         ref={chatContainerRef}
@@ -549,95 +676,6 @@ const ChatPage: React.FC = () => {
               >
                 开始模拟练习
               </Button>
-            )}
-          </div>
-        )}
-
-        {/* 练习进度条（求职者模式，跨页面持久化） */}
-        {practiceActive && (
-          <div
-            style={{
-              background: '#e6f4ff',
-              borderRadius: 8,
-              padding: '8px 16px',
-              marginBottom: 12,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 6,
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <Space size={8} wrap>
-                <PlayCircleOutlined style={{ color: '#1677ff' }} />
-                <Text strong>模拟练习中</Text>
-                <Tag color="processing">{interviewDuration} 分钟</Tag>
-
-                {/* 当前阶段标签 */}
-                <Tag color={phaseInfo.color}>{phaseInfo.label}</Tag>
-
-                {/* 已用时间（wall-clock） */}
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  已过 {elapsedMin} 分 {elapsedSec % 60} 秒
-                </Text>
-
-                {/* 剩余时间 */}
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  · 剩余约 {remainingMin} 分钟
-                </Text>
-
-                {/* 已答题数 / 计划题数 */}
-                {interviewPlan && (
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    · 已答 {qaRecords.length}/{interviewPlan.question_count} 题
-                    {interviewPlan.remaining_questions < interviewPlan.question_count &&
-                      <span style={{ color: '#fa8c16' }}>
-                        {' '}(剩余约{interviewPlan.remaining_questions}题)
-                      </span>
-                    }
-                  </Text>
-                )}
-
-                {/* 编程题时间提示 */}
-                {codingEnabled && interviewPlan && interviewPlan.coding_reserved_min > 0 && (
-                  <Tag color="orange" style={{ fontSize: 11 }}>
-                    编程题 ~{interviewPlan.coding_reserved_min}min
-                  </Tag>
-                )}
-              </Space>
-              <Button
-                size="small"
-                danger
-                icon={<PauseCircleOutlined />}
-                onClick={handleEndPractice}
-              >
-                结束练习
-              </Button>
-            </div>
-
-            {/* 时间进度条 */}
-            <Progress
-              percent={progressPercent}
-              size="small"
-              status={remainingMin <= 5 ? 'exception' : 'active'}
-              showInfo={false}
-              strokeColor={remainingMin <= 5 ? '#ff4d4f' : remainingMin <= 10 ? '#faad14' : '#1677ff'}
-            />
-
-            {/* 动态提示 */}
-            {remainingMin <= 5 && currentPhase !== 'reverse' && (
-              <Text type="danger" style={{ fontSize: 11 }}>
-                ⚠️ 时间即将用完，建议面试官尽快收尾进入反问环节
-              </Text>
-            )}
-            {currentPhase === 'reverse' && remainingMin > 5 && (
-              <Text type="secondary" style={{ fontSize: 11 }}>
-                💡 已进入反问环节，可向面试官提问团队、技术栈、发展空间等
-              </Text>
-            )}
-            {currentPhase === 'coding' && (
-              <Text type="secondary" style={{ fontSize: 11 }}>
-                💻 编程题进行中，请认真思考后作答
-              </Text>
             )}
           </div>
         )}
