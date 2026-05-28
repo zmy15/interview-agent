@@ -6,14 +6,28 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # SKIP_RAG=true → 不安装向量知识库依赖（适合无 CUDA / 轻量部署）
+        SKIP_RAG: ${SKIP_RAG:-false}
     container_name: interview-backend
     ports:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      # RAG 检索增强开关（与 .env 中 RAG_ENABLED 保持一致）
+      - RAG_ENABLED=${RAG_ENABLED:-true}
     volumes:
       # 持久化向量数据库
       - chroma_data:/app/chroma_data
+      # 持久化上传记录和题目数据
+      - data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     restart: unless-stopped
 
   # ========== 前端 — React + Nginx ==========
@@ -25,8 +39,10 @@ services:
     ports:
       - "80:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   chroma_data:
+  data:

@@ -16,10 +16,18 @@ RUN npm run build
 # ============================================
 FROM python:3.11-slim AS python-deps
 
+ARG SKIP_RAG=false
+
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+COPY requirements.txt requirements-rag.txt ./
+RUN pip install --no-cache-dir -r requirements.txt && \
+    if [ "$SKIP_RAG" != "true" ]; then \
+        echo ">>> Installing RAG dependencies..." && \
+        pip install --no-cache-dir -r requirements-rag.txt; \
+    else \
+        echo ">>> SKIP_RAG=true — 跳过 RAG 依赖安装（向量知识库不可用）"; \
+    fi
 
 # ============================================
 # 阶段 3: 最终运行镜像
@@ -28,8 +36,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# 从构建阶段复制 Python 依赖
-COPY --from=python-deps /root/.local /root/.local
+# 从构建阶段复制 Python 依赖（系统级安装，无需 --user）
+COPY --from=python-deps /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=python-deps /usr/local/bin /usr/local/bin
 
 # 复制后端代码
 COPY *.py .
@@ -39,12 +48,11 @@ COPY models/ ./models/
 COPY prompts/ ./prompts/
 COPY utils/ ./utils/
 COPY positions.json ./
+COPY data/ ./data/
+COPY hf_cache/ ./hf_cache/
 
 # 复制前端构建产物（将由 FastAPI 托管）
 COPY --from=frontend-builder /frontend/dist ./frontend/dist
-
-# 确保本地 bin 在 PATH 中
-ENV PATH=/root/.local/bin:$PATH
 
 # 创建非 root 用户
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app

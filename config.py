@@ -60,3 +60,28 @@ class Settings:
 
 
 settings = Settings()
+
+# ── 启动时日志：RAG 依赖状态 ──
+import logging
+_logger = logging.getLogger(__name__)
+
+# 延迟检查向量存储依赖（避免在导入阶段触发重依赖加载）
+_rag_deps_available = False
+try:
+    import torch  # noqa: F401
+    import faiss  # noqa: F401
+    from sentence_transformers import SentenceTransformer  # noqa: F401
+    _rag_deps_available = True
+except (ImportError, OSError):
+    pass
+
+if settings.RAG_ENABLED and not _rag_deps_available:
+    _logger.warning(
+        "⚠ RAG_ENABLED=true 但向量知识库依赖未安装（torch / sentence-transformers / faiss）。"
+        " 请安装 requirements-rag.txt 或在 .env 中设置 RAG_ENABLED=false。"
+        " 应用将继续运行，但知识库上传和检索功能不可用。"
+    )
+elif settings.RAG_ENABLED and _rag_deps_available:
+    _logger.info("✅ RAG 检索增强已开启，向量知识库可用")
+elif not settings.RAG_ENABLED:
+    _logger.info("ℹ RAG 检索增强已关闭（RAG_ENABLED=false），对话将不注入知识库上下文")

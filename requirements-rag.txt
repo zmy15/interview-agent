@@ -1,0 +1,13 @@
+# ============================================
+# RAG 检索增强 — 可选依赖
+# ============================================
+# 如果不需要向量知识库功能，可以不安装此文件。
+# 设置环境变量 RAG_ENABLED=false 可关闭 RAG 检索。
+# Docker 部署时通过 build arg SKIP_RAG=true 跳过安装。
+#
+# 注意：sentence-transformers 依赖 torch (~2GB)，faiss-cpu 依赖 numpy。
+# 无 CUDA 环境下自动使用 CPU 模式，可正常运行。
+
+faiss-cpu>=1.8.0
+sentence-transformers>=3.0.0
+langchain-huggingface>=0.1.0

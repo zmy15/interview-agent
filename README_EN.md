@@ -106,26 +106,87 @@ The script automates: environment check → dependency install → start backend
 <details>
 <summary><b>Method 2: Docker Compose (deploy recommended)</b></summary>
 
+#### Prerequisites
+
+- Docker 20.10+ & Docker Compose v2+
+- DeepSeek API Key
+
+#### Standard Deployment (with RAG)
+
 ```bash
+# 1. Configure environment
+cp .env.example .env
+# Edit .env and fill in DEEPSEEK_API_KEY
+
+# 2. Launch
 docker-compose up -d
+
+# 3. Verify
+docker-compose ps
 ```
 
 Visit **http://localhost**
 
-Architecture: `Nginx (:80)` → frontend static files + `/api/*` reverse proxy → `FastAPI (:8000)`
+> First launch downloads the Embedding model (~90MB) via HuggingFace mirror. Startup takes ~2-3 minutes.
+
+#### Lightweight Deployment (no RAG, for CUDA-less / low-resource environments)
+
+```bash
+# Skip vector knowledge base dependencies, reduce image size by ~2GB
+SKIP_RAG=true RAG_ENABLED=false docker-compose up -d
+```
+
+> Core features (chat, interview simulation, report generation) work fully. Only knowledge base upload & RAG retrieval are unavailable.
+
+#### Architecture
+
+```
+Browser → Nginx (:80) → /api/* reverse proxy → FastAPI (:8000)
+                       → other paths → frontend static files
+```
+
+#### Common Commands
+
+| Command | Description |
+|---------|-------------|
+| `docker-compose up -d` | Start (standard mode) |
+| `SKIP_RAG=true RAG_ENABLED=false docker-compose up -d` | Start (no RAG) |
+| `docker-compose down` | Stop & remove containers |
+| `docker-compose down -v` | Stop & remove containers + volumes |
+| `docker-compose logs -f backend` | View backend logs |
+| `docker-compose restart backend` | Restart backend |
+
+#### Data Persistence
+
+| Data | Location | Notes |
+|------|----------|-------|
+| FAISS vector index | `chroma_data` volume | RAG knowledge base index |
+| Upload records / problem bank | `data` volume | `uploads.json`, `leetcode_problems.json` |
+| Position data | `positions.json` | In-image, resets on rebuild |
+
 </details>
 
 <details>
 <summary><b>Method 3: Single Container</b></summary>
 
 ```bash
-docker build -t interview-agent .
-docker run -p 8000:8000 --env-file .env interview-agent
+# Build (without RAG)
+docker build --build-arg SKIP_RAG=true -t interview-agent .
+
+# Run
+docker run -d \
+  --name interview-agent \
+  -p 8000:8000 \
+  --env-file .env \
+  -e RAG_ENABLED=false \
+  -v interview-data:/app/data \
+  interview-agent
 ```
 
 Visit **http://localhost:8000**
 
-Three-stage build: Node compiles frontend → pip installs deps → FastAPI serves everything
+> To include RAG, remove `--build-arg SKIP_RAG=true`, add `-e RAG_ENABLED=true` and `-v interview-chroma:/app/chroma_data`.
+
 </details>
 
 ---

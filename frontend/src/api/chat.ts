@@ -20,6 +20,11 @@ export async function streamChat(
     api_key?: string
     resume_text?: string
     code_context?: string
+    candidate_level?: string
+    interview_round?: string
+    interview_duration_minutes?: number
+    interview_question_count?: number
+    interview_coding_min?: number
   },
   onReasoning: (chunk: string) => void,
   onContent: (chunk: string) => void,

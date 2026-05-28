@@ -101,26 +101,87 @@ chmod +x start.sh
 <details>
 <summary><b>方式二：Docker Compose（部署推荐）</b></summary>
 
+#### 前置条件
+
+- Docker 20.10+ & Docker Compose v2+
+- DeepSeek API Key
+
+#### 标准部署（含 RAG 向量知识库）
+
 ```bash
+# 1. 配置环境变量
+cp .env.example .env
+# 编辑 .env，填入 DEEPSEEK_API_KEY
+
+# 2. 启动
 docker-compose up -d
+
+# 3. 验证
+docker-compose ps
 ```
 
 访问 **http://localhost**
 
-架构：`Nginx (:80)` → 前端静态文件 + `/api/*` 反代 → `FastAPI (:8000)`
+> 首次启动会自动下载 Embedding 模型（约 90MB），已配置 HuggingFace 镜像。启动耗时约 2-3 分钟。
+
+#### 轻量部署（无 RAG，适合无 CUDA / 低资源环境）
+
+```bash
+# 不安装向量知识库依赖，镜像体积减少约 2GB
+SKIP_RAG=true RAG_ENABLED=false docker-compose up -d
+```
+
+> 此模式下对话、面试模拟、报告生成等核心功能完全正常，仅知识库上传和 RAG 检索不可用。
+
+#### 架构说明
+
+```
+Browser → Nginx (:80) → /api/* 反代 → FastAPI (:8000)
+                       → 其他路径 → 前端静态文件
+```
+
+#### 常用命令
+
+| 命令 | 说明 |
+|------|------|
+| `docker-compose up -d` | 启动（标准模式） |
+| `SKIP_RAG=true RAG_ENABLED=false docker-compose up -d` | 启动（无 RAG） |
+| `docker-compose down` | 停止并删除容器 |
+| `docker-compose down -v` | 停止并删除容器+数据卷 |
+| `docker-compose logs -f backend` | 查看后端日志 |
+| `docker-compose restart backend` | 重启后端 |
+
+#### 数据持久化
+
+| 数据 | 存储位置 | 说明 |
+|------|----------|------|
+| FAISS 向量索引 | `chroma_data` volume | RAG 知识库索引 |
+| 上传记录/题库 | `data` volume | `uploads.json`, `leetcode_problems.json` |
+| 岗位数据 | `positions.json` | 镜像内置，重建后重置 |
+
 </details>
 
 <details>
 <summary><b>方式三：单容器 Docker</b></summary>
 
 ```bash
-docker build -t interview-agent .
-docker run -p 8000:8000 --env-file .env interview-agent
+# 构建（不含 RAG）
+docker build --build-arg SKIP_RAG=true -t interview-agent .
+
+# 运行
+docker run -d \
+  --name interview-agent \
+  -p 8000:8000 \
+  --env-file .env \
+  -e RAG_ENABLED=false \
+  -v interview-data:/app/data \
+  interview-agent
 ```
 
 访问 **http://localhost:8000**
 
-三阶段构建：Node 编译前端 → pip 依赖 → FastAPI 全托管
+> 包含 RAG 时去掉 `--build-arg SKIP_RAG=true`，并添加 `-e RAG_ENABLED=true` 和 `-v interview-chroma:/app/chroma_data`。
+
 </details>
 
 ---

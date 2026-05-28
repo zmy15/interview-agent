@@ -34,6 +34,8 @@ export interface ChatRequest {
 
 export type ChatMode = 'interviewer' | 'candidate'
 
+export type PromptTemplates = Partial<Record<ChatMode, string>>
+
 // ============ 模型相关 ============
 
 export interface ModelInfo {
