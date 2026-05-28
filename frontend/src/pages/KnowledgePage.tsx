@@ -30,7 +30,7 @@ const KnowledgePage: React.FC = () => {
 
   // 上传
   const [uploadPos, setUploadPos] = useState<string | null>(null)
-  const [docType, setDocType] = useState<'faq' | 'code'>('faq')
+  const [docType, setDocType] = useState<'faq' | 'code' | 'project'>('faq')
   const [uploading, setUploading] = useState(false)
 
   // 搜索
@@ -60,9 +60,15 @@ const KnowledgePage: React.FC = () => {
   const uploadProps: UploadProps = {
     name: 'file',
     multiple: false,
+    accept: docType === 'project'
+      ? '.zip,.tar.gz,.tgz,.tar.bz2,.tar,.7z'
+      : docType === 'code'
+        ? '.py,.js,.ts,.java,.go,.rs,.cpp,.c,.h,.cs,.rb,.php,.swift,.kt,.scala,.sh,.bat,.ps1,.sql,.html,.css,.vue,.jsx,.tsx,.yaml,.yml,.json,.xml,.toml,.ini,.cfg,.md'
+        : '.pdf,.docx,.doc,.txt,.md',
     beforeUpload: (file) => {
-      if (file.size > 10 * 1024 * 1024) {
-        message.error('文件大小不能超过 10MB')
+      const maxSize = docType === 'project' ? 50 * 1024 * 1024 : 10 * 1024 * 1024
+      if (file.size > maxSize) {
+        message.error(`文件大小不能超过 ${maxSize / 1024 / 1024}MB`)
         return Upload.LIST_IGNORE
       }
       if (!uploadPos) {
@@ -79,7 +85,8 @@ const KnowledgePage: React.FC = () => {
           uploadPos!,
           docType,
         )
-        message.success(`上传成功，切分为 ${result.chunks_count} 个知识块`)
+        const label = docType === 'project' ? '项目' : docType === 'code' ? '代码文件' : '文档'
+        message.success(`${label}上传成功，切分为 ${result.chunks_count} 个知识块`)
         onSuccess?.(result)
         loadCollections()
       } catch (err) {
@@ -185,10 +192,11 @@ const KnowledgePage: React.FC = () => {
               <Select
                 value={docType}
                 onChange={(val) => setDocType(val)}
-                style={{ width: 120 }}
+                style={{ width: 130 }}
                 options={[
-                  { value: 'faq', label: 'FAQ 文档' },
-                  { value: 'code', label: '代码文档' },
+                  { value: 'faq', label: '📄 FAQ 文档' },
+                  { value: 'code', label: '💻 代码文件' },
+                  { value: 'project', label: '📦 项目压缩包' },
                 ]}
               />
             </Space>
@@ -196,9 +204,13 @@ const KnowledgePage: React.FC = () => {
               <p className="ant-upload-drag-icon">
                 <InboxOutlined />
               </p>
-              <p className="ant-upload-text">点击或拖拽文档到此区域</p>
+              <p className="ant-upload-text">点击或拖拽文件到此区域</p>
               <p className="ant-upload-hint">
-                支持 PDF / DOCX / TXT / 代码文件，最大 10MB
+                {docType === 'project'
+                  ? '支持 ZIP / TAR.GZ / 7Z 等压缩格式，最大 50MB，自动解析并索引'
+                  : docType === 'code'
+                    ? '支持 .py .js .ts .java 等常见编程语言文件，最大 10MB'
+                    : '支持 PDF / DOCX / TXT / MD 等文档格式，最大 10MB'}
               </p>
             </Dragger>
           </Card>

@@ -1,9 +1,11 @@
 """文件上传路由 — 简历 + 代码 + 项目压缩包"""
 
 import logging
+import time
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query
 
+from config import settings
 from models.schemas import UploadResponse, ProjectUploadResponse, UploadListResponse, UploadRecord
 from services.parser import (
     parse_file,
@@ -13,8 +15,13 @@ from services.parser import (
     ARCHIVE_EXTENSIONS,
 )
 from services.upload_store import UploadStore
+from services.chunker import chunk_document
+from services.vector_store import VectorStoreManager, is_vector_store_available
 
 logger = logging.getLogger(__name__)
+
+# 上传文件统一 FAISS collection 名称
+UPLOADS_COLLECTION = "__uploads__"
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 
@@ -99,6 +106,14 @@ async def upload_code(file: UploadFile = File(...)):
     stored_text = text[:MAX_STORED_TEXT]
     record = store.create(filename=file.filename, upload_type="code", text=stored_text)
 
+    # 索引到 FAISS 向量库（用于 RAG 检索）
+    _index_to_faiss(
+        filename=file.filename,
+        text=text,
+        doc_type="code",
+        upload_id=record.id,
+    )
+
     return UploadResponse(filename=file.filename, text=text, type="code")
 
 
@@ -149,6 +164,14 @@ async def upload_project(file: UploadFile = File(...)):
         tech_stack=project["tech_stack"],
     )
 
+    # 索引到 FAISS 向量库（用于 RAG 检索）
+    _index_to_faiss(
+        filename=project["filename"],
+        text=project["total_text"],
+        doc_type="project",
+        upload_id=record.id,
+    )
+
     return ProjectUploadResponse(
         filename=project["filename"],
         file_count=project["file_count"],
@@ -157,6 +180,62 @@ async def upload_project(file: UploadFile = File(...)):
         tech_stack=project["tech_stack"],
         type="project",
     )
+
+
+def _index_to_faiss(filename: str, text: str, doc_type: str, upload_id: str):
+    """将上传文件内容分块并索引到 FAISS 向量库（失败不影响上传主流程）"""
+    if not is_vector_store_available():
+        logger.info("Vector store not available, skipping FAISS index for %s", filename)
+        return
+
+    t_total_start = time.time()
+    text_len = len(text)
+    logger.info(
+        ">>> 上传文件 FAISS 索引开始 | file=%s | type=%s | 文本长度=%d",
+        filename, doc_type, text_len,
+    )
+
+    try:
+        # ── 分块阶段 ──
+        t_chunk_start = time.time()
+        chunks = chunk_document(text, doc_type)
+        t_chunk = time.time() - t_chunk_start
+        if not chunks:
+            logger.warning("Chunking produced no chunks for %s", filename)
+            return
+        logger.info(
+            "  [分块] %d chunks | 耗时: %.2fs | 平均块长: %d",
+            len(chunks), t_chunk, text_len // len(chunks) if chunks else 0,
+        )
+
+        # ── 索引阶段 ──
+        t_index_start = time.time()
+        vms = VectorStoreManager(settings)
+        count = vms.add_documents(
+            position_name=UPLOADS_COLLECTION,
+            chunks=chunks,
+            metadata={
+                "doc_type": doc_type,
+                "filename": filename,
+                "upload_id": upload_id,
+                "source": "upload",
+            },
+        )
+        t_index = time.time() - t_index_start
+
+        t_total = time.time() - t_total_start
+        logger.info(
+            "<<< 上传文件 FAISS 索引完成 | file=%s | type=%s | chunks=%d/%d | "
+            "分块耗时=%.2fs | 索引耗时=%.2fs | 总耗时=%.2fs | collection=%s",
+            filename, doc_type, count, len(chunks),
+            t_chunk, t_index, t_total, UPLOADS_COLLECTION,
+        )
+    except Exception as e:
+        t_total = time.time() - t_total_start
+        logger.warning(
+            "FAISS index failed for %s (non-blocking, elapsed=%.2fs): %s",
+            filename, t_total, e,
+        )
 
 
 # ============ 上传文件管理 ============

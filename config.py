@@ -5,6 +5,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ── 关键：在导入任何 HF 相关库之前，将镜像端点注入 os.environ ──
+# huggingface_hub / sentence-transformers 在首次 import 时读取 HF_ENDPOINT，
+# 必须在此之前设置，否则会直连 huggingface.co（国内超时）。
+_hf_endpoint = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
+os.environ["HF_ENDPOINT"] = _hf_endpoint
+
+_hf_home = os.getenv("HF_HOME", os.path.join(os.path.dirname(__file__), "hf_cache"))
+os.environ["HF_HOME"] = _hf_home
+os.makedirs(_hf_home, exist_ok=True)
+
 
 class Settings:
     """配置单例"""
@@ -41,6 +51,12 @@ class Settings:
     # 上下文窗口管理（DeepSeek V4 支持 1M tokens，默认 800K 留安全余量）
     MAX_CONTEXT_TOKENS: int = int(os.getenv("MAX_CONTEXT_TOKENS", "800000"))
     SYSTEM_RESERVED_TOKENS: int = int(os.getenv("SYSTEM_RESERVED_TOKENS", "8000"))
+
+    # 日志等级: DEBUG / INFO / WARNING / ERROR
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
+
+    # RAG 检索增强开关（关闭后对话不再注入知识库上下文）
+    RAG_ENABLED: bool = os.getenv("RAG_ENABLED", "true").lower() == "true"
 
 
 settings = Settings()

@@ -11,12 +11,38 @@ import hashlib
 import json
 import logging
 import os
+import time
 import uuid
 from typing import Optional
 
 from config import Settings
 
 logger = logging.getLogger(__name__)
+
+# 嵌入批处理大小（每个 batch 提交给模型编码一次，batch 之间输出进度日志）
+_EMBED_BATCH_SIZE = 50
+
+
+def _format_progress_bar(current: int, total: int, width: int = 30) -> str:
+    """生成 ASCII 进度条字符串，用于日志输出。"""
+    if total <= 0:
+        return "[--------------------] 0/0"
+    ratio = min(current / total, 1.0)
+    filled = int(width * ratio)
+    bar = "█" * filled + "░" * (width - filled)
+    pct = ratio * 100
+    return f"[{bar}] {current}/{total} ({pct:.0f}%)"
+
+
+def _format_duration(seconds: float) -> str:
+    """将秒数格式化为可读的耗时字符串。"""
+    if seconds < 1:
+        return f"{seconds*1000:.0f}ms"
+    elif seconds < 60:
+        return f"{seconds:.1f}s"
+    else:
+        m, s = divmod(seconds, 60)
+        return f"{int(m)}m {s:.0f}s"
 
 _VECTOR_STORE_AVAILABLE: Optional[bool] = None
 
@@ -52,24 +78,18 @@ class VectorStoreManager:
 
     @property
     def embeddings(self):
-        """懒加载 HuggingFaceEmbeddings（LangChain 封装）"""
+        """懒加载 HuggingFaceEmbeddings（LangChain 封装）
+
+        注意：HF_ENDPOINT / HF_HOME 已在 config.py 启动时注入 os.environ，
+        此处不再重复设置。
+        """
         if not self._available:
             raise RuntimeError("Vector store is not available: sentence-transformers/torch not installed")
         if self._embeddings is None:
-            # 国内用户：设置 HuggingFace 镜像
-            hf_endpoint = getattr(self._settings, "HF_ENDPOINT", "https://hf-mirror.com")
-            hf_home = getattr(self._settings, "HF_HOME", None)
-            if hf_endpoint:
-                os.environ["HF_ENDPOINT"] = hf_endpoint
-                logger.info(f"HF_ENDPOINT set to: {hf_endpoint}")
-            if hf_home:
-                os.environ["HF_HOME"] = hf_home
-                os.makedirs(hf_home, exist_ok=True)
-
             from langchain_huggingface import HuggingFaceEmbeddings
 
             model_name = self._settings.EMBEDDING_MODEL
-            logger.info(f"Loading embedding model via LangChain: {model_name}")
+            logger.info(f"Loading embedding model via LangChain: {model_name}, mirror={os.environ.get('HF_ENDPOINT', 'default')}")
 
             # encode_kwargs normalize_embeddings=True → L2 归一化 → 余弦相似度
             self._embeddings = HuggingFaceEmbeddings(
@@ -241,7 +261,8 @@ class VectorStoreManager:
         """
         将文档块向量化并存入 FAISS 索引。
 
-        使用 LangChain FAISS wrapper，自动处理 L2 归一化和增量添加。
+        使用分批嵌入策略，每批 {_EMBED_BATCH_SIZE} 个 chunk 提交给模型编码，
+        批次之间输出进度日志，便于追踪大规模索引构建进度。
 
         Returns:
             存储的文档块数量
@@ -253,6 +274,20 @@ class VectorStoreManager:
 
         coll_name = self._sanitize_collection_name(position_name)
         coll_dir = self._get_coll_dir(coll_name)
+        total = len(chunks)
+        t_start = time.time()
+
+        # 估算文本规模
+        total_chars = sum(len(c) for c in chunks)
+        avg_chunk_len = total_chars // total if total > 0 else 0
+
+        logger.info(
+            "========== FAISS 索引开始 ==========\n"
+            "  集合: %s | 岗位: %s | Chunks: %d | 总字符: %d | 平均块长: %d\n"
+            "  批大小: %d | 预计批数: %d",
+            coll_name, position_name, total, total_chars, avg_chunk_len,
+            _EMBED_BATCH_SIZE, (total + _EMBED_BATCH_SIZE - 1) // _EMBED_BATCH_SIZE,
+        )
 
         # 准备 metadata
         metadatas = []
@@ -265,30 +300,73 @@ class VectorStoreManager:
 
         from langchain_community.vectorstores import FAISS
 
-        if self._collection_exists(coll_name):
-            logger.info(f"Loading existing FAISS index for incremental add: {coll_name}")
-            vectorstore = self._load_faiss_safe(coll_name, coll_dir)
-            vectorstore.add_texts(chunks, metadatas=metadatas)
-        else:
-            logger.info(f"Creating new FAISS index: {coll_name}")
-            vectorstore = FAISS.from_texts(
-                chunks,
-                self.embeddings,
-                metadatas=metadatas,
-            )
+        # ── 阶段1: 向量嵌入 ──
+        t_embed_start = time.time()
+        is_new = not self._collection_exists(coll_name)
 
-        # 持久化到磁盘
+        if is_new:
+            logger.info("[阶段1/4] 创建新 FAISS 索引 + 向量嵌入 ...")
+            # 第一批：创建索引
+            first_batch = chunks[:_EMBED_BATCH_SIZE]
+            first_meta = metadatas[:_EMBED_BATCH_SIZE]
+            vectorstore = FAISS.from_texts(
+                first_batch,
+                self.embeddings,
+                metadatas=first_meta,
+            )
+            processed = len(first_batch)
+            logger.info("  %s", _format_progress_bar(processed, total))
+
+            # 后续批次：增量添加
+            for batch_start in range(_EMBED_BATCH_SIZE, total, _EMBED_BATCH_SIZE):
+                batch_end = min(batch_start + _EMBED_BATCH_SIZE, total)
+                batch = chunks[batch_start:batch_end]
+                batch_meta = metadatas[batch_start:batch_end]
+                vectorstore.add_texts(batch, metadatas=batch_meta)
+                processed = batch_end
+                logger.info("  %s", _format_progress_bar(processed, total))
+        else:
+            logger.info("[阶段1/4] 加载现有 FAISS 索引 + 增量向量嵌入 ...")
+            vectorstore = self._load_faiss_safe(coll_name, coll_dir)
+            for batch_start in range(0, total, _EMBED_BATCH_SIZE):
+                batch_end = min(batch_start + _EMBED_BATCH_SIZE, total)
+                batch = chunks[batch_start:batch_end]
+                batch_meta = metadatas[batch_start:batch_end]
+                vectorstore.add_texts(batch, metadatas=batch_meta)
+                processed = batch_end
+                logger.info("  %s", _format_progress_bar(processed, total))
+
+        t_embed = time.time() - t_embed_start
+        logger.info("  向量嵌入完成 | 耗时: %s | 速度: %.1f chunks/s",
+                     _format_duration(t_embed), total / t_embed if t_embed > 0 else 0)
+
+        # ── 阶段2: 持久化到磁盘 ──
+        t_save_start = time.time()
+        logger.info("[阶段2/4] 保存 FAISS 索引到磁盘 ...")
         os.makedirs(coll_dir, exist_ok=True)
         vectorstore.save_local(coll_dir)
+        t_save = time.time() - t_save_start
+        logger.info("  索引保存完成 | 耗时: %s", _format_duration(t_save))
 
-        # 对新写入的 index.pkl 签名（防篡改）
+        # ── 阶段3: 完整性签名 ──
+        t_sign_start = time.time()
+        logger.info("[阶段3/4] 生成完整性签名 ...")
         self._sign_index(coll_name)
+        t_sign = time.time() - t_sign_start
+        logger.info("  签名生成完成 | 耗时: %s", _format_duration(t_sign))
 
-        # 额外保存 collection 元数据（含原始岗位名称）
+        # ── 阶段4: 元数据持久化 ──
+        logger.info("[阶段4/4] 保存 collection 元数据 ...")
         self._save_collection_meta(coll_name, position_name)
 
-        logger.info(f"Added {len(chunks)} chunks to collection '{position_name}'")
-        return len(chunks)
+        # ── 汇总 ──
+        t_total = time.time() - t_start
+        logger.info(
+            "========== FAISS 索引完成 ==========\n"
+            "  集合: %s | Chunks: %d | 总耗时: %s",
+            coll_name, total, _format_duration(t_total),
+        )
+        return total
 
     def search(
         self,
@@ -375,8 +453,10 @@ class VectorStoreManager:
                 position_name = self._load_collection_position_name(entry)
 
                 result.append({
-                    "position_name": position_name,
-                    "document_count": count,
+                    "name": position_name,
+                    "position_name": position_name,  # 向后兼容旧字段名
+                    "count": count,
+                    "document_count": count,          # 向后兼容旧字段名
                 })
         except Exception as e:
             logger.warning(f"Failed to list collections: {e}")

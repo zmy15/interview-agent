@@ -18,7 +18,7 @@ from routers import chat, upload, interview, position, knowledge
 # ============ 日志配置 ============
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, settings.LOG_LEVEL, logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),

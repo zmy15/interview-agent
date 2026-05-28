@@ -13,25 +13,32 @@ DEFAULT_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", 
 
 
 class UploadStore:
-    """上传记录 JSON 存储，线程安全"""
+    """上传记录 JSON 存储，线程安全（双重检查锁单例）"""
 
     _instance = None
-    _lock = threading.Lock()
+    _instance_lock = threading.Lock()
 
     def __new__(cls, file_path: str = DEFAULT_PATH):
+        # 双重检查锁 — 确保线程安全的单例
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
+            with cls._instance_lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
         return cls._instance
 
     def __init__(self, file_path: str = DEFAULT_PATH):
         if self._initialized:
             return
-        self._initialized = True
-        self._file_path = file_path
-        self._lock = threading.Lock()
-        self._data: dict = {"uploads": {}}
-        self._load()
+        with self._instance_lock:
+            # 二次确认：可能被另一个线程初始化了
+            if self._initialized:
+                return
+            self._initialized = True
+            self._file_path = file_path
+            self._data_lock = threading.Lock()
+            self._data: dict = {"uploads": {}}
+            self._load()
 
     def _load(self):
         """从 JSON 文件加载数据"""
@@ -61,7 +68,7 @@ class UploadStore:
         tech_stack: Optional[list[str]] = None,
     ) -> UploadRecord:
         """创建上传记录"""
-        with self._lock:
+        with self._data_lock:
             upload_id = str(uuid.uuid4())[:8]
             now = datetime.now(timezone.utc).isoformat()
             # 生成文本预览（前200字符）
@@ -85,13 +92,13 @@ class UploadStore:
 
     def get(self, upload_id: str) -> Optional[UploadRecord]:
         """查询单条记录"""
-        with self._lock:
+        with self._data_lock:
             rec = self._data["uploads"].get(upload_id)
             return UploadRecord(**rec) if rec else None
 
     def list_all(self, upload_type: Optional[str] = None) -> list[UploadRecord]:
         """列出所有记录，可按类型过滤"""
-        with self._lock:
+        with self._data_lock:
             records = list(self._data["uploads"].values())
             if upload_type:
                 records = [r for r in records if r["type"] == upload_type]
@@ -101,7 +108,7 @@ class UploadStore:
 
     def delete(self, upload_id: str) -> bool:
         """删除记录"""
-        with self._lock:
+        with self._data_lock:
             if upload_id not in self._data["uploads"]:
                 return False
             del self._data["uploads"][upload_id]
@@ -110,7 +117,7 @@ class UploadStore:
 
     def delete_all(self, upload_type: Optional[str] = None) -> int:
         """删除所有记录（或按类型），返回删除数量"""
-        with self._lock:
+        with self._data_lock:
             if upload_type:
                 to_delete = [
                     k for k, v in self._data["uploads"].items()

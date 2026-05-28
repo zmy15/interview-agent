@@ -44,6 +44,10 @@ def _build_dynamic_context(req: ChatRequest, prompt_kwargs: dict) -> str:
         )
         if rag_context:
             parts.append(rag_context.strip())
+            context_len = len(rag_context)
+            logger.info("RAG context injected | position=%s | length=%d chars", req.position_name, context_len)
+        else:
+            logger.info("RAG context empty | position=%s — no knowledge base data", req.position_name)
 
     # 联网搜索
     if req.use_search and req.messages:
@@ -106,9 +110,8 @@ def _build_prompt_kwargs(req: ChatRequest) -> dict:
                 else:
                     kwargs["jd"] = "\n\n".join(jd.content for jd in pos.jds)
 
-    # 代码上下文：仅面试官模式可见
-    if req.mode == "interviewer":
-        kwargs["code"] = req.code_context or ""
+    # 代码/项目上下文：不再直接注入 prompt（已通过 RAG 向量检索获取）
+    # 仅保留简历作为直接上下文
 
     # 面试时间预算（从请求参数中获取）
     if req.interview_duration_minutes > 0:

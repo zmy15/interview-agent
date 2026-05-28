@@ -62,6 +62,9 @@ async def stream_chat(
     if _thinking:
         extra_body["thinking"] = {"type": "enabled"}
         extra_body["reasoning_effort"] = _effort
+    else:
+        # DeepSeek 思考模式默认开启，必须显式传 disabled 才能关闭
+        extra_body["thinking"] = {"type": "disabled"}
 
     try:
         stream = await client.chat.completions.create(

@@ -4,7 +4,7 @@ import type { KnowledgeUploadResponse, KnowledgeSearchRequest, KnowledgeSearchRe
 export async function uploadKnowledge(
   file: File,
   positionName: string,
-  docType: 'faq' | 'code',
+  docType: 'faq' | 'code' | 'project',
 ): Promise<KnowledgeUploadResponse> {
   const formData = new FormData()
   formData.append('file', file)

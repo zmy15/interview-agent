@@ -10,6 +10,23 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 
+def _extract_doc_info(doc) -> dict:
+    """从 Document/dict 中提取 content, score, metadata"""
+    if hasattr(doc, "page_content"):
+        content = doc.page_content
+        meta = doc.metadata if hasattr(doc, "metadata") else {}
+        score = meta.get("score", 0) if isinstance(meta, dict) else 0
+    elif isinstance(doc, dict):
+        content = doc.get("content", "")
+        meta = doc.get("metadata", {})
+        score = doc.get("score", 0)
+    else:
+        content = str(doc)
+        meta = {}
+        score = 0
+    return {"content": content, "score": score, "metadata": meta}
+
+
 def format_rag_docs(docs: list) -> str:
     """
     将检索到的文档格式化为上下文字符串（LangChain 风格）。
@@ -26,21 +43,17 @@ def format_rag_docs(docs: list) -> str:
 
     parts = []
     for i, doc in enumerate(docs):
-        # 兼容 LangChain Document 和旧格式 dict
-        if hasattr(doc, "page_content"):
-            content = doc.page_content
-        elif isinstance(doc, dict):
-            content = doc.get("content", "")
-        else:
-            content = str(doc)
+        info = _extract_doc_info(doc)
+        content = info["content"]
+        score = info["score"]
 
-        # 兼容两种 score 格式
-        if hasattr(doc, "metadata") and isinstance(doc.metadata, dict):
-            score = doc.metadata.get("score", 0)
-        elif isinstance(doc, dict):
-            score = doc.get("score", 0)
-        else:
-            score = 0
+        # 日志：每条检索结果的摘要
+        preview = content[:120].replace("\n", " ").strip()
+        source = info["metadata"].get("source", "?") if isinstance(info["metadata"], dict) else "?"
+        logger.info(
+            "RAG hit #%d | score=%.4f | source=%s | preview=%s...",
+            i + 1, score, source, preview
+        )
 
         parts.append(f"[{i + 1}] (相关度: {score:.3f})\n{content}")
 
@@ -89,7 +102,8 @@ def build_rag_context(position_name: str, query: str, top_k: Optional[int] = Non
     """
     一站式 RAG 上下文构建：检索 + 格式化。
 
-    使用 LCEL 链：query → retriever → format_docs → context string
+    检索岗位知识库（包含 FAQ、代码文档、项目文件等所有上传到该岗位的知识）。
+    受 settings.RAG_ENABLED 开关控制，关闭时直接返回空字符串。
 
     Args:
         position_name: 岗位名称
@@ -102,15 +116,37 @@ def build_rag_context(position_name: str, query: str, top_k: Optional[int] = Non
     if not position_name:
         return ""
 
+    if not settings.RAG_ENABLED:
+        logger.info("RAG is DISABLED — skipping retrieval")
+        return ""
+
     k = top_k or settings.VECTOR_SEARCH_TOP_K
 
-    # 构建 LCEL 链：检索 → 格式化
-    retriever = create_rag_retriever(position_name, k)
+    # 日志：检索请求
+    query_preview = query[:150].replace("\n", " ")
+    logger.info(
+        "RAG retrieval | position=%s | top_k=%d | query=%s",
+        position_name, k, query_preview
+    )
 
-    # 链式调用
-    try:
-        docs = retriever.invoke(query)
-        return format_rag_docs(docs)
-    except Exception as e:
-        logger.warning(f"RAG context build failed (non-blocking): {e}")
+    from services.vector_store import VectorStoreManager
+
+    vms = VectorStoreManager(settings)
+    if not vms.available:
+        logger.warning("Vector store not available, skipping RAG retrieval")
         return ""
+
+    # 检索岗位知识库
+    try:
+        kb_results = vms.search(position_name, query, k)
+    except Exception as e:
+        logger.warning("RAG search failed (non-blocking): %s", e)
+        kb_results = []
+
+    if not kb_results:
+        logger.info("RAG retrieval | position=%s | 0 hits", position_name)
+        return ""
+
+    logger.info("RAG retrieval | position=%s | %d hits total", position_name, len(kb_results))
+    context = format_rag_docs(kb_results)
+    return context
