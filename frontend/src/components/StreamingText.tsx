@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react'
+import React from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
@@ -10,16 +10,10 @@ interface StreamingTextProps {
 }
 
 const StreamingText: React.FC<StreamingTextProps> = ({ text, highlightCode }) => {
-  const containerRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (containerRef.current) {
-      containerRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' })
-    }
-  }, [text])
-
+  // 注意：滚动由父组件 ChatPage 统一管理，此处不做 scrollIntoView，
+  // 避免流式输出时多个 smooth 滚动动画竞争导致界面抖动。
   return (
-    <div ref={containerRef}>
+    <div>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={

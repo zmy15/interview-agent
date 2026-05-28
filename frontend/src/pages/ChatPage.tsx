@@ -99,11 +99,16 @@ const ChatPage: React.FC = () => {
   const [autoScroll, setAutoScroll] = useState(true)
 
   // 自动滚动到底部
+  // 流式输出时使用 behavior: 'auto'（瞬时滚动），避免 smooth 动画与新内容竞争导致界面抖动
+  // 非流式时（消息列表变化）使用 behavior: 'smooth'，提供舒适的滚动体验
   useEffect(() => {
-    if (autoScroll) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (autoScroll && messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({
+        behavior: isStreaming ? 'auto' : 'smooth',
+        block: 'end',
+      })
     }
-  }, [messages, currentContent, currentReasoning, autoScroll])
+  }, [messages, currentContent, currentReasoning, autoScroll, isStreaming])
 
   // 检测用户手动上滚
   const handleScroll = useCallback(() => {

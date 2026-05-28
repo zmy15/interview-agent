@@ -71,7 +71,7 @@ export function useSSE() {
           model: store.selectedModel || undefined,
           thinking_enabled: store.thinkingEnabled || undefined,
           reasoning_effort: store.thinkingEnabled ? store.reasoningEffort : undefined,
-          prompt_override: promptOverride,
+          prompt_notes: promptOverride,
           api_key: appStore.apiKey || undefined,
           resume_text: appStore.resumeText || undefined,
           code_context: appStore.codeText || undefined,

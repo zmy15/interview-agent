@@ -36,6 +36,7 @@ class ChatRequest(BaseModel):
     interview_duration_minutes: int = 30  # 面试总时长
     interview_question_count: int = 0  # 计划题目数量
     interview_coding_min: int = 0  # 编程题预留时间
+    prompt_notes: Optional[str] = None  # 前端 PromptEditor 补充说明，追加到 system prompt 末尾
 
 
 class ChatResponse(BaseModel):
@@ -66,6 +67,7 @@ class InterviewStartRequest(BaseModel):
     model: Optional[str] = None
     candidate_level: Optional[str] = None  # "intern" / "new_grad" / "experienced"
     interview_round: Optional[str] = None  # "first" / "second" / "hr"
+    prompt_notes: Optional[str] = None  # 前端 PromptEditor 补充说明
 
 
 class InterviewStopRequest(BaseModel):

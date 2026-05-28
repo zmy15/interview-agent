@@ -16,7 +16,7 @@ export async function streamChat(
     model?: string
     thinking_enabled?: boolean
     reasoning_effort?: string
-    prompt_override?: string
+    prompt_notes?: string
     api_key?: string
     resume_text?: string
     code_context?: string

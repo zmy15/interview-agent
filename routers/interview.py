@@ -58,6 +58,9 @@ async def start_interview(req: InterviewStartRequest):
             interview_round=req.interview_round or "",
             **prompt_kwargs,
         )
+        # 追加用户补充说明
+        if req.prompt_notes:
+            system_content += "\n\n---\n【用户补充说明】\n" + req.prompt_notes
     except FileNotFoundError:
         raise HTTPException(status_code=400, detail=f"不支持的面试模式: {req.mode}")
 

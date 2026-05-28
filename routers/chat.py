@@ -157,6 +157,10 @@ async def chat_stream(req: ChatRequest):
                     **prompt_kwargs,
                 )
 
+                # 追加用户补充说明
+                if req.prompt_notes:
+                    system_content += "\n\n---\n【用户补充说明】\n" + req.prompt_notes
+
                 # 第一轮也注入动态上下文到 system 消息中
                 dynamic_ctx = _build_dynamic_context(req, prompt_kwargs)
                 if dynamic_ctx:

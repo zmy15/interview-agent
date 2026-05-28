@@ -48,9 +48,9 @@ class Settings:
     # FAISS 索引完整性校验（生产环境必须开启）
     FAISS_VERIFY_INTEGRITY: bool = os.getenv("FAISS_VERIFY_INTEGRITY", "true").lower() == "true"
 
-    # 上下文窗口管理（DeepSeek V4 支持 1M tokens，默认 800K 留安全余量）
-    MAX_CONTEXT_TOKENS: int = int(os.getenv("MAX_CONTEXT_TOKENS", "800000"))
-    SYSTEM_RESERVED_TOKENS: int = int(os.getenv("SYSTEM_RESERVED_TOKENS", "8000"))
+    # 上下文窗口管理（DeepSeek V4 支持 1M tokens）
+    MAX_CONTEXT_TOKENS: int = int(os.getenv("MAX_CONTEXT_TOKENS", "1000000"))
+    SYSTEM_RESERVED_TOKENS: int = int(os.getenv("SYSTEM_RESERVED_TOKENS", "16000"))
 
     # 日志等级: DEBUG / INFO / WARNING / ERROR
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
