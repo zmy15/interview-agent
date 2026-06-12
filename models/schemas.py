@@ -8,6 +8,7 @@ from typing import Optional
 
 CANDIDATE_LEVELS = ("intern", "new_grad", "experienced")
 INTERVIEW_ROUNDS = ("first", "second", "hr")
+QUESTION_BANK_MODES = ("strict", "mixed", "adaptive")
 
 
 # ============ 对话相关 ============
@@ -37,6 +38,8 @@ class ChatRequest(BaseModel):
     interview_question_count: int = 0  # 计划题目数量
     interview_coding_min: int = 0  # 编程题预留时间
     prompt_notes: Optional[str] = None  # 前端 PromptEditor 补充说明，追加到 system prompt 末尾
+    question_bank_ids: Optional[list[str]] = None  # 从题库中选定的题目ID列表（AI将从中出题）
+    question_bank_mode: Optional[str] = "mixed"  # 题库使用模式: strict(完全按题库) / mixed(部分题库) / adaptive(AI可改编)
 
 
 class ChatResponse(BaseModel):

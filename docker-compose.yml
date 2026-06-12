@@ -43,6 +43,64 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # ========== STT 语音识别 — faster-whisper（需显式指定 profile） ==========
+  stt:
+    build:
+      context: ./stt_service
+      dockerfile: ${STT_DOCKERFILE:-Dockerfile}
+    container_name: interview-stt
+    profiles: ["voice", "stt", "cpu", "gpu"]
+    expose: ["8000"]
+    env_file:
+      - .env
+    environment:
+      - STT_MODEL=${STT_MODEL:-base}
+      - STT_DEVICE=${STT_DEVICE:-cpu}
+      - STT_COMPUTE_TYPE=${STT_COMPUTE_TYPE:-int8}
+      - HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}
+      - VAD_SILENCE_TIMEOUT=${VAD_SILENCE_TIMEOUT:-1.0}
+    volumes:
+      - stt_models:/app/models
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${STT_GPU_COUNT:-0}
+              capabilities: [gpu]
+
+  # ========== TTS 语音合成 — Piper TTS（需显式指定 profile） ==========
+  tts:
+    build:
+      context: ./tts_service
+      dockerfile: Dockerfile
+    container_name: interview-tts
+    profiles: ["voice", "tts", "cpu", "gpu"]
+    expose: ["8000"]
+    env_file:
+      - .env
+    environment:
+      - TTS_VOICE=${TTS_VOICE:-zh_CN-huayan-medium}
+      - TTS_SPEED=${TTS_SPEED:-1.0}
+    volumes:
+      - tts_models:/app/models
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
 volumes:
   chroma_data:
   data:
+  stt_models:
+  tts_models:

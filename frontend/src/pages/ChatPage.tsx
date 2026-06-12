@@ -34,7 +34,10 @@ import PositionSelect from '@/components/PositionSelect'
 import PromptEditor from '@/components/PromptEditor'
 import { getInterviewPlan } from '@/api/interview'
 import type { ChatMode, InterviewPlanResponse, CandidateLevel, InterviewRound, AnswerLength } from '@/types'
-import { CodeOutlined } from '@ant-design/icons'
+import { CodeOutlined, BookOutlined } from '@ant-design/icons'
+import { questionBankApi, type QuestionItem } from '@/api/questionBank'
+import VoiceInputPanel from '@/components/VoiceInputPanel'
+import { useVoiceAvailability } from '@/hooks/useVoiceAvailability'
 
 const { TextArea } = Input
 const { Text } = Typography
@@ -49,6 +52,9 @@ const PHASE_LABELS: Record<string, { label: string; color: string }> = {
   coding: { label: '编程题', color: 'orange' },
   reverse: { label: '反问环节', color: 'purple' },
 }
+
+const DIFFICULTY_COLORS: Record<string, string> = { easy: 'green', medium: 'orange', hard: 'red' }
+const DIFFICULTY_LABELS: Record<string, string> = { easy: '简单', medium: '中等', hard: '困难' }
 
 const ChatPage: React.FC = () => {
   const {
@@ -80,11 +86,16 @@ const ChatPage: React.FC = () => {
     setInterviewPlan,
     resetPractice,
     addQARecord,
+    questionBankIds,
+    questionBankMode,
+    setQuestionBankIds,
+    setQuestionBankMode,
   } = useChatStore()
 
   const { message } = App.useApp()
   const { highlightCode, toggleHighlightCode, apiKey, setApiKey, interviewDuration, setInterviewDuration } = useAppStore()
   const { sendMessage, abort } = useSSE()
+  const { sttAvailable, ttsAvailable } = useVoiceAvailability()
 
   const [inputValue, setInputValue] = useState('')
   const [promptEditorOpen, setPromptEditorOpen] = useState(false)
@@ -93,6 +104,41 @@ const ChatPage: React.FC = () => {
 
   // 用于追踪上一轮 AI 的提问内容（配对 QA 记录）
   const lastAIQuestionRef = useRef<string>('')
+
+  // 题库选题
+  const [qbModalOpen, setQbModalOpen] = useState(false)
+  const [qbList, setQbList] = useState<QuestionItem[]>([])
+  const [qbLoading, setQbLoading] = useState(false)
+  const [qbSearch, setQbSearch] = useState('')
+  const [selectedQbIds, setSelectedQbIds] = useState<string[]>(questionBankIds)
+  const [qbMode, setQbMode] = useState<'strict' | 'mixed' | 'adaptive'>(questionBankMode)
+
+  const openQbModal = async () => {
+    setQbModalOpen(true)
+    setQbLoading(true)
+    try {
+      const res = await questionBankApi.list({ page: 1, page_size: 100 })
+      setQbList(res.questions)
+    } catch { /* ignore */ }
+    setQbLoading(false)
+  }
+
+  const confirmQbSelection = () => {
+    setQuestionBankIds(selectedQbIds)
+    setQuestionBankMode(qbMode)
+    setQbModalOpen(false)
+    message.success(`已选择 ${selectedQbIds.length} 道题目 · ${qbMode === 'strict' ? '严格模式' : qbMode === 'mixed' ? '混合模式' : '灵活改编'}`)
+  }
+
+  const toggleQbItem = (id: string) => {
+    setSelectedQbIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    )
+  }
+
+  const filteredQbList = qbSearch
+    ? qbList.filter((q) => q.title.includes(qbSearch) || q.content.includes(qbSearch))
+    : qbList
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const chatContainerRef = useRef<HTMLDivElement>(null)
@@ -560,6 +606,17 @@ const ChatPage: React.FC = () => {
         >
           Prompt
         </Button>
+        <Tooltip title={questionBankIds.length > 0 ? `已选${questionBankIds.length}题 · ${questionBankMode}` : '从题库选题'}>
+          <Button
+            size="small"
+            icon={<BookOutlined />}
+            type={questionBankIds.length > 0 ? 'primary' : 'default'}
+            ghost={questionBankIds.length > 0}
+            onClick={openQbModal}
+          >
+            选题{questionBankIds.length > 0 ? `(${questionBankIds.length})` : ''}
+          </Button>
+        </Tooltip>
         <Popconfirm
           title="确定清空当前模式对话记录？"
           onConfirm={handleClear}
@@ -701,19 +758,26 @@ const ChatPage: React.FC = () => {
         )}
 
         {messages.map((msg, idx) => (
-          <ChatMessage key={idx} message={msg} highlightCode={highlightCode} />
+          <ChatMessage key={idx} message={msg} highlightCode={highlightCode} ttsAvailable={ttsAvailable} />
         ))}
-
         {streamingMessage && (
-          <ChatMessage
-            message={streamingMessage}
-            highlightCode={highlightCode}
-            isStreaming
-          />
+          <ChatMessage message={streamingMessage} highlightCode={highlightCode} isStreaming ttsAvailable={ttsAvailable} />
         )}
 
         <div ref={messagesEndRef} />
       </div>
+
+      {/* 语音输入面板 */}
+      {sttAvailable && (
+        <div style={{ padding: '8px 0 0' }}>
+          <VoiceInputPanel
+            onResult={(text) => {
+              setInputValue(text)
+            }}
+            disabled={isStreaming}
+          />
+        </div>
+      )}
 
       {/* 底部输入区 */}
       <div
@@ -798,6 +862,80 @@ const ChatPage: React.FC = () => {
             获取 API Key。
           </Text>
         </div>
+      </Modal>
+
+      {/* 题库选题弹窗 */}
+      <Modal
+        title="从题库选题"
+        open={qbModalOpen}
+        onOk={confirmQbSelection}
+        onCancel={() => setQbModalOpen(false)}
+        okText={`确认选择 (${selectedQbIds.length})`}
+        cancelText="取消"
+        width={700}
+      >
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          {/* 模式选择 */}
+          <Space>
+            <Text strong>出题模式：</Text>
+            <Select
+              value={qbMode}
+              onChange={(v) => setQbMode(v)}
+              style={{ width: 180 }}
+              options={[
+                { value: 'strict', label: '🔒 严格 — 完全按题库原文出题' },
+                { value: 'mixed', label: '🔗 混合 — 必考题+少量自补题' },
+                { value: 'adaptive', label: '🎨 灵活改编 — AI可调整措辞难度' },
+              ]}
+            />
+          </Space>
+
+          {/* 搜索 */}
+          <Input
+            placeholder="搜索题目..."
+            prefix={<SearchOutlined />}
+            value={qbSearch}
+            onChange={(e) => setQbSearch(e.target.value)}
+            allowClear
+          />
+
+          {/* 题目列表 */}
+          <div style={{ maxHeight: 400, overflow: 'auto', border: '1px solid #f0f0f0', borderRadius: 8, padding: 8 }}>
+            {qbLoading ? (
+              <Text type="secondary">加载中...</Text>
+            ) : filteredQbList.length === 0 ? (
+              <Text type="secondary">无匹配题目</Text>
+            ) : (
+              filteredQbList.map((q) => {
+                const checked = selectedQbIds.includes(q.id)
+                return (
+                  <div
+                    key={q.id}
+                    onClick={() => toggleQbItem(q.id)}
+                    style={{
+                      padding: '8px 12px',
+                      cursor: 'pointer',
+                      borderRadius: 6,
+                      marginBottom: 4,
+                      background: checked ? '#e6f4ff' : '#fff',
+                      border: checked ? '1px solid #1677ff' : '1px solid #f0f0f0',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                    }}
+                  >
+                    <input type="checkbox" checked={checked} readOnly />
+                    <Tag color={DIFFICULTY_COLORS[q.difficulty] || 'default'}>
+                      {DIFFICULTY_LABELS[q.difficulty] || q.difficulty}
+                    </Tag>
+                    <Text ellipsis style={{ flex: 1 }}>{q.title}</Text>
+                    <Tag>{q.category}</Tag>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </Space>
       </Modal>
     </div>
   )

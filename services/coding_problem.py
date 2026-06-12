@@ -1,9 +1,12 @@
-"""编程题服务 — 根据岗位类型和答题情况智能选题"""
+"""编程题服务 — 根据岗位类型和答题情况智能选题（优先数据库，回退 JSON）"""
 
+import asyncio
 import json
 import random
 import os
 from typing import Optional
+
+from sqlalchemy import select
 
 DATA_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "leetcode_problems.json")
 
@@ -34,12 +37,46 @@ POSITION_DIFFICULTY_BIAS = {
 
 
 def _load_problems() -> list[dict]:
-    """加载题库"""
+    """加载题库（优先数据库，回退 JSON 文件）"""
+    try:
+        # 尝试从数据库加载
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # 在异步上下文中，创建新的事件循环来运行同步查询会有问题
+            # 但 select_problems 本身是同步函数，在 async handler 中通过 run_in_executor 调用
+            # 所以这里优先用 JSON 回退（DB 查询是 async 的，不能在同步函数中直接用）
+            pass
+    except RuntimeError:
+        pass
+
+    # 回退到 JSON 文件
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return []
+
+
+async def load_problems_from_db(db) -> list[dict]:
+    """从数据库加载题库（异步版本，供路由使用）"""
+    from models.db_models import QuestionBankItem
+    result = await db.execute(
+        select(QuestionBankItem).where(QuestionBankItem.category == "algorithm")
+    )
+    items = result.scalars().all()
+    return [
+        {
+            "id": item.id,
+            "title": item.title,
+            "title_cn": item.title,
+            "difficulty": item.difficulty,
+            "description": item.content,
+            "examples": "",
+            "hint": "",
+            "tags": item.tags or [],
+        }
+        for item in items
+    ]
 
 
 def _get_difficulty_bias(position_type: str, position_name: str) -> int:

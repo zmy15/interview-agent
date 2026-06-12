@@ -81,6 +81,8 @@ export function useSSE() {
           interview_duration_minutes: appStore.interviewDuration,
           interview_question_count: latestInterviewPlan?.question_count || 0,
           interview_coding_min: latestInterviewPlan?.coding_reserved_min || 0,
+          question_bank_ids: store.questionBankIds.length > 0 ? store.questionBankIds : undefined,
+          question_bank_mode: store.questionBankIds.length > 0 ? store.questionBankMode : undefined,
         },
         (chunk) => appendReasoning(chunk),
         (chunk) => appendContent(chunk),

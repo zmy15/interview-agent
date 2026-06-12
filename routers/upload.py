@@ -3,7 +3,8 @@
 import logging
 import time
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Query
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from models.schemas import UploadResponse, ProjectUploadResponse, UploadListResponse, UploadRecord
@@ -17,6 +18,7 @@ from services.parser import (
 from services.upload_store import UploadStore
 from services.chunker import chunk_document
 from services.vector_store import VectorStoreManager, is_vector_store_available
+from database import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +43,7 @@ def _get_ext(filename: str) -> str:
 
 
 @router.post("/resume", response_model=UploadResponse)
-async def upload_resume(file: UploadFile = File(...)):
+async def upload_resume(file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
     """上传简历文件（PDF/DOCX/DOC/TXT）"""
     if not file.filename:
         raise HTTPException(status_code=400, detail="文件名不能为空")
@@ -68,16 +70,16 @@ async def upload_resume(file: UploadFile = File(...)):
     if not text.strip():
         raise HTTPException(status_code=422, detail="无法从文件中提取文本内容")
 
-    # 持久化存储
-    store = UploadStore()
+    # 持久化存储（DB）
+    store = UploadStore(db)
     stored_text = text[:MAX_STORED_TEXT]
-    record = store.create(filename=file.filename, upload_type="resume", text=stored_text)
+    await store.create(filename=file.filename, upload_type="resume", text=stored_text)
 
     return UploadResponse(filename=file.filename, text=text, type="resume")
 
 
 @router.post("/code", response_model=UploadResponse)
-async def upload_code(file: UploadFile = File(...)):
+async def upload_code(file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
     """上传代码文件"""
     if not file.filename:
         raise HTTPException(status_code=400, detail="文件名不能为空")
@@ -101,10 +103,10 @@ async def upload_code(file: UploadFile = File(...)):
         logger.error(f"Code parse error: {e}")
         raise HTTPException(status_code=422, detail=f"文件解析失败: {str(e)}")
 
-    # 持久化存储
-    store = UploadStore()
+    # 持久化存储（DB）
+    store = UploadStore(db)
     stored_text = text[:MAX_STORED_TEXT]
-    record = store.create(filename=file.filename, upload_type="code", text=stored_text)
+    record = await store.create(filename=file.filename, upload_type="code", text=stored_text)
 
     # 索引到 FAISS 向量库（用于 RAG 检索）
     _index_to_faiss(
@@ -118,7 +120,7 @@ async def upload_code(file: UploadFile = File(...)):
 
 
 @router.post("/project", response_model=ProjectUploadResponse)
-async def upload_project(file: UploadFile = File(...)):
+async def upload_project(file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
     """
     上传项目压缩包（ZIP / TAR.GZ / TAR.BZ2 / 7Z）。
 
@@ -153,10 +155,10 @@ async def upload_project(file: UploadFile = File(...)):
     if not project["total_text"].strip():
         raise HTTPException(status_code=422, detail="无法从项目中提取文本内容")
 
-    # 持久化存储
-    store = UploadStore()
+    # 持久化存储（DB）
+    store = UploadStore(db)
     stored_text = project["total_text"][:MAX_STORED_TEXT]
-    record = store.create(
+    record = await store.create(
         filename=project["filename"],
         upload_type="project",
         text=stored_text,
@@ -241,43 +243,46 @@ def _index_to_faiss(filename: str, text: str, doc_type: str, upload_id: str):
 # ============ 上传文件管理 ============
 
 @router.get("/files", response_model=UploadListResponse)
-async def list_uploads(type: str = Query(None, description="按类型过滤: resume / code / project")):
-    """
-    列出所有上传文件记录。
-    可选 ?type=resume 过滤类型。
-    """
+async def list_uploads(
+    type: str = Query(None, description="按类型过滤: resume / code / project"),
+    db: AsyncSession = Depends(get_db),
+):
+    """列出所有上传文件记录。可选 ?type=resume 过滤类型。"""
     if type and type not in ("resume", "code", "project"):
         raise HTTPException(status_code=400, detail="type 必须为 resume / code / project")
-    store = UploadStore()
-    records = store.list_all(upload_type=type or None)
+    store = UploadStore(db)
+    records = await store.list_all(upload_type=type or None)
     return UploadListResponse(uploads=records)
 
 
 @router.get("/files/{upload_id}", response_model=UploadRecord)
-async def get_upload(upload_id: str):
+async def get_upload(upload_id: str, db: AsyncSession = Depends(get_db)):
     """获取单条上传记录的完整文本"""
-    store = UploadStore()
-    record = store.get(upload_id)
+    store = UploadStore(db)
+    record = await store.get(upload_id)
     if not record:
         raise HTTPException(status_code=404, detail="上传记录不存在")
     return record
 
 
 @router.delete("/files/{upload_id}")
-async def delete_upload(upload_id: str):
+async def delete_upload(upload_id: str, db: AsyncSession = Depends(get_db)):
     """删除上传记录"""
-    store = UploadStore()
-    success = store.delete(upload_id)
+    store = UploadStore(db)
+    success = await store.delete(upload_id)
     if not success:
         raise HTTPException(status_code=404, detail="上传记录不存在")
     return {"message": f"已删除: {upload_id}"}
 
 
 @router.delete("/files")
-async def delete_all_uploads(type: str = Query(None, description="按类型删除: resume / code / project")):
+async def delete_all_uploads(
+    type: str = Query(None, description="按类型删除: resume / code / project"),
+    db: AsyncSession = Depends(get_db),
+):
     """删除所有上传记录（或按类型）"""
     if type and type not in ("resume", "code", "project"):
         raise HTTPException(status_code=400, detail="type 必须为 resume / code / project")
-    store = UploadStore()
-    count = store.delete_all(upload_type=type or None)
+    store = UploadStore(db)
+    count = await store.delete_all(upload_type=type or None)
     return {"message": f"已删除 {count} 条记录"}

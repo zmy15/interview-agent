@@ -56,6 +56,19 @@ export async function request<T>(url: string, options: RequestOptions = {}): Pro
     // ignore
   }
 
+  // 自动附加 JWT Bearer Token（从 authStore 读取）
+  try {
+    const stored = localStorage.getItem('interview-agent-auth')
+    if (stored) {
+      const parsed = JSON.parse(stored)
+      if (parsed?.state?.accessToken) {
+        headers['Authorization'] = `Bearer ${parsed.state.accessToken}`
+      }
+    }
+  } catch {
+    // ignore
+  }
+
   if (body instanceof FormData) {
     requestBody = body
   } else if (body !== undefined && body !== null) {

@@ -4,8 +4,10 @@ import json
 import logging
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from starlette.responses import StreamingResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from config import settings
 from models.schemas import ChatRequest, ModelsResponse
@@ -16,6 +18,7 @@ from services.coding_problem import select_problems, format_problems_for_prompt
 from services.rag_pipeline import build_rag_context
 from utils.prompt_loader import load_prompt
 from utils.context_manager import estimate_tokens, trim_messages
+from database import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +34,13 @@ async def list_models():
 # ============ 辅助函数 ============
 
 def _build_dynamic_context(req: ChatRequest, prompt_kwargs: dict) -> str:
-    """构建每轮动态上下文（RAG + 搜索 + 编程题），这些内容每轮都可能变化"""
+    """构建每轮动态上下文（RAG + 搜索 + 编程题 + 题库），这些内容每轮都可能变化"""
     parts = []
+
+    # 题库注入（从 prompt_kwargs 中获取已加载的题库内容）
+    if prompt_kwargs.get("_question_bank_text"):
+        parts.append(prompt_kwargs["_question_bank_text"])
+        logger.info("Question bank injected | %d questions", len(req.question_bank_ids or []))
 
     # RAG 检索
     if req.position_name and req.messages:
@@ -79,7 +87,7 @@ def _build_dynamic_context(req: ChatRequest, prompt_kwargs: dict) -> str:
     return "\n\n---\n".join(parts) if parts else ""
 
 
-def _build_prompt_kwargs(req: ChatRequest) -> dict:
+async def _build_prompt_kwargs(req: ChatRequest, db: AsyncSession) -> dict:
     """构建静态 prompt 参数（JD / 简历 / 岗位类型 / 代码 / 时间预算）"""
     kwargs: dict = {
         "jd": "暂无岗位描述",
@@ -98,8 +106,8 @@ def _build_prompt_kwargs(req: ChatRequest) -> dict:
 
     if req.position_name:
         from services.position_store import PositionStore
-        store = PositionStore()
-        pos = store.get(req.position_name)
+        store = PositionStore(db)
+        pos = await store.get(req.position_name)
         if pos:
             kwargs["position_type"] = pos.position_type
             if pos.jds:
@@ -109,6 +117,44 @@ def _build_prompt_kwargs(req: ChatRequest) -> dict:
                         kwargs["jd"] = "\n\n".join(jd.content for jd in matched)
                 else:
                     kwargs["jd"] = "\n\n".join(jd.content for jd in pos.jds)
+
+    # 题库注入：根据 question_bank_ids 从数据库加载题目
+    if req.question_bank_ids:
+        try:
+            from models.db_models import QuestionBankItem
+            qb_result = await db.execute(
+                select(QuestionBankItem).where(QuestionBankItem.id.in_(req.question_bank_ids))
+            )
+            items = qb_result.scalars().all()
+            if items:
+                mode = req.question_bank_mode or "mixed"
+
+                mode_instructions = {
+                    "strict": (
+                        "【题库模式：严格】你必须且只能从以下题目中逐题提问，每题原文照读，不可修改、不可跳过、不可自编。"
+                        "全部题目问完后方可结束问答环节。"
+                    ),
+                    "mixed": (
+                        "【题库模式：混合】以下题目为必考题，你必须全部问到。此外你还可以根据对话情况，"
+                        "自行补充少量相关追问或扩展题。必考题优先，自补题不超过2道。"
+                    ),
+                    "adaptive": (
+                        "【题库模式：灵活改编】以下题目作为出题参考。你可以根据候选人背景、回答水平和对话节奏，"
+                        "灵活调整题目措辞、难度和顺序，也可基于题目主题自行延伸。但核心考察点不要偏离。"
+                    ),
+                }
+                instruction = mode_instructions.get(mode, mode_instructions["mixed"])
+
+                qb_parts = [instruction]
+                for i, item in enumerate(items, 1):
+                    qb_parts.append(
+                        f"\n题目{i}（{item.difficulty or 'medium'} | {item.category or 'general'}）：{item.title}\n"
+                        f"{item.content[:500]}"
+                    )
+                kwargs["_question_bank_text"] = "\n".join(qb_parts)
+                logger.info(f"Question bank loaded: {len(items)} questions, mode={mode}")
+        except Exception as e:
+            logger.warning(f"Failed to load question bank: {e}")
 
     # 代码/项目上下文：不再直接注入 prompt（已通过 RAG 向量检索获取）
     # 仅保留简历作为直接上下文
@@ -137,7 +183,7 @@ def _build_prompt_kwargs(req: ChatRequest) -> dict:
 # ============ 路由 ============
 
 @router.post("/stream")
-async def chat_stream(req: ChatRequest):
+async def chat_stream(req: ChatRequest, db: AsyncSession = Depends(get_db)):
     """SSE 流式对话接口（含上下文窗口管理）"""
 
     async def event_generator():
@@ -149,7 +195,7 @@ async def chat_stream(req: ChatRequest):
         if req.mode:
             if not has_system:
                 # 第一轮：构建完整 system 消息（静态部分只注入一次）
-                prompt_kwargs = _build_prompt_kwargs(req)
+                prompt_kwargs = await _build_prompt_kwargs(req, db)
                 system_content = load_prompt(
                     req.mode,
                     candidate_level=req.candidate_level or "",
@@ -169,7 +215,7 @@ async def chat_stream(req: ChatRequest):
                 messages.insert(0, {"role": "system", "content": system_content})
             else:
                 # 后续轮次：动态上下文注入到最后一条 user 消息前
-                prompt_kwargs = _build_prompt_kwargs(req)
+                prompt_kwargs = await _build_prompt_kwargs(req, db)
                 dynamic_ctx = _build_dynamic_context(req, prompt_kwargs)
                 if dynamic_ctx:
                     # 找到最后一条 user 消息，在前面追加动态上下文

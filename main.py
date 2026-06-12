@@ -1,11 +1,13 @@
 """
 面试 Agent 后端 — FastAPI + DeepSeek
-无状态设计，SSE 流式输出，支持 RAG 向量知识库 + 联网搜索
+平台化架构：用户系统 + 会话持久化 + 分析仪表盘
+SSE 流式输出，支持 RAG 向量知识库 + 联网搜索
 """
 
 import logging
 import os
 import sys
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, FileResponse
@@ -13,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from config import settings
-from routers import chat, upload, interview, position, knowledge
+from routers import chat, upload, interview, position, knowledge, auth, sessions, analytics, question_bank
 
 # ============ 日志配置 ============
 
@@ -26,12 +28,45 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+# ============ 应用生命周期 ============
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用启动/关闭时的初始化与清理"""
+    # 启动：初始化数据库表
+    try:
+        from database import init_db
+        await init_db()
+        logger.info("✅ 数据库初始化完成")
+    except Exception as e:
+        logger.warning(f"⚠ 数据库初始化失败（将使用 JSON 回退）: {e}")
+
+    # 启动：检查依赖
+    from config import settings as _s
+    if _s.AUTH_REQUIRED:
+        logger.info("🔒 认证模式已开启 — 所有 API 需要登录")
+    else:
+        logger.info("🔓 单用户模式 — 无需登录即可使用")
+
+    yield  # 应用运行中...
+
+    # 关闭：清理资源
+    try:
+        from database import engine
+        await engine.dispose()
+        logger.info("✅ 数据库连接已关闭")
+    except Exception:
+        pass
+
+
 # ============ FastAPI 应用 ============
 
 app = FastAPI(
-    title="Interview Agent API",
-    description="面试 Agent 后端服务 — DeepSeek 驱动 + RAG 增强",
-    version="1.0.0",
+    title="Interview Agent Platform API",
+    description="AI 模拟面试平台 — DeepSeek 驱动 + RAG 增强 + 用户系统",
+    version="2.0.0",
+    lifespan=lifespan,
 )
 
 # CORS 中间件（允许前端跨域访问）
@@ -45,12 +80,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 注册路由
+# 注册路由（无前缀版本，开发模式）
 app.include_router(chat.router)
 app.include_router(upload.router)
 app.include_router(interview.router)
 app.include_router(position.router)
 app.include_router(knowledge.router)
+app.include_router(auth.router)          # 认证路由
+app.include_router(sessions.router)      # 会话历史
+app.include_router(analytics.router)     # 分析仪表盘
+app.include_router(question_bank.router) # 题库管理
+
+# ── 条件注册语音路由（默认关闭，需 .env 中启用） ──
+if settings.VOICE_ENABLED or settings.STT_ENABLED:
+    try:
+        from routers import stt
+        app.include_router(stt.router)
+        logger.info("🎤 STT 语音识别路由已注册")
+    except ImportError:
+        logger.warning("⚠ STT 路由模块未找到，跳过注册")
+
+if settings.VOICE_ENABLED or settings.TTS_ENABLED:
+    try:
+        from routers import tts
+        app.include_router(tts.router)
+        logger.info("🔊 TTS 语音合成路由已注册")
+    except ImportError:
+        logger.warning("⚠ TTS 路由模块未找到，跳过注册")
 
 
 # ============ 全局异常处理 ============
@@ -94,6 +150,10 @@ if os.path.isdir(FRONTEND_DIST):
     app.include_router(interview.router, prefix="/api")
     app.include_router(position.router, prefix="/api")
     app.include_router(knowledge.router, prefix="/api")
+    app.include_router(auth.router, prefix="/api")
+    app.include_router(sessions.router, prefix="/api")
+    app.include_router(analytics.router, prefix="/api")
+    app.include_router(question_bank.router, prefix="/api")
 
     # 挂载静态资源（JS/CSS/图片等）
     if os.path.isdir(os.path.join(FRONTEND_DIST, "assets")):

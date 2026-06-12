@@ -1,0 +1,30 @@
+# STT 微服务 — GPU 版本（CUDA 12.1）
+# 构建: docker build -f Dockerfile.gpu -t interview-stt:gpu .
+# 运行: docker run --gpus all -p 8001:8000 -v stt_models:/app/models interview-stt:gpu
+
+FROM nvidia/cuda:12.1-runtime-ubuntu22.04
+
+# 安装 Python 3.11
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 python3.11-venv python3.11-dev python3-pip \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+
+WORKDIR /app
+
+# 安装 Python 依赖（GPU 版 faster-whisper 需要 ctranslate2-cuda）
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir ctranslate2>=4.0.0
+
+# 复制源码
+COPY . .
+
+# 模型存储目录
+RUN mkdir -p /app/models
+
+EXPOSE 8000
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

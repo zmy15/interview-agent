@@ -40,6 +40,10 @@ interface ChatState {
   // Prompt 微调
   promptOverrides: PromptTemplates
 
+  // 题库选题
+  questionBankIds: string[]
+  questionBankMode: 'strict' | 'mixed' | 'adaptive'
+
   // 持久化状态
   _hydrated: boolean
 
@@ -80,6 +84,10 @@ interface ChatState {
   setPromptOverride: (mode: 'interviewer' | 'candidate', template: string) => void
   resetPromptOverride: (mode: 'interviewer' | 'candidate') => void
   getEffectivePrompt: (mode: 'interviewer' | 'candidate') => string
+
+  // Actions — 题库选题
+  setQuestionBankIds: (ids: string[]) => void
+  setQuestionBankMode: (mode: 'strict' | 'mixed' | 'adaptive') => void
 
   // Actions — 持久化
   setHydrated: () => void
@@ -125,6 +133,9 @@ export const useChatStore = create<ChatState>()(
       totalUserChars: 0,
 
       promptOverrides: {},
+
+      questionBankIds: [],
+      questionBankMode: 'mixed' as const,
 
       _hydrated: false,
 
@@ -269,6 +280,10 @@ export const useChatStore = create<ChatState>()(
         const overrides = get().promptOverrides
         return overrides[mode] || ''
       },
+
+      // 题库选题 actions
+      setQuestionBankIds: (ids) => set({ questionBankIds: ids }),
+      setQuestionBankMode: (mode) => set({ questionBankMode: mode }),
 
       setHydrated: () => set({ _hydrated: true }),
     }),

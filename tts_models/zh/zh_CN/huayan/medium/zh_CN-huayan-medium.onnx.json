@@ -1,0 +1,1 @@
+{"dataset": "huayan", "audio": {"sample_rate": 22050}, "espeak": {"voice": "cmn"}, "num_symbols": 256, "num_speakers": 1, "phoneme_type": "espeak", "phoneme_id_map": {}, "phonemes": [], "speaker_id_map": {}}

@@ -30,11 +30,35 @@ export interface ChatRequest {
   interview_duration_minutes?: number
   interview_question_count?: number
   interview_coding_min?: number
+  prompt_notes?: string
+  question_bank_ids?: string[]
+  question_bank_mode?: 'strict' | 'mixed' | 'adaptive'
 }
 
 export type ChatMode = 'interviewer' | 'candidate'
 
 export type PromptTemplates = Partial<Record<ChatMode, string>>
+
+// ============ 语音相关 ============
+
+export interface STTResult {
+  text: string
+  isFinal: boolean
+  confidence?: number
+}
+
+export interface VADEvent {
+  status: 'speech_start' | 'speech_end' | 'silence'
+  timestamp: number
+}
+
+export interface TTSChunk {
+  audioData: ArrayBuffer
+  sentenceIndex: number
+  totalSentences: number
+}
+
+export type VoiceMode = 'vad' | 'manual'
 
 // ============ 模型相关 ============
 

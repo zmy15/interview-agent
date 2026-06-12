@@ -3,7 +3,8 @@
 import logging
 import re
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.schemas import (
     PositionCreate,
@@ -16,6 +17,7 @@ from models.schemas import (
 from services.position_store import PositionStore
 from config import settings
 from services.vector_store import VectorStoreManager
+from database import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -37,48 +39,48 @@ def _validate_position_name(name: str):
 
 
 @router.post("", response_model=PositionResponse, status_code=201)
-async def create_position(req: PositionCreate):
+async def create_position(req: PositionCreate, db: AsyncSession = Depends(get_db)):
     """创建新岗位"""
     _validate_position_name(req.name)
-    store = PositionStore()
+    store = PositionStore(db)
     try:
-        return store.create(req.name, req.description)
+        return await store.create(req.name, req.description)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
 
 
 @router.get("", response_model=PositionListResponse)
-async def list_positions():
+async def list_positions(db: AsyncSession = Depends(get_db)):
     """列出所有岗位"""
-    store = PositionStore()
-    return PositionListResponse(positions=store.list_all())
+    store = PositionStore(db)
+    return PositionListResponse(positions=await store.list_all())
 
 
 @router.get("/{name}", response_model=PositionResponse)
-async def get_position(name: str):
+async def get_position(name: str, db: AsyncSession = Depends(get_db)):
     """获取岗位详情（含所有 JD）"""
-    store = PositionStore()
-    pos = store.get(name)
+    store = PositionStore(db)
+    pos = await store.get(name)
     if not pos:
         raise HTTPException(status_code=404, detail=f"岗位 '{name}' 不存在")
     return pos
 
 
 @router.put("/{name}", response_model=PositionResponse)
-async def update_position(name: str, req: PositionUpdate):
+async def update_position(name: str, req: PositionUpdate, db: AsyncSession = Depends(get_db)):
     """更新岗位描述"""
-    store = PositionStore()
-    pos = store.update(name, req.description)
+    store = PositionStore(db)
+    pos = await store.update(name, req.description)
     if not pos:
         raise HTTPException(status_code=404, detail=f"岗位 '{name}' 不存在")
     return pos
 
 
 @router.delete("/{name}")
-async def delete_position(name: str):
+async def delete_position(name: str, db: AsyncSession = Depends(get_db)):
     """删除岗位及其关联的向量知识库"""
-    store = PositionStore()
-    if not store.get(name):
+    store = PositionStore(db)
+    if not await store.get(name):
         raise HTTPException(status_code=404, detail=f"岗位 '{name}' 不存在")
 
     # 先尝试删除向量知识库
@@ -88,7 +90,7 @@ async def delete_position(name: str):
     except Exception as e:
         logger.warning(f"Failed to delete vector collection for '{name}': {e}")
 
-    store.delete(name)
+    await store.delete(name)
     return {"message": f"岗位 '{name}' 已删除"}
 
 
@@ -96,29 +98,29 @@ async def delete_position(name: str):
 
 
 @router.post("/{name}/jds", response_model=JDResponse, status_code=201)
-async def add_jd(name: str, req: JDCreate):
+async def add_jd(name: str, req: JDCreate, db: AsyncSession = Depends(get_db)):
     """为岗位添加 JD"""
-    store = PositionStore()
-    jd = store.add_jd(name, req.content)
+    store = PositionStore(db)
+    jd = await store.add_jd(name, req.content)
     if jd is None:
         raise HTTPException(status_code=404, detail=f"岗位 '{name}' 不存在")
     return jd
 
 
 @router.delete("/{name}/jds/{jd_id}")
-async def remove_jd(name: str, jd_id: str):
+async def remove_jd(name: str, jd_id: str, db: AsyncSession = Depends(get_db)):
     """删除指定 JD"""
-    store = PositionStore()
-    if not store.remove_jd(name, jd_id):
+    store = PositionStore(db)
+    if not await store.remove_jd(name, jd_id):
         raise HTTPException(status_code=404, detail=f"JD '{jd_id}' 不存在或岗位 '{name}' 不存在")
     return {"message": f"JD '{jd_id}' 已删除"}
 
 
 @router.put("/{name}/jds/{jd_id}", response_model=JDResponse)
-async def update_jd(name: str, jd_id: str, req: JDCreate):
+async def update_jd(name: str, jd_id: str, req: JDCreate, db: AsyncSession = Depends(get_db)):
     """修改指定 JD 内容"""
-    store = PositionStore()
-    jd = store.update_jd(name, jd_id, req.content)
+    store = PositionStore(db)
+    jd = await store.update_jd(name, jd_id, req.content)
     if jd is None:
         raise HTTPException(status_code=404, detail=f"JD '{jd_id}' 不存在或岗位 '{name}' 不存在")
     return jd

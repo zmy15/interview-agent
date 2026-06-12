@@ -1,8 +1,11 @@
-import React from 'react'
-import { Collapse, Typography, theme } from 'antd'
-import { UserOutlined, RobotOutlined } from '@ant-design/icons'
+import React, { useState, useCallback } from 'react'
+import { Collapse, Typography, theme, Button } from 'antd'
+import { UserOutlined, RobotOutlined, SoundOutlined, PauseOutlined } from '@ant-design/icons'
 import StreamingText from './StreamingText'
 import type { Message } from '@/types'
+import { useTTSWebSocket } from '@/hooks/useTTSWebSocket'
+import { synthesizeSpeech } from '@/api/tts'
+import { useAudioPlayer } from '@/hooks/useAudioPlayer'
 
 const { Text } = Typography
 
@@ -10,12 +13,35 @@ interface ChatMessageProps {
   message: Message
   highlightCode: boolean
   isStreaming?: boolean
+  ttsAvailable?: boolean
 }
 
-const ChatMessage: React.FC<ChatMessageProps> = ({ message, highlightCode, isStreaming }) => {
+const ChatMessage: React.FC<ChatMessageProps> = ({ message, highlightCode, isStreaming, ttsAvailable }) => {
   const { token } = theme.useToken()
   const isUser = message.role === 'user'
   const isAssistant = message.role === 'assistant'
+
+  // TTS 朗读
+  const [ttsPlaying, setTtsPlaying] = useState(false)
+  const audioPlayer = useAudioPlayer()
+
+  const handleTTSPlay = useCallback(async () => {
+    if (ttsPlaying) {
+      audioPlayer.stop()
+      setTtsPlaying(false)
+      return
+    }
+    setTtsPlaying(true)
+    try {
+      const blob = await synthesizeSpeech(message.content)
+      if (blob.size > 0) {
+        await audioPlayer.play(blob, message.content)
+      }
+    } catch (err: any) {
+      console.error('TTS failed:', err?.message || err)
+    }
+    setTtsPlaying(false)
+  }, [message.content, ttsPlaying, audioPlayer])
 
   return (
     <div
@@ -88,6 +114,17 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message, highlightCode, isStr
               />
             )}
             <StreamingText text={message.content} highlightCode={highlightCode} />
+            {/* TTS 朗读按钮 */}
+            {!isStreaming && isAssistant && message.content && ttsAvailable && (
+              <Button
+                type="text"
+                size="small"
+                icon={ttsPlaying ? <PauseOutlined /> : <SoundOutlined />}
+                onClick={handleTTSPlay}
+                style={{ marginTop: 4 }}
+                title={ttsPlaying ? '停止朗读' : '朗读此消息'}
+              />
+            )}
             {isStreaming && (
               <span
                 style={{

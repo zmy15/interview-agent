@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { UploadRecord } from '@/types'
+import type { UploadRecord, VoiceMode } from '@/types'
 
 export type UploadType = 'resume' | 'code' | 'project'
 
@@ -16,6 +16,11 @@ interface AppState {
   projectStructure: Record<string, string[]> | null  // 当前项目的文件结构
   projectTechStack: string[]  // 当前项目的技术栈
 
+  // 语音设置
+  voiceMode: VoiceMode
+  autoPlayTTS: boolean
+  ttsSpeed: number
+
   toggleHighlightCode: () => void
   setApiKey: (key: string) => void
   setInterviewDuration: (duration: number) => void
@@ -29,6 +34,11 @@ interface AppState {
   setProjectMeta: (structure: Record<string, string[]> | null, techStack: string[]) => void
   /** 根据 activeCodeIds + uploads 重新计算 codeText */
   recomputeCodeText: () => void
+
+  // 语音 actions
+  setVoiceMode: (mode: VoiceMode) => void
+  setAutoPlayTTS: (auto: boolean) => void
+  setTTSSpeed: (speed: number) => void
 }
 
 export const useAppStore = create<AppState>()(
@@ -44,6 +54,10 @@ export const useAppStore = create<AppState>()(
       uploads: [],
       projectStructure: null,
       projectTechStack: [],
+
+      voiceMode: 'manual',
+      autoPlayTTS: false,
+      ttsSpeed: 1.0,
 
       toggleHighlightCode: () =>
         set((state) => ({ highlightCode: !state.highlightCode })),
@@ -162,6 +176,10 @@ export const useAppStore = create<AppState>()(
 
       setProjectMeta: (structure, techStack) =>
         set({ projectStructure: structure, projectTechStack: techStack }),
+
+      setVoiceMode: (mode) => set({ voiceMode: mode }),
+      setAutoPlayTTS: (auto) => set({ autoPlayTTS: auto }),
+      setTTSSpeed: (speed) => set({ ttsSpeed: speed }),
     }),
     {
       name: 'interview-agent-app-prefs',
@@ -176,6 +194,9 @@ export const useAppStore = create<AppState>()(
         uploads: state.uploads.slice(0, 20),  // 最多缓存 20 条
         projectStructure: state.projectStructure,
         projectTechStack: state.projectTechStack,
+        voiceMode: state.voiceMode,
+        autoPlayTTS: state.autoPlayTTS,
+        ttsSpeed: state.ttsSpeed,
       }),
     },
   ),
