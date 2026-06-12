@@ -50,6 +50,9 @@ Interview Agent 是一个基于大语言模型的 AI 模拟面试平台，支持
 - 🎛️ **模型选择** — 支持 DeepSeek V4 Pro / Flash，可切换思考模式与推理强度
 - 🔒 **安全机制** — CORS 域名白名单 + FAISS 索引 SHA-256 完整性校验
 - 📐 **上下文窗口管理** — tiktoken 精确 token 计数 + LangChain trim_messages 智能裁剪
+- 🎤 **语音输入 (STT)** — 按住说话/空格键录音，faster-whisper 流式识别，实时转文字
+- 🔊 **语音朗读 (TTS)** — AI 回复一键朗读，Piper TTS 中文语音合成
+- 🎛️ **灵活语音开关** — 启动时可选择 CPU/GPU，Docker Profile 按需启用，默认关闭零影响
 - 🖥️ **现代化 UI** — React + Ant Design 6，响应式布局
 - 🐳 **一键部署** — 支持本地脚本 / Docker Compose / 单容器三种启动方式
 
@@ -83,6 +86,12 @@ Interview Agent 是一个基于大语言模型的 AI 模拟面试平台，支持
 | `FAISS_VERIFY_INTEGRITY` | `true` | FAISS 索引 SHA-256 完整性校验 |
 | `MAX_CONTEXT_TOKENS` | `800000` | 上下文窗口上限（token） |
 | `DEEPSEEK_THINKING_ENABLED` | `true` | 默认启用思考模式 |
+| `VOICE_ENABLED` | `false` | 🎤 语音功能总开关 |
+| `STT_ENABLED` | `false` | 语音识别（语音转文字） |
+| `TTS_ENABLED` | `false` | 语音合成（文字转语音） |
+| `STT_MODEL` | `small` | Whisper 模型（base:140MB / small:480MB） |
+| `STT_DEVICE` | `cpu` | 推理设备（cpu / cuda） |
+| `TTS_SPEED` | `1.0` | 朗读语速（0.5-2.0） |
 
 <details>
 <summary><b>方式一：本地脚本（开发推荐）</b></summary>
@@ -150,6 +159,26 @@ Browser → Nginx (:80) → /api/* 反代 → FastAPI (:8000)
 | `docker-compose down -v` | 停止并删除容器+数据卷 |
 | `docker-compose logs -f backend` | 查看后端日志 |
 | `docker-compose restart backend` | 重启后端 |
+| `docker compose --profile cpu up` | 启动（CPU 语音模式） |
+| `docker compose --profile gpu up` | 启动（GPU 语音模式） |
+| `docker compose --profile voice up` | 启动（语音全功能） |
+
+#### 语音功能
+
+```bash
+# 本地开发：启动时选择 y → 选 CPU/GPU → 自动安装依赖+下载模型
+start.bat   # 或 ./start.sh
+
+# Docker：通过 Profile 启用
+docker compose --profile cpu up    # CPU 语音
+docker compose --profile gpu up    # GPU 语音
+
+# 仅语音识别或仅语音合成
+docker compose --profile stt up    # 仅 STT
+docker compose --profile tts up    # 仅 TTS
+```
+
+首次使用会自动下载模型（whisper ~480MB + Piper ~50MB）。
 
 #### 数据持久化
 
@@ -157,6 +186,8 @@ Browser → Nginx (:80) → /api/* 反代 → FastAPI (:8000)
 |------|----------|------|
 | FAISS 向量索引 | `chroma_data` volume | RAG 知识库索引 |
 | 上传记录/题库 | `data` volume | `uploads.json`, `leetcode_problems.json` |
+| STT 模型 | `stt_models` volume | Whisper 模型文件 |
+| TTS 模型 | `tts_models` volume | Piper 语音模型文件 |
 | 岗位数据 | `positions.json` | 镜像内置，重建后重置 |
 
 </details>

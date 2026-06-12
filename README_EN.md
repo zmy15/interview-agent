@@ -54,6 +54,9 @@ Interview Agent is an LLM-powered AI mock interview platform supporting both **i
 - 🎛️ **Model Selection** — Choose between DeepSeek V4 Pro / Flash, toggle thinking mode & reasoning effort
 - 🔒 **Security** — CORS domain whitelist + FAISS index SHA-256 integrity verification
 - 📐 **Context Window Management** — tiktoken precise token counting + LangChain trim_messages smart trimming
+- 🎤 **Voice Input (STT)** — Hold to talk / Spacebar to record; faster-whisper streaming recognition with real-time text
+- 🔊 **Voice Playback (TTS)** — One-click AI reply reading; Piper TTS Chinese voice synthesis
+- 🎛️ **Flexible Voice Toggle** — Choose CPU/GPU at startup; Docker Profile on-demand; disabled by default, zero impact
 - 🖥️ **Modern UI** — React + Ant Design 6 with responsive layout
 - 🐳 **One-Click Deploy** — Local scripts / Docker Compose / Single container — three ways to launch
 
@@ -88,6 +91,12 @@ Pick one of three methods:
 | `FAISS_VERIFY_INTEGRITY` | `true` | FAISS index SHA-256 integrity check |
 | `MAX_CONTEXT_TOKENS` | `800000` | Context window limit (tokens) |
 | `DEEPSEEK_THINKING_ENABLED` | `true` | Enable thinking mode by default |
+| `VOICE_ENABLED` | `false` | 🎤 Voice feature master switch |
+| `STT_ENABLED` | `false` | Speech-to-Text (voice to text) |
+| `TTS_ENABLED` | `false` | Text-to-Speech (text to voice) |
+| `STT_MODEL` | `small` | Whisper model (base:140MB / small:480MB) |
+| `STT_DEVICE` | `cpu` | Inference device (cpu / cuda) |
+| `TTS_SPEED` | `1.0` | Speech rate (0.5-2.0) |
 
 <details>
 <summary><b>Method 1: Local Script (dev recommended)</b></summary>
@@ -155,6 +164,26 @@ Browser → Nginx (:80) → /api/* reverse proxy → FastAPI (:8000)
 | `docker-compose down -v` | Stop & remove containers + volumes |
 | `docker-compose logs -f backend` | View backend logs |
 | `docker-compose restart backend` | Restart backend |
+| `docker compose --profile cpu up` | Start (CPU voice mode) |
+| `docker compose --profile gpu up` | Start (GPU voice mode) |
+| `docker compose --profile voice up` | Start (full voice features) |
+
+#### Voice Features
+
+```bash
+# Local dev: choose y at startup → select CPU/GPU → auto install deps + download models
+start.bat   # or ./start.sh
+
+# Docker: enable via Profile
+docker compose --profile cpu up    # CPU voice
+docker compose --profile gpu up    # GPU voice
+
+# STT-only or TTS-only
+docker compose --profile stt up    # STT only
+docker compose --profile tts up    # TTS only
+```
+
+First run auto-downloads models (whisper ~480MB + Piper ~50MB).
 
 #### Data Persistence
 
@@ -162,6 +191,8 @@ Browser → Nginx (:80) → /api/* reverse proxy → FastAPI (:8000)
 |------|----------|-------|
 | FAISS vector index | `chroma_data` volume | RAG knowledge base index |
 | Upload records / problem bank | `data` volume | `uploads.json`, `leetcode_problems.json` |
+| STT models | `stt_models` volume | Whisper model files |
+| TTS models | `tts_models` volume | Piper voice model files |
 | Position data | `positions.json` | In-image, resets on rebuild |
 
 </details>
