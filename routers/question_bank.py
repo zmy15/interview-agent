@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/question-bank", tags=["question-bank"])
 
-# LeetCode 题库文件路径
-LEETCODE_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "leetcode_problems.json")
+# 种子数据库路径
+_SEED_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "question_bank.db")
 
 
 # ============ 请求/响应模型 ============
@@ -225,44 +225,52 @@ async def import_leetcode(
     user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """一键导入 LeetCode 题库（默认 100+ 题）"""
-    if not os.path.exists(LEETCODE_FILE):
-        raise HTTPException(status_code=404, detail="LeetCode 题库文件不存在")
+    """一键导入内置题库（184 题，从种子数据库）"""
+    if not os.path.exists(_SEED_DB):
+        raise HTTPException(status_code=404, detail="题库种子文件不存在")
 
+    import sqlite3
     try:
-        with open(LEETCODE_FILE, "r", encoding="utf-8") as f:
-            problems = json.load(f)
+        seed_conn = sqlite3.connect(f"file:{_SEED_DB}?mode=ro", uri=True)
+        seed_rows = seed_conn.execute(
+            "SELECT id, user_id, team_id, title, content, category, difficulty, "
+            "tags, expected_answer, is_public, usage_count, created_at, updated_at "
+            "FROM question_bank"
+        ).fetchall()
+        seed_conn.close()
     except Exception:
-        raise HTTPException(status_code=500, detail="题库文件解析失败")
+        raise HTTPException(status_code=500, detail="题库种子文件读取失败")
 
     imported = 0
     skipped = 0
     now = datetime.now(timezone.utc)
 
-    for p in problems:
-        # 跳过已存在的（按标题去重）
+    for row in seed_rows:
+        title = row[3]
+        # 跳过已存在的（按标题去重，匹配当前用户）
         existing = await db.execute(
             select(QuestionBankItem).where(
                 QuestionBankItem.user_id == user.id,
-                QuestionBankItem.title == p.get("title_cn", p.get("title", "")),
+                QuestionBankItem.title == title,
             )
         )
         if existing.scalar_one_or_none():
             skipped += 1
             continue
 
+        tags_raw = row[7]
+        tags = json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
+
         item = QuestionBankItem(
             user_id=user.id,
-            title=p.get("title_cn", p.get("title", "")),
-            content=f"## {p.get('title_cn', '')} (LeetCode #{p.get('id', '')})\n\n"
-                    f"{p.get('description', '')}\n\n"
-                    f"**示例**:\n{p.get('examples', '')}\n\n"
-                    f"**提示**: {p.get('hint', '无')}",
-            category="algorithm",
-            difficulty=p.get("difficulty", "medium"),
-            tags=p.get("tags", []),
-            expected_answer="",
+            title=title,
+            content=row[4],
+            category=row[5] or "general",
+            difficulty=row[6] or "medium",
+            tags=tags,
+            expected_answer=row[8] or "",
             is_public=False,
+            usage_count=0,
             created_at=now,
         )
         db.add(item)

@@ -1,4 +1,4 @@
-"""编程题服务 — 根据岗位类型和答题情况智能选题（优先数据库，回退 JSON）"""
+"""编程题服务 — 根据岗位类型和答题情况智能选题（从种子数据库读取）"""
 
 import asyncio
 import json
@@ -8,7 +8,8 @@ from typing import Optional
 
 from sqlalchemy import select
 
-DATA_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "leetcode_problems.json")
+# 种子数据库路径
+_SEED_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "question_bank.db")
 
 # 题目难度对应的分值：easy=1, medium=2, hard=3
 DIFFICULTY_SCORE = {"easy": 1, "medium": 2, "hard": 3}
@@ -37,22 +38,28 @@ POSITION_DIFFICULTY_BIAS = {
 
 
 def _load_problems() -> list[dict]:
-    """加载题库（优先数据库，回退 JSON 文件）"""
+    """从种子数据库加载题库（同步读取，供同步函数使用）"""
+    import sqlite3
     try:
-        # 尝试从数据库加载
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # 在异步上下文中，创建新的事件循环来运行同步查询会有问题
-            # 但 select_problems 本身是同步函数，在 async handler 中通过 run_in_executor 调用
-            # 所以这里优先用 JSON 回退（DB 查询是 async 的，不能在同步函数中直接用）
-            pass
-    except RuntimeError:
-        pass
-
-    # 回退到 JSON 文件
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        conn = sqlite3.connect(f"file:{_SEED_DB}?mode=ro", uri=True)
+        rows = conn.execute(
+            "SELECT id, title, difficulty, content, tags FROM question_bank "
+            "WHERE category = 'algorithm'"
+        ).fetchall()
+        conn.close()
+        return [
+            {
+                "id": row[0],
+                "title": row[1],
+                "title_cn": row[1],
+                "difficulty": row[2] or "medium",
+                "description": row[3] or "",
+                "examples": "",
+                "hint": "",
+                "tags": json.loads(row[4]) if row[4] else [],
+            }
+            for row in rows
+        ]
     except Exception:
         return []
 

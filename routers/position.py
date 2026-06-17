@@ -18,6 +18,7 @@ from services.position_store import PositionStore
 from config import settings
 from services.vector_store import VectorStoreManager
 from database import get_db
+from utils.auth import get_current_user, CurrentUser
 
 logger = logging.getLogger(__name__)
 
@@ -39,21 +40,28 @@ def _validate_position_name(name: str):
 
 
 @router.post("", response_model=PositionResponse, status_code=201)
-async def create_position(req: PositionCreate, db: AsyncSession = Depends(get_db)):
+async def create_position(
+    req: PositionCreate,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
     """创建新岗位"""
     _validate_position_name(req.name)
     store = PositionStore(db)
     try:
-        return await store.create(req.name, req.description)
+        return await store.create(req.name, req.description, user_id=user.id)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
 
 
 @router.get("", response_model=PositionListResponse)
-async def list_positions(db: AsyncSession = Depends(get_db)):
+async def list_positions(
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
     """列出所有岗位"""
     store = PositionStore(db)
-    return PositionListResponse(positions=await store.list_all())
+    return PositionListResponse(positions=await store.list_all(user_id=user.id))
 
 
 @router.get("/{name}", response_model=PositionResponse)

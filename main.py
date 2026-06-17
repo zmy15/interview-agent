@@ -31,6 +31,61 @@ logger = logging.getLogger(__name__)
 
 # ============ 应用生命周期 ============
 
+async def _seed_question_bank():
+    """从种子数据库导入题库数据（仅在 question_bank 表为空时执行）"""
+    import json
+    from sqlalchemy import select, func
+    from models.db_models import QuestionBankItem
+    from database import async_session_factory
+
+    seed_db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "question_bank.db")
+    if not os.path.exists(seed_db_path):
+        logger.info("📭 题库种子文件不存在，跳过导入")
+        return
+
+    async with async_session_factory() as session:
+        # 检查是否已导入过
+        result = await session.execute(select(func.count()).select_from(QuestionBankItem))
+        if result.scalar() and result.scalar() > 0:
+            return
+
+        # 从种子 DB 读取（同步 sqlite3，只读）
+        import sqlite3
+        seed_conn = sqlite3.connect(f"file:{seed_db_path}?mode=ro", uri=True)
+        seed_rows = seed_conn.execute(
+            "SELECT id, user_id, team_id, title, content, category, difficulty, "
+            "tags, expected_answer, is_public, usage_count, created_at, updated_at "
+            "FROM question_bank"
+        ).fetchall()
+        seed_conn.close()
+
+        if not seed_rows:
+            return
+
+        for row in seed_rows:
+            tags_raw = row[7]
+            tags = json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
+            item = QuestionBankItem(
+                id=row[0],
+                user_id=row[1],
+                team_id=row[2],
+                title=row[3],
+                content=row[4],
+                category=row[5],
+                difficulty=row[6],
+                tags=tags,
+                expected_answer=row[8],
+                is_public=bool(row[9]) if row[9] is not None else False,
+                usage_count=row[10] or 0,
+                created_at=row[11],
+                updated_at=row[12],
+            )
+            session.add(item)
+
+        await session.commit()
+        logger.info(f"🌱 题库种子数据已导入: {len(seed_rows)} 题")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用启动/关闭时的初始化与清理"""
@@ -41,6 +96,12 @@ async def lifespan(app: FastAPI):
         logger.info("✅ 数据库初始化完成")
     except Exception as e:
         logger.warning(f"⚠ 数据库初始化失败（将使用 JSON 回退）: {e}")
+
+    # 启动：自动导入题库种子数据（仅首次）
+    try:
+        await _seed_question_bank()
+    except Exception as e:
+        logger.warning(f"⚠ 题库种子数据导入跳过: {e}")
 
     # 启动：检查依赖
     from config import settings as _s

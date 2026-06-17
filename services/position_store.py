@@ -10,6 +10,7 @@ from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from models.schemas import PositionResponse, JDResponse
 from models.db_models import Position, JD
@@ -45,13 +46,21 @@ class PositionStore:
         )
         self._db.add(pos)
         await self._db.flush()
+        # 新建岗位无 JD，直接构造响应避免触发懒加载
         logger.info(f"Position created: {name} (user={user_id})")
-        return await self._to_response(pos)
+        return PositionResponse(
+            name=pos.name,
+            description=pos.description or "",
+            position_type=pos.position_type or "未知",
+            jds=[],
+            created_at=pos.created_at.isoformat() if pos.created_at else "",
+            updated_at=pos.updated_at.isoformat() if pos.updated_at else "",
+        )
 
     async def get(self, name: str) -> Optional[PositionResponse]:
         """查询单个岗位（按名称）"""
         result = await self._db.execute(
-            select(Position).where(Position.name == name)
+            select(Position).options(selectinload(Position.jds)).where(Position.name == name)
         )
         pos = result.scalar_one_or_none()
         return await self._to_response(pos) if pos else None
@@ -59,7 +68,7 @@ class PositionStore:
     async def get_by_id(self, position_id: str) -> Optional[PositionResponse]:
         """按 ID 查询岗位"""
         result = await self._db.execute(
-            select(Position).where(Position.id == position_id)
+            select(Position).options(selectinload(Position.jds)).where(Position.id == position_id)
         )
         pos = result.scalar_one_or_none()
         return await self._to_response(pos) if pos else None
@@ -76,7 +85,7 @@ class PositionStore:
         if team_id:
             conditions.append(Position.team_id == team_id)
 
-        query = select(Position).order_by(Position.updated_at.desc())
+        query = select(Position).options(selectinload(Position.jds)).order_by(Position.updated_at.desc())
         if conditions:
             query = query.where(*conditions)
 
@@ -87,7 +96,7 @@ class PositionStore:
     async def update(self, name: str, description: str) -> Optional[PositionResponse]:
         """更新岗位描述"""
         result = await self._db.execute(
-            select(Position).where(Position.name == name)
+            select(Position).options(selectinload(Position.jds)).where(Position.name == name)
         )
         pos = result.scalar_one_or_none()
         if not pos:
@@ -115,7 +124,7 @@ class PositionStore:
     async def add_jd(self, position_name: str, content: str) -> Optional[JDResponse]:
         """为岗位添加 JD"""
         result = await self._db.execute(
-            select(Position).where(Position.name == position_name)
+            select(Position).options(selectinload(Position.jds)).where(Position.name == position_name)
         )
         pos = result.scalar_one_or_none()
         if not pos:
@@ -134,7 +143,7 @@ class PositionStore:
     async def remove_jd(self, position_name: str, jd_id: str) -> bool:
         """删除指定 JD"""
         result = await self._db.execute(
-            select(Position).where(Position.name == position_name)
+            select(Position).options(selectinload(Position.jds)).where(Position.name == position_name)
         )
         pos = result.scalar_one_or_none()
         if not pos:
@@ -155,7 +164,7 @@ class PositionStore:
     async def update_jd(self, position_name: str, jd_id: str, content: str) -> Optional[JDResponse]:
         """修改指定 JD 内容"""
         result = await self._db.execute(
-            select(Position).where(Position.name == position_name)
+            select(Position).options(selectinload(Position.jds)).where(Position.name == position_name)
         )
         pos = result.scalar_one_or_none()
         if not pos:

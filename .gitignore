@@ -58,6 +58,13 @@ frontend/dist/
 # ChromaDB / FAISS runtime data
 chroma_data/
 
+# Database (contains user data - DO NOT COMMIT)
+*.db
+*.sqlite
+*.sqlite3
+# Seed data — no user data, safe to commit
+!data/question_bank.db
+
 # Runtime data (contains personal data / generated content)
 positions.json
 data/uploads.json
