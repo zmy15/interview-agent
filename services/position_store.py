@@ -30,7 +30,10 @@ class PositionStore:
     async def create(self, name: str, description: str = "", user_id: Optional[str] = None) -> PositionResponse:
         """创建岗位"""
         existing = await self._db.execute(
-            select(Position).where(Position.name == name)
+            select(Position).where(
+                Position.name == name,
+                Position.user_id == user_id,
+            )
         )
         if existing.scalar_one_or_none():
             raise ValueError(f"岗位 '{name}' 已存在")
@@ -159,6 +162,10 @@ class PositionStore:
         await self._db.delete(jd)
         pos.updated_at = datetime.now(timezone.utc)
         await self._db.flush()
+        self._db.expire(
+            pos,
+            ["jds"],
+        )
         return True
 
     async def update_jd(self, position_name: str, jd_id: str, content: str) -> Optional[JDResponse]:

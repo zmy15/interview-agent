@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -24,6 +24,10 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 # ============ 响应模型 ============
 
 class SessionSummary(BaseModel):
+    model_config = ConfigDict(
+        from_attributes=True,
+    )
+
     id: str
     mode: str
     candidate_level: Optional[str]
@@ -40,8 +44,6 @@ class SessionSummary(BaseModel):
     message_count: int = 0
     has_report: bool = False
 
-    class Config:
-        from_attributes = True
 
 
 class MessageResponse(BaseModel):

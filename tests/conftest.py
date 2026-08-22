@@ -8,8 +8,42 @@ from main import app
 
 @pytest.fixture
 def client():
-    """FastAPI 同步测试客户端"""
-    return TestClient(app)
+    """启动应用，并返回带测试用户认证的客户端。"""
+    with TestClient(app) as test_client:
+        credentials = {
+            "email": "pytest@example.com",
+            "password": "pytest-password",
+            "display_name": "Pytest User",
+        }
+
+        auth_response = test_client.post(
+            "/auth/register",
+            json=credentials,
+        )
+
+        if auth_response.status_code == 409:
+            auth_response = test_client.post(
+                "/auth/login",
+                json={
+                    "email": credentials["email"],
+                    "password": credentials["password"],
+                },
+            )
+
+        assert auth_response.status_code in {
+            200,
+            201,
+        }, auth_response.text
+
+        access_token = auth_response.json()["access_token"]
+
+        test_client.headers.update(
+            {
+                "Authorization": f"Bearer {access_token}",
+            }
+        )
+
+        yield test_client
 
 
 @pytest.fixture
@@ -33,8 +67,6 @@ def sample_jd():
 def sample_chat_request():
     """测试用聊天请求"""
     return {
-        "messages": [
-            {"role": "user", "content": "你好，请介绍一下自己"}
-        ],
+        "messages": [{"role": "user", "content": "你好，请介绍一下自己"}],
         "mode": "interviewer",
     }
