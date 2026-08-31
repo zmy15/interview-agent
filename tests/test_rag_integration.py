@@ -1,20 +1,21 @@
 """RAG 端到端集成测试"""
 
 import io
-import json
-import os
-import sys
 
-# 确保项目根目录在 path 中
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import pytest
 
-from fastapi.testclient import TestClient
-from main import app
-
-client = TestClient(app)
+from services.vector_store import (
+    is_vector_store_available,
+)
 
 
-def test_rag_full_pipeline():
+pytestmark = pytest.mark.skipif(
+    not is_vector_store_available(),
+    reason="需要安装 requirements-rag.txt 中的可选 RAG 依赖",
+)
+
+
+def test_rag_full_pipeline(client):
     """完整 RAG 流水线测试：创建岗位 → 上传知识 → 向量检索 → 验证 chat 集成"""
     
     position_name = "RAG集成测试岗"
@@ -115,7 +116,3 @@ def test_rag_full_pipeline():
     print(f"  岗位 '{position_name}' 已删除")
     
     print("\n✅ RAG 端到端集成测试全部通过！")
-
-
-if __name__ == "__main__":
-    test_rag_full_pipeline()
