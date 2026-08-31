@@ -116,7 +116,3 @@ def test_rag_full_pipeline(client):
     print(f"  岗位 '{position_name}' 已删除")
     
     print("\n✅ RAG 端到端集成测试全部通过！")
-
-
-if __name__ == "__main__":
-    test_rag_full_pipeline()

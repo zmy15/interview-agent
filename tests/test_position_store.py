@@ -350,19 +350,23 @@ class TestPersistence:
 class TestUserIsolation:
     """多用户数据隔离测试。"""
 
-    async def test_different_users_can_create_same_position_name(
-        self,
-        db_session: AsyncSession,
-        user_id: str,
-    ) -> None:
-        second_user = User(
+    @pytest.fixture
+    async def second_user_id(self, db_session: AsyncSession) -> str:
+        user = User(
             email="second-user@example.com",
             hashed_password="not-used",
             display_name="Second User",
         )
-        db_session.add(second_user)
+        db_session.add(user)
         await db_session.flush()
+        return user.id
 
+    async def test_different_users_can_create_same_position_name(
+        self,
+        db_session: AsyncSession,
+        user_id: str,
+        second_user_id: str,
+    ) -> None:
         store = PositionStore(db_session)
 
         first_position = await store.create(
@@ -373,8 +377,93 @@ class TestUserIsolation:
         second_position = await store.create(
             "算法工程师",
             "用户 B 的岗位",
-            user_id=second_user.id,
+            user_id=second_user_id,
         )
 
         assert first_position.description == "用户 A 的岗位"
         assert second_position.description == "用户 B 的岗位"
+
+    async def test_get_scoped_by_user(
+        self,
+        store: PositionStore,
+        user_id: str,
+        second_user_id: str,
+    ) -> None:
+        """同名岗位下，带 user_id 的查询各自返回自己的"""
+        await store.create("算法工程师", "用户 A 的岗位", user_id=user_id)
+        await store.create("算法工程师", "用户 B 的岗位", user_id=second_user_id)
+
+        pos_a = await store.get("算法工程师", user_id=user_id)
+        pos_b = await store.get("算法工程师", user_id=second_user_id)
+
+        assert pos_a is not None
+        assert pos_a.description == "用户 A 的岗位"
+        assert pos_b is not None
+        assert pos_b.description == "用户 B 的岗位"
+
+    async def test_get_without_user_id_is_deterministic(
+        self,
+        store: PositionStore,
+        user_id: str,
+        second_user_id: str,
+    ) -> None:
+        """存在同名岗位时，不带 user_id 的查询不应崩溃（回归：MultipleResultsFound）"""
+        await store.create("算法工程师", "用户 A 的岗位", user_id=user_id)
+        await store.create("算法工程师", "用户 B 的岗位", user_id=second_user_id)
+
+        pos = await store.get("算法工程师")
+
+        assert pos is not None
+        assert pos.name == "算法工程师"
+
+    async def test_update_and_delete_scoped_by_user(
+        self,
+        store: PositionStore,
+        user_id: str,
+        second_user_id: str,
+    ) -> None:
+        """更新/删除只作用于本人岗位；对他人的同名岗位返回 None/False"""
+        await store.create("算法工程师", "用户 A 的岗位", user_id=user_id)
+        await store.create("算法工程师", "用户 B 的岗位", user_id=second_user_id)
+
+        # 用户 A 更新自己的
+        updated = await store.update("算法工程师", "A 改后", user_id=user_id)
+        assert updated is not None
+        assert updated.description == "A 改后"
+
+        # 用户 B 看到的仍是自己的
+        pos_b = await store.get("算法工程师", user_id=second_user_id)
+        assert pos_b.description == "用户 B 的岗位"
+
+        # 用户 A 删除自己的
+        assert await store.delete("算法工程师", user_id=user_id) is True
+
+        # 用户 B 的岗位还在，可正常更新/删除
+        pos_b = await store.get("算法工程师", user_id=second_user_id)
+        assert pos_b is not None
+        assert await store.delete("算法工程师", user_id=second_user_id) is True
+
+    async def test_jd_operations_scoped_by_user(
+        self,
+        store: PositionStore,
+        user_id: str,
+        second_user_id: str,
+    ) -> None:
+        """JD 的增删改只在本人岗位上生效"""
+        await store.create("算法工程师", "用户 A 的岗位", user_id=user_id)
+        await store.create("算法工程师", "用户 B 的岗位", user_id=second_user_id)
+
+        # 用户 A 的岗位添加 JD
+        jd = await store.add_jd("算法工程师", "A 的 JD", user_id=user_id)
+        assert jd is not None
+
+        # 用户 B 的同名岗位没有这条 JD
+        pos_b = await store.get("算法工程师", user_id=second_user_id)
+        assert pos_b.jds == []
+
+        # 用户 B 无法用这条 jd_id 在自己的岗位上删除/修改
+        assert await store.remove_jd("算法工程师", jd.id, user_id=second_user_id) is False
+        assert await store.update_jd("算法工程师", jd.id, "B 想改", user_id=second_user_id) is None
+
+        # 用户 A 正常删除
+        assert await store.remove_jd("算法工程师", jd.id, user_id=user_id) is True

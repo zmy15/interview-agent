@@ -1,5 +1,16 @@
 """pytest 公共 fixtures"""
 
+import os
+import tempfile
+
+# 测试专用数据库：必须在导入 main（间接导入 database.py）之前设置，
+# 否则 API 测试会直接读写开发库 data/interview_platform.db。
+# load_dotenv() 默认不覆盖已存在的环境变量，因此此处设置优先生效。
+_TEST_DB_DIR = tempfile.mkdtemp(prefix="interview-agent-tests-")
+os.environ["DATABASE_URL"] = (
+    "sqlite+aiosqlite:///" + os.path.join(_TEST_DB_DIR, "test_platform.db").replace("\\", "/")
+)
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -44,6 +55,32 @@ def client():
         )
 
         yield test_client
+
+
+@pytest.fixture
+def user_b_headers(client):
+    """第二个测试用户的认证头（与 client 默认用户不同，用于多用户隔离测试）"""
+    credentials = {
+        "email": "pytest-b@example.com",
+        "password": "pytest-password-b",
+        "display_name": "Pytest User B",
+    }
+
+    auth_response = client.post(
+        "/auth/register",
+        json=credentials,
+    )
+    if auth_response.status_code == 409:
+        auth_response = client.post(
+            "/auth/login",
+            json={
+                "email": credentials["email"],
+                "password": credentials["password"],
+            },
+        )
+
+    assert auth_response.status_code in {200, 201}, auth_response.text
+    return {"Authorization": f"Bearer {auth_response.json()['access_token']}"}
 
 
 @pytest.fixture
