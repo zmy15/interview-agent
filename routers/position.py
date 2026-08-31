@@ -65,30 +65,43 @@ async def list_positions(
 
 
 @router.get("/{name}", response_model=PositionResponse)
-async def get_position(name: str, db: AsyncSession = Depends(get_db)):
-    """获取岗位详情（含所有 JD）"""
+async def get_position(
+    name: str,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """获取岗位详情（含所有 JD，仅限本人岗位）"""
     store = PositionStore(db)
-    pos = await store.get(name)
+    pos = await store.get(name, user_id=user.id)
     if not pos:
         raise HTTPException(status_code=404, detail=f"岗位 '{name}' 不存在")
     return pos
 
 
 @router.put("/{name}", response_model=PositionResponse)
-async def update_position(name: str, req: PositionUpdate, db: AsyncSession = Depends(get_db)):
-    """更新岗位描述"""
+async def update_position(
+    name: str,
+    req: PositionUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """更新岗位描述（仅限本人岗位）"""
     store = PositionStore(db)
-    pos = await store.update(name, req.description)
+    pos = await store.update(name, req.description, user_id=user.id)
     if not pos:
         raise HTTPException(status_code=404, detail=f"岗位 '{name}' 不存在")
     return pos
 
 
 @router.delete("/{name}")
-async def delete_position(name: str, db: AsyncSession = Depends(get_db)):
-    """删除岗位及其关联的向量知识库"""
+async def delete_position(
+    name: str,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """删除岗位及其关联的向量知识库（仅限本人岗位）"""
     store = PositionStore(db)
-    if not await store.get(name):
+    if not await store.get(name, user_id=user.id):
         raise HTTPException(status_code=404, detail=f"岗位 '{name}' 不存在")
 
     # 先尝试删除向量知识库
@@ -98,7 +111,7 @@ async def delete_position(name: str, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         logger.warning(f"Failed to delete vector collection for '{name}': {e}")
 
-    await store.delete(name)
+    await store.delete(name, user_id=user.id)
     return {"message": f"岗位 '{name}' 已删除"}
 
 
@@ -106,29 +119,45 @@ async def delete_position(name: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/{name}/jds", response_model=JDResponse, status_code=201)
-async def add_jd(name: str, req: JDCreate, db: AsyncSession = Depends(get_db)):
-    """为岗位添加 JD"""
+async def add_jd(
+    name: str,
+    req: JDCreate,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """为岗位添加 JD（仅限本人岗位）"""
     store = PositionStore(db)
-    jd = await store.add_jd(name, req.content)
+    jd = await store.add_jd(name, req.content, user_id=user.id)
     if jd is None:
         raise HTTPException(status_code=404, detail=f"岗位 '{name}' 不存在")
     return jd
 
 
 @router.delete("/{name}/jds/{jd_id}")
-async def remove_jd(name: str, jd_id: str, db: AsyncSession = Depends(get_db)):
-    """删除指定 JD"""
+async def remove_jd(
+    name: str,
+    jd_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """删除指定 JD（仅限本人岗位）"""
     store = PositionStore(db)
-    if not await store.remove_jd(name, jd_id):
+    if not await store.remove_jd(name, jd_id, user_id=user.id):
         raise HTTPException(status_code=404, detail=f"JD '{jd_id}' 不存在或岗位 '{name}' 不存在")
     return {"message": f"JD '{jd_id}' 已删除"}
 
 
 @router.put("/{name}/jds/{jd_id}", response_model=JDResponse)
-async def update_jd(name: str, jd_id: str, req: JDCreate, db: AsyncSession = Depends(get_db)):
-    """修改指定 JD 内容"""
+async def update_jd(
+    name: str,
+    jd_id: str,
+    req: JDCreate,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """修改指定 JD 内容（仅限本人岗位）"""
     store = PositionStore(db)
-    jd = await store.update_jd(name, jd_id, req.content)
+    jd = await store.update_jd(name, jd_id, req.content, user_id=user.id)
     if jd is None:
         raise HTTPException(status_code=404, detail=f"JD '{jd_id}' 不存在或岗位 '{name}' 不存在")
     return jd

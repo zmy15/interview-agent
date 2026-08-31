@@ -3,6 +3,15 @@
 import io
 
 import pytest
+from services.vector_store import (
+    is_vector_store_available,
+)
+
+
+pytestmark = pytest.mark.skipif(
+    not is_vector_store_available(),
+    reason="需要安装 requirements-rag.txt 中的可选 RAG 依赖",
+)
 
 
 class TestKnowledgeUpload:

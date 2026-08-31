@@ -28,9 +28,14 @@ class PositionStore:
     # ========== 岗位 CRUD ==========
 
     async def create(self, name: str, description: str = "", user_id: Optional[str] = None) -> PositionResponse:
-        """创建岗位"""
+        """创建岗位（同名岗位按用户隔离，对应 idx_positions_name 唯一索引）"""
+        if user_id is None:
+            raise ValueError("创建岗位需要登录用户")
         existing = await self._db.execute(
-            select(Position).where(Position.name == name)
+            select(Position).where(
+                Position.name == name,
+                Position.user_id == user_id,
+            )
         )
         if existing.scalar_one_or_none():
             raise ValueError(f"岗位 '{name}' 已存在")
@@ -57,12 +62,27 @@ class PositionStore:
             updated_at=pos.updated_at.isoformat() if pos.updated_at else "",
         )
 
-    async def get(self, name: str) -> Optional[PositionResponse]:
-        """查询单个岗位（按名称）"""
+    async def _find_position(self, name: str, user_id: Optional[str] = None) -> Optional[Position]:
+        """按名称查找岗位；提供 user_id 时限定归属。
+
+        多用户允许同名岗位（唯一索引为 (user_id, name)），因此按名称的
+        读写都应带 user_id；未指定 user_id 时（无用户上下文的调用方）
+        取最近更新的一条，保证结果确定且不因同名重复而崩溃。
+        """
+        conditions = [Position.name == name]
+        if user_id is not None:
+            conditions.append(Position.user_id == user_id)
         result = await self._db.execute(
-            select(Position).options(selectinload(Position.jds)).where(Position.name == name)
+            select(Position)
+            .options(selectinload(Position.jds))
+            .where(*conditions)
+            .order_by(Position.updated_at.desc())
         )
-        pos = result.scalar_one_or_none()
+        return result.scalars().first()
+
+    async def get(self, name: str, user_id: Optional[str] = None) -> Optional[PositionResponse]:
+        """查询单个岗位（按名称；建议传入 user_id 限定归属）"""
+        pos = await self._find_position(name, user_id=user_id)
         return await self._to_response(pos) if pos else None
 
     async def get_by_id(self, position_id: str) -> Optional[PositionResponse]:
@@ -93,12 +113,9 @@ class PositionStore:
         positions = result.scalars().all()
         return [await self._to_response(p) for p in positions]
 
-    async def update(self, name: str, description: str) -> Optional[PositionResponse]:
+    async def update(self, name: str, description: str, user_id: Optional[str] = None) -> Optional[PositionResponse]:
         """更新岗位描述"""
-        result = await self._db.execute(
-            select(Position).options(selectinload(Position.jds)).where(Position.name == name)
-        )
-        pos = result.scalar_one_or_none()
+        pos = await self._find_position(name, user_id=user_id)
         if not pos:
             return None
         pos.description = description
@@ -106,12 +123,9 @@ class PositionStore:
         await self._db.flush()
         return await self._to_response(pos)
 
-    async def delete(self, name: str) -> bool:
+    async def delete(self, name: str, user_id: Optional[str] = None) -> bool:
         """删除岗位（级联删除 JD）"""
-        result = await self._db.execute(
-            select(Position).where(Position.name == name)
-        )
-        pos = result.scalar_one_or_none()
+        pos = await self._find_position(name, user_id=user_id)
         if not pos:
             return False
         await self._db.delete(pos)
@@ -121,12 +135,9 @@ class PositionStore:
 
     # ========== JD CRUD ==========
 
-    async def add_jd(self, position_name: str, content: str) -> Optional[JDResponse]:
+    async def add_jd(self, position_name: str, content: str, user_id: Optional[str] = None) -> Optional[JDResponse]:
         """为岗位添加 JD"""
-        result = await self._db.execute(
-            select(Position).options(selectinload(Position.jds)).where(Position.name == position_name)
-        )
-        pos = result.scalar_one_or_none()
+        pos = await self._find_position(position_name, user_id=user_id)
         if not pos:
             return None
 
@@ -140,12 +151,9 @@ class PositionStore:
         await self._db.flush()
         return JDResponse(id=jd.id, content=jd.content, created_at=jd.created_at.isoformat())
 
-    async def remove_jd(self, position_name: str, jd_id: str) -> bool:
+    async def remove_jd(self, position_name: str, jd_id: str, user_id: Optional[str] = None) -> bool:
         """删除指定 JD"""
-        result = await self._db.execute(
-            select(Position).options(selectinload(Position.jds)).where(Position.name == position_name)
-        )
-        pos = result.scalar_one_or_none()
+        pos = await self._find_position(position_name, user_id=user_id)
         if not pos:
             return False
 
@@ -159,14 +167,15 @@ class PositionStore:
         await self._db.delete(jd)
         pos.updated_at = datetime.now(timezone.utc)
         await self._db.flush()
+        self._db.expire(
+            pos,
+            ["jds"],
+        )
         return True
 
-    async def update_jd(self, position_name: str, jd_id: str, content: str) -> Optional[JDResponse]:
+    async def update_jd(self, position_name: str, jd_id: str, content: str, user_id: Optional[str] = None) -> Optional[JDResponse]:
         """修改指定 JD 内容"""
-        result = await self._db.execute(
-            select(Position).options(selectinload(Position.jds)).where(Position.name == position_name)
-        )
-        pos = result.scalar_one_or_none()
+        pos = await self._find_position(position_name, user_id=user_id)
         if not pos:
             return None
 

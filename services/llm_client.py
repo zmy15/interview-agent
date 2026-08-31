@@ -43,7 +43,6 @@ async def stream_chat(
     - {"type": "content", "content": "..."}    最终回答
     - {"type": "done", "content": ""}          结束
     """
-    client = get_client(api_key=api_key)
     _model = model or settings.DEEPSEEK_MODEL
     _thinking = thinking_enabled if thinking_enabled is not None else settings.DEEPSEEK_THINKING_ENABLED
     _effort = reasoning_effort or settings.DEEPSEEK_REASONING_EFFORT
@@ -67,6 +66,7 @@ async def stream_chat(
         extra_body["thinking"] = {"type": "disabled"}
 
     try:
+        client = get_client(api_key=api_key)
         stream = await client.chat.completions.create(
             model=_model,
             messages=msgs,
@@ -109,7 +109,6 @@ async def generate_report(
     api_key: Optional[str] = None,
 ) -> str:
     """非流式调用，用于报告生成"""
-    client = get_client(api_key=api_key)
     _model = model or settings.DEEPSEEK_MODEL
 
     msgs = []
@@ -122,6 +121,7 @@ async def generate_report(
             msgs.append({"role": getattr(m, "role", "user"), "content": getattr(m, "content", str(m))})
 
     try:
+        client = get_client(api_key=api_key)
         response = await client.chat.completions.create(
             model=_model,
             messages=msgs,

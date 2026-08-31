@@ -1,6 +1,7 @@
 """面试控制路由 — 开始/停止/报告/计划"""
 
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +18,7 @@ from models.schemas import (
 from services.position_store import PositionStore
 from services.llm_client import generate_report
 from utils.prompt_loader import load_prompt
+from utils.auth import get_optional_user, CurrentUser
 from database import get_db
 
 logger = logging.getLogger(__name__)
@@ -25,7 +27,11 @@ router = APIRouter(prefix="/interview", tags=["interview"])
 
 
 @router.post("/start")
-async def start_interview(req: InterviewStartRequest, db: AsyncSession = Depends(get_db)):
+async def start_interview(
+    req: InterviewStartRequest,
+    db: AsyncSession = Depends(get_db),
+    user: Optional[CurrentUser] = Depends(get_optional_user),
+):
     """
     开始面试，返回组装好的 system 消息。
     内部调用 PositionStore 获取岗位 JD。
@@ -38,7 +44,8 @@ async def start_interview(req: InterviewStartRequest, db: AsyncSession = Depends
 
     if req.position_name:
         store = PositionStore(db)
-        pos = await store.get(req.position_name)
+        # 带用户上下文查询，避免同名岗位时命中其他用户的岗位
+        pos = await store.get(req.position_name, user_id=user.id if user else None)
         if not pos:
             raise HTTPException(status_code=404, detail=f"岗位 '{req.position_name}' 不存在")
         prompt_kwargs["position_type"] = pos.position_type

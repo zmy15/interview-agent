@@ -130,3 +130,94 @@ class TestJDManagement:
         )
         assert response.status_code == 200
         assert response.json()["content"] == "修改后的 JD"
+
+
+class TestUserIsolation:
+    """多用户数据隔离测试 — 同名岗位按用户隔离"""
+
+    NAME = "隔离测试岗"
+
+    def test_same_name_across_users(self, client, user_b_headers):
+        """两个用户各自创建同名岗位，互不可见、互不可改、互不可删"""
+        # 用户 A 创建
+        resp = client.post("/positions", json={"name": self.NAME, "description": "A的岗位"})
+        assert resp.status_code == 201, resp.text
+
+        # 用户 B 可以创建同名岗位
+        resp = client.post(
+            "/positions",
+            json={"name": self.NAME, "description": "B的岗位"},
+            headers=user_b_headers,
+        )
+        assert resp.status_code == 201, resp.text
+
+        # 各自只能看到自己的
+        resp = client.get(f"/positions/{self.NAME}")
+        assert resp.status_code == 200
+        assert resp.json()["description"] == "A的岗位"
+
+        resp = client.get(f"/positions/{self.NAME}", headers=user_b_headers)
+        assert resp.status_code == 200
+        assert resp.json()["description"] == "B的岗位"
+
+        # 用户 A 改自己的，不影响 B
+        resp = client.put(
+            f"/positions/{self.NAME}",
+            json={"description": "A改后的岗位"},
+        )
+        assert resp.status_code == 200
+        resp = client.get(f"/positions/{self.NAME}", headers=user_b_headers)
+        assert resp.json()["description"] == "B的岗位"
+
+        # JD 也按用户隔离：A 添加的 JD，B 看不到
+        resp = client.post(
+            f"/positions/{self.NAME}/jds",
+            json={"content": "A的 JD 内容"},
+        )
+        assert resp.status_code == 201
+        resp = client.get(f"/positions/{self.NAME}", headers=user_b_headers)
+        assert resp.json()["jds"] == []
+
+        # 用户 A 删除自己的，B 的不受影响
+        resp = client.delete(f"/positions/{self.NAME}")
+        assert resp.status_code == 200
+        resp = client.get(f"/positions/{self.NAME}", headers=user_b_headers)
+        assert resp.status_code == 200
+        assert resp.json()["description"] == "B的岗位"
+
+        # A 删除后，B 仍存在，再删 B 的
+        resp = client.delete(f"/positions/{self.NAME}", headers=user_b_headers)
+        assert resp.status_code == 200
+
+    def test_cannot_touch_others_position(self, client, user_b_headers):
+        """用户无法获取/修改/删除其他用户的岗位"""
+        # 用户 B 创建岗位
+        resp = client.post(
+            "/positions",
+            json={"name": self.NAME, "description": "B的岗位"},
+            headers=user_b_headers,
+        )
+        assert resp.status_code == 201
+
+        # 用户 A（默认 client）访问同名岗位 → 404（视角里不存在）
+        assert client.get(f"/positions/{self.NAME}").status_code == 404
+
+        resp = client.put(
+            f"/positions/{self.NAME}",
+            json={"description": "A想改B的"},
+        )
+        assert resp.status_code == 404
+
+        resp = client.delete(f"/positions/{self.NAME}")
+        assert resp.status_code == 404
+
+        # 用户 A 给"不存在"（实际是 B 的）岗位加 JD → 404
+        resp = client.post(
+            f"/positions/{self.NAME}/jds",
+            json={"content": "A想给B的岗位加JD"},
+        )
+        assert resp.status_code == 404
+
+        # 清理：B 删除自己的岗位
+        resp = client.delete(f"/positions/{self.NAME}", headers=user_b_headers)
+        assert resp.status_code == 200

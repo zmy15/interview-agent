@@ -2,6 +2,7 @@
 
 import logging
 import time
+from typing import Optional
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +24,7 @@ from services.parser import (
 from services.chunker import chunk_document
 from services.vector_store import VectorStoreManager, is_vector_store_available
 from services.position_store import PositionStore
+from utils.auth import get_optional_user, CurrentUser
 from database import get_db
 
 logger = logging.getLogger(__name__)
@@ -57,6 +59,7 @@ async def upload_knowledge(
     position_name: str = Form(...),
     doc_type: str = Form(...),
     db: AsyncSession = Depends(get_db),
+    user: Optional[CurrentUser] = Depends(get_optional_user),
 ):
     """
     上传知识库文档。
@@ -73,7 +76,8 @@ async def upload_knowledge(
 
     # 校验 position_name 对应岗位存在
     store = PositionStore(db)
-    pos = await store.get(position_name)
+    # 带用户上下文查询，避免同名岗位时命中其他用户的岗位
+    pos = await store.get(position_name, user_id=user.id if user else None)
     if not pos:
         raise HTTPException(status_code=404, detail=f"岗位 '{position_name}' 不存在，请先创建岗位")
 

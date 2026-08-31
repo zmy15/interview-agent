@@ -18,6 +18,7 @@ from services.coding_problem import select_problems, format_problems_for_prompt
 from services.rag_pipeline import build_rag_context
 from utils.prompt_loader import load_prompt
 from utils.context_manager import estimate_tokens, trim_messages
+from utils.auth import get_optional_user, CurrentUser
 from database import get_db
 
 logger = logging.getLogger(__name__)
@@ -87,7 +88,7 @@ def _build_dynamic_context(req: ChatRequest, prompt_kwargs: dict) -> str:
     return "\n\n---\n".join(parts) if parts else ""
 
 
-async def _build_prompt_kwargs(req: ChatRequest, db: AsyncSession) -> dict:
+async def _build_prompt_kwargs(req: ChatRequest, db: AsyncSession, user: Optional[CurrentUser] = None) -> dict:
     """构建静态 prompt 参数（JD / 简历 / 岗位类型 / 代码 / 时间预算）"""
     kwargs: dict = {
         "jd": "暂无岗位描述",
@@ -107,7 +108,8 @@ async def _build_prompt_kwargs(req: ChatRequest, db: AsyncSession) -> dict:
     if req.position_name:
         from services.position_store import PositionStore
         store = PositionStore(db)
-        pos = await store.get(req.position_name)
+        # 带用户上下文查询，避免同名岗位时命中其他用户的岗位
+        pos = await store.get(req.position_name, user_id=user.id if user else None)
         if pos:
             kwargs["position_type"] = pos.position_type
             if pos.jds:
@@ -183,7 +185,11 @@ async def _build_prompt_kwargs(req: ChatRequest, db: AsyncSession) -> dict:
 # ============ 路由 ============
 
 @router.post("/stream")
-async def chat_stream(req: ChatRequest, db: AsyncSession = Depends(get_db)):
+async def chat_stream(
+    req: ChatRequest,
+    db: AsyncSession = Depends(get_db),
+    user: Optional[CurrentUser] = Depends(get_optional_user),
+):
     """SSE 流式对话接口（含上下文窗口管理）"""
 
     async def event_generator():
@@ -195,7 +201,7 @@ async def chat_stream(req: ChatRequest, db: AsyncSession = Depends(get_db)):
         if req.mode:
             if not has_system:
                 # 第一轮：构建完整 system 消息（静态部分只注入一次）
-                prompt_kwargs = await _build_prompt_kwargs(req, db)
+                prompt_kwargs = await _build_prompt_kwargs(req, db, user)
                 system_content = load_prompt(
                     req.mode,
                     candidate_level=req.candidate_level or "",
@@ -215,7 +221,7 @@ async def chat_stream(req: ChatRequest, db: AsyncSession = Depends(get_db)):
                 messages.insert(0, {"role": "system", "content": system_content})
             else:
                 # 后续轮次：动态上下文注入到最后一条 user 消息前
-                prompt_kwargs = await _build_prompt_kwargs(req, db)
+                prompt_kwargs = await _build_prompt_kwargs(req, db, user)
                 dynamic_ctx = _build_dynamic_context(req, prompt_kwargs)
                 if dynamic_ctx:
                     # 找到最后一条 user 消息，在前面追加动态上下文

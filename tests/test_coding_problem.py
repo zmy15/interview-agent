@@ -34,7 +34,11 @@ class TestLoadProblems:
     def test_returns_empty_on_missing_file(self, monkeypatch):
         """题库文件不存在 → 空列表"""
         import services.coding_problem as cp
-        monkeypatch.setattr(cp, "DATA_FILE", "/nonexistent/path/problems.json")
+        monkeypatch.setattr(
+            cp,
+            "_SEED_DB",
+            "/nonexistent/path/question_bank.db",
+        )
         problems = _load_problems()
         assert problems == []
 
