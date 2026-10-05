@@ -2,6 +2,9 @@
 面试 Agent 后端 — FastAPI + DeepSeek
 平台化架构：用户系统 + 会话持久化 + 分析仪表盘
 SSE 流式输出，支持 RAG 向量知识库 + 联网搜索
+
+启动方式：
+    python -m uvicorn main:app --port 8000     # 常规服务模式
 """
 
 import logging
@@ -190,9 +193,20 @@ async def value_error_handler(request: Request, exc: ValueError):
 
 
 # ============ 根路径 ============
+# 注意：/ 的路由必须先注册。当存在前端构建产物时，/ 应该返回前端页面
+# （独立窗口模式与生产模式都直接访问 /），仅在无前端产物时返回 JSON 健康信息。
+
+FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+_FRONTEND_INDEX = os.path.join(FRONTEND_DIST, "index.html")
+_HAS_FRONTEND = os.path.isfile(_FRONTEND_INDEX)
+
 
 @app.get("/")
 async def root():
+    # 有前端产物：返回 SPA 首页，让独立窗口 / 浏览器直接进入应用
+    if _HAS_FRONTEND:
+        return FileResponse(_FRONTEND_INDEX)
+    # 无前端产物（纯后端 / API 模式）：返回健康信息
     return {
         "message": "Interview Agent Backend is running",
         "version": "1.0.0",
@@ -202,9 +216,7 @@ async def root():
 
 # ============ 生产模式：托管前端静态文件 ============
 
-FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "frontend", "dist")
-
-if os.path.isdir(FRONTEND_DIST):
+if _HAS_FRONTEND:
     # 前端通过 /api/* 访问后端，生产模式下需要注册 /api 前缀路由
     app.include_router(chat.router, prefix="/api")
     app.include_router(upload.router, prefix="/api")
