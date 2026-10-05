@@ -97,6 +97,10 @@ if IS_WINDOWS:
 
     _user32.SetWindowDisplayAffinity.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
     _user32.SetWindowDisplayAffinity.restype = ctypes.c_bool
+    _user32.GetWindowDisplayAffinity.argtypes = (
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32),
+    )
+    _user32.GetWindowDisplayAffinity.restype = ctypes.c_bool
     _user32.GetAncestor.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
     _user32.GetAncestor.restype = ctypes.c_void_p
     _user32.SetWindowPos.argtypes = (
@@ -164,6 +168,7 @@ def set_capture_exclusion(hwnd: int, exclude: bool = True) -> bool:
 
     注意：SetWindowDisplayAffinity 只能作用于「当前进程拥有」的顶层窗口，
     因此对另一个进程（浏览器）的窗口调用会失败并返回 False。
+    在 native 模式下窗口由本进程创建，运行中可随时切换。
     """
     if not IS_WINDOWS:
         return False
@@ -173,6 +178,18 @@ def set_capture_exclusion(hwnd: int, exclude: bool = True) -> bool:
         err = ctypes.get_last_error()
         logger.debug("SetWindowDisplayAffinity 失败 (hwnd=%s, err=%s)", hwnd, err)
     return bool(ok)
+
+
+def get_capture_exclusion(hwnd: int) -> Optional[bool]:
+    """读取窗口当前是否已从屏幕捕获中排除；无法确定时返回 None"""
+    if not IS_WINDOWS or not hwnd:
+        return None
+    value = ctypes.c_uint32(0)
+    ok = _user32.GetWindowDisplayAffinity(ctypes.c_void_p(hwnd), ctypes.byref(value))
+    if not ok:
+        return None
+    # WDA_EXCLUDEFROMCAPTURE(0x11) 与 WDA_MONITOR(0x01) 都表示“不可被正常捕获”
+    return value.value in (WDA_EXCLUDEFROMCAPTURE, WDA_MONITOR)
 
 
 def set_topmost(hwnd: int, enabled: bool = True) -> bool:
@@ -699,6 +716,27 @@ class WindowControlApi:
         return {"ok": bool(ok), "hide_taskbar": ctrl.hide_taskbar,
                 "error": None if ok else "设置任务栏图标失败"}
 
+    def set_capture_exclude(self, exclude) -> dict:
+        """从屏幕捕获（截屏 / 录屏）中排除或恢复该窗口（运行中即时生效）"""
+        ctrl = self._controller
+        want = _parse_bool_arg(exclude)
+        if not ctrl.hwnd:
+            return {"ok": False, "capture_exclude": ctrl.capture_exclude,
+                    "error": "窗口句柄尚未就绪"}
+        ok = set_capture_exclusion(ctrl.hwnd, want)
+        if ok:
+            # 回读确认，避免「返回成功但实际没生效」
+            actual = get_capture_exclusion(ctrl.hwnd)
+            if actual is not None and actual != want:
+                ok = False
+            else:
+                ctrl.capture_exclude = want
+        if not ok:
+            return {"ok": False, "capture_exclude": ctrl.capture_exclude,
+                    "error": "设置失败：该窗口不支持捕获排除"
+                             "（浏览器 --app 模式下窗口属于浏览器进程）"}
+        return {"ok": True, "capture_exclude": ctrl.capture_exclude, "error": None}
+
     def get_state(self) -> dict:
         """返回当前窗口状态，供前端初始化控件。
 
@@ -710,12 +748,17 @@ class WindowControlApi:
         value = get_window_opacity(ctrl.hwnd) if ctrl.hwnd else ctrl.opacity
         if value is None:
             value = ctrl.opacity
+        # 捕获排除以系统实际状态为准（可能被外部或启动参数改变）
+        actual_capture = get_capture_exclusion(ctrl.hwnd) if ctrl.hwnd else None
+        if actual_capture is not None:
+            ctrl.capture_exclude = actual_capture
         return {
             "ok": True,
             "opacity": value,
             "opacity_percent": int(round(value * 100)),
             "topmost": ctrl.topmost,
             "capture_exclude": ctrl.capture_exclude,
+            "capture_supported": actual_capture is not None,
             "hide_taskbar": ctrl.hide_taskbar,
             "min_opacity": MIN_OPACITY,
             "max_opacity": MAX_OPACITY,

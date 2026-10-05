@@ -123,6 +123,8 @@ python main.py --desktop --no-topmost --width 1366 --height 768
 | `--capture-exclude [BOOL]` | `true` | 从屏幕捕获（截屏/录屏）中排除窗口 |
 | `--hide-taskbar [BOOL]` | `false` | 隐藏任务栏图标 |
 | `--fullscreen [BOOL]` | `false` | 全屏启动 |
+
+> 上表中的窗口项均可在界面「设置」面板中随时开关，启动参数只决定初始状态。
 | `--window-title TEXT` | `面试 Agent — AI 模拟面试助手` | 窗口标题 |
 | `--shell {auto,native,browser}` | `auto` | 窗口实现方式（见下） |
 | `--port N` / `--auto-port` | `8000` / `false` | 端口；被占用时可自动顺延 |
@@ -142,19 +144,25 @@ python main.py --desktop --no-topmost --width 1366 --height 768
 并保存在 `localStorage`，刷新后保持。深色背景会自动启用 antd 暗色算法，
 确保弹窗、下拉框等浮层也保持可读。
 
-**界面内实时调整透明度**
+**界面内实时调整窗口设置**
 
 独立窗口模式下，界面顶栏会出现 **设置** 按钮（齿轮图标），点开后包含：
 
 - **窗口透明度滑块**（20% - 100%）—— 拖动即时生效，无需重启
 - **窗口置顶**开关
 - **隐藏任务栏图标**开关 —— 运行中可随时切换
-- **捕获排除**状态显示
+- **捕获排除**开关 —— 截屏 / 录屏中是否隐藏窗口内容，运行中可随时切换
 - 「恢复不透明」快捷按钮
+
+> 以上开关也可作为启动参数使用（`--topmost` / `--hide-taskbar` / `--capture-exclude`），
+> 启动参数决定初始状态，之后可在界面里随时改。
 
 > 该类窗口项在普通浏览器中自动隐藏 —— 透明度是 Windows 窗口属性，只能由 Python 侧修改，
 > 网页滑块通过 pywebview 的 JS↔Python 桥接（`window.pywebview.api`）回写窗口。
 > 透明度下限为 20%，避免窗口过淡导致无法操作。
+>
+> **捕获排除开关**在 browser 回退模式下会显示为禁用状态：该 API 不允许跨进程调用，
+> 而浏览器 `--app` 窗口属于浏览器进程。
 
 > **关于隐藏任务栏图标的实现**：Windows 在窗口「首次显示」时就会向任务栏注册按钮，
 > 之后再改 `WS_EX_TOOLWINDOW` 样式**不会**让已存在的按钮消失。

@@ -16,6 +16,8 @@ import {
   setWindowOpacity,
   setWindowTopmost,
   setTaskbarHidden,
+  // 起别名，避免与本地 state setter（setCaptureExclude）重名
+  setCaptureExclude as applyCaptureExclude,
 } from '@/api/windowControl'
 
 const { Text } = Typography
@@ -43,6 +45,7 @@ const WindowSettings: React.FC = () => {
   const [topmost, setTopmost] = useState(false)
   const [hideTaskbar, setHideTaskbar] = useState(false)
   const [captureExclude, setCaptureExclude] = useState(false)
+  const [captureSupported, setCaptureSupported] = useState(true)
   const [open, setOpen] = useState(false)
   // 拖动过程中的实时值（避免频繁触发后端调用）
   const commitTimer = useRef<number | null>(null)
@@ -74,6 +77,7 @@ const WindowSettings: React.FC = () => {
       setTopmost(!!state.topmost)
       setHideTaskbar(!!state.hide_taskbar)
       setCaptureExclude(!!state.capture_exclude)
+      setCaptureSupported(state.capture_supported !== false)
     }
     void load()
 
@@ -121,6 +125,15 @@ const WindowSettings: React.FC = () => {
     }
   }, [])
 
+  const handleCaptureExcludeChange = useCallback(async (checked: boolean) => {
+    setCaptureExclude(checked)
+    const result = await applyCaptureExclude(checked)
+    if (!result.ok) {
+      setCaptureExclude(!checked)
+      message.warning(result.error || '设置捕获排除失败')
+    }
+  }, [])
+
   const resetOpacity = useCallback(() => {
     setOpacityPercent(DEFAULT_PERCENT)
     commitOpacity(DEFAULT_PERCENT)
@@ -138,6 +151,7 @@ const WindowSettings: React.FC = () => {
     setTopmost(!!state.topmost)
     setHideTaskbar(!!state.hide_taskbar)
     setCaptureExclude(!!state.capture_exclude)
+      setCaptureSupported(state.capture_supported !== false)
   }, [])
 
   // 配色在浏览器和独立窗口下都可用；透明度/置顶只在独立窗口模式下有意义
@@ -195,12 +209,24 @@ const WindowSettings: React.FC = () => {
             </Space>
 
             <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-              <Tooltip title="截屏 / 录屏中该窗口不可见（由启动参数控制）">
-                <Text style={{ fontSize: 13 }}>捕获排除</Text>
+              <Tooltip
+                title={
+                  captureSupported
+                    ? '开启后截屏 / 录屏中看不到该窗口内容'
+                    : '当前窗口不支持该功能：浏览器 --app 模式下窗口属于浏览器进程，'
+                      + 'Windows 不允许跨进程设置'
+                }
+              >
+                <Text style={{ fontSize: 13, opacity: captureSupported ? 1 : 0.45 }}>
+                  捕获排除
+                </Text>
               </Tooltip>
-              <Text type={captureExclude ? 'success' : 'secondary'} style={{ fontSize: 12 }}>
-                {captureExclude ? '已开启' : '未开启'}
-              </Text>
+              <Switch
+                size="small"
+                checked={captureExclude}
+                disabled={!captureSupported}
+                onChange={handleCaptureExcludeChange}
+              />
             </Space>
           </>
         )}

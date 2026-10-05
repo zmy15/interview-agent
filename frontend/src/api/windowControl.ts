@@ -14,6 +14,7 @@ interface PywebviewApi {
   get_state: () => Promise<WindowStateResult>
   set_topmost: (enabled: boolean) => Promise<TopmostResult>
   set_taskbar_hidden: (hidden: boolean) => Promise<TaskbarResult>
+  set_capture_exclude: (exclude: boolean) => Promise<CaptureResult>
   close_window: () => Promise<{ ok: boolean; error: string | null }>
 }
 
@@ -38,6 +39,8 @@ export interface WindowStateResult {
   opacity: number | null
   topmost: boolean
   capture_exclude: boolean
+  /** 当前窗口是否支持捕获排除（browser 模式下为 false） */
+  capture_supported?: boolean
   hide_taskbar: boolean
   min_opacity: number
   max_opacity: number
@@ -55,6 +58,12 @@ interface TopmostResult {
 interface TaskbarResult {
   ok: boolean
   hide_taskbar: boolean
+  error: string | null
+}
+
+interface CaptureResult {
+  ok: boolean
+  capture_exclude: boolean
   error: string | null
 }
 
@@ -127,5 +136,17 @@ export async function setTaskbarHidden(hidden: boolean): Promise<TaskbarResult> 
     return await window.pywebview!.api.set_taskbar_hidden(hidden)
   } catch (err) {
     return { ok: false, hide_taskbar: hidden, error: (err as Error).message || '设置失败' }
+  }
+}
+
+/** 从屏幕捕获（截屏 / 录屏）中排除或恢复窗口 */
+export async function setCaptureExclude(exclude: boolean): Promise<CaptureResult> {
+  if (!isDesktopWindow()) {
+    return { ok: false, capture_exclude: exclude, error: '当前不在独立窗口模式中' }
+  }
+  try {
+    return await window.pywebview!.api.set_capture_exclude(exclude)
+  } catch (err) {
+    return { ok: false, capture_exclude: exclude, error: (err as Error).message || '设置失败' }
   }
 }
