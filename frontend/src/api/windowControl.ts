@@ -13,6 +13,7 @@ interface PywebviewApi {
   get_opacity: () => Promise<OpacityResult>
   get_state: () => Promise<WindowStateResult>
   set_topmost: (enabled: boolean) => Promise<TopmostResult>
+  set_taskbar_hidden: (hidden: boolean) => Promise<TaskbarResult>
   close_window: () => Promise<{ ok: boolean; error: string | null }>
 }
 
@@ -48,6 +49,12 @@ export interface WindowStateResult {
 interface TopmostResult {
   ok: boolean
   topmost: boolean
+  error: string | null
+}
+
+interface TaskbarResult {
+  ok: boolean
+  hide_taskbar: boolean
   error: string | null
 }
 
@@ -108,5 +115,17 @@ export async function setWindowTopmost(enabled: boolean): Promise<TopmostResult>
     return await window.pywebview!.api.set_topmost(enabled)
   } catch (err) {
     return { ok: false, topmost: enabled, error: (err as Error).message || '设置失败' }
+  }
+}
+
+/** 隐藏/显示任务栏图标 */
+export async function setTaskbarHidden(hidden: boolean): Promise<TaskbarResult> {
+  if (!isDesktopWindow()) {
+    return { ok: false, hide_taskbar: hidden, error: '当前不在独立窗口模式中' }
+  }
+  try {
+    return await window.pywebview!.api.set_taskbar_hidden(hidden)
+  } catch (err) {
+    return { ok: false, hide_taskbar: hidden, error: (err as Error).message || '设置失败' }
   }
 }

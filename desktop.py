@@ -86,7 +86,9 @@ LWA_ALPHA = 0x00000002
 MIN_OPACITY = 0.20
 MAX_OPACITY = 1.0
 
+SW_HIDE = 0
 SW_SHOW = 5
+SW_SHOWNA = 8
 SW_RESTORE = 9
 
 _user32 = None
@@ -187,18 +189,64 @@ def set_topmost(hwnd: int, enabled: bool = True) -> bool:
 
 
 def set_taskbar_hidden(hwnd: int, hidden: bool = True) -> bool:
-    """隐藏/显示任务栏图标（切换 WS_EX_TOOLWINDOW 扩展样式）"""
-    if not IS_WINDOWS:
+    """隐藏/显示任务栏图标（切换 WS_EX_TOOLWINDOW 扩展样式）。
+
+    关键点：Windows 在窗口「首次显示」时就已向任务栏注册了按钮，
+    之后再改 WS_EX_TOOLWINDOW 并不会让已存在的按钮消失 ——
+    必须先把窗口隐藏，改完样式再显示，任务栏才会重新判定并移除按钮。
+    （仅设置样式而不做隐藏/显示循环，是「任务栏图标没隐藏」的原因。）
+
+    同时保留窗口原有可见性状态，避免把用户手动最小化的窗口强行弹出来。
+    """
+    if not IS_WINDOWS or not hwnd:
         return False
-    ex_style = int(_get_window_long(ctypes.c_void_p(hwnd), GWL_EXSTYLE))
+
+    hwnd_ptr = ctypes.c_void_p(hwnd)
+    was_visible = bool(_user32.IsWindowVisible(hwnd_ptr))
+
+    # 1) 先隐藏，让任务栏移除/重建按钮
+    if was_visible:
+        _user32.ShowWindow(hwnd_ptr, SW_HIDE)
+
+    # 2) 改扩展样式
+    ex_style = int(_get_window_long(hwnd_ptr, GWL_EXSTYLE))
     if hidden:
         ex_style |= WS_EX_TOOLWINDOW
         ex_style &= ~WS_EX_APPWINDOW
     else:
         ex_style &= ~WS_EX_TOOLWINDOW
         ex_style |= WS_EX_APPWINDOW
-    _set_window_long(ctypes.c_void_p(hwnd), GWL_EXSTYLE, ex_style)
+    _set_window_long(hwnd_ptr, GWL_EXSTYLE, ex_style)
+
+    # 3) 恢复显示；用 ShowWindow 直接显示，避免抢焦点
+    if was_visible:
+        _user32.ShowWindow(hwnd_ptr, SW_SHOWNA)
+
     return True
+
+
+def refresh_taskbar_button(hwnd: int) -> bool:
+    """强制任务栏重新注册该窗口的按钮（隐藏→显示）。
+
+    某些情况下窗口在样式生效前就已被任务栏登记，需要再触发一次重建。
+    """
+    if not IS_WINDOWS or not hwnd:
+        return False
+    hwnd_ptr = ctypes.c_void_p(hwnd)
+    if not _user32.IsWindowVisible(hwnd_ptr):
+        return False
+    _user32.ShowWindow(hwnd_ptr, SW_HIDE)
+    time.sleep(0.05)
+    _user32.ShowWindow(hwnd_ptr, SW_SHOWNA)
+    return True
+
+
+def _has_toolwindow_style(hwnd: int) -> bool:
+    """检查窗口是否已带上 WS_EX_TOOLWINDOW（用于确认隐藏任务栏图标是否生效）"""
+    if not IS_WINDOWS or not hwnd:
+        return False
+    ex_style = int(_get_window_long(ctypes.c_void_p(hwnd), GWL_EXSTYLE))
+    return bool(ex_style & WS_EX_TOOLWINDOW)
 
 
 def focus_window(hwnd: int) -> bool:
@@ -634,6 +682,23 @@ class WindowControlApi:
         ok = set_topmost(ctrl.hwnd, ctrl.topmost) if ctrl.hwnd else False
         return {"ok": bool(ok), "topmost": ctrl.topmost, "error": None if ok else "设置置顶失败"}
 
+    def set_taskbar_hidden(self, hidden) -> dict:
+        """隐藏/显示任务栏图标（运行中即时生效）"""
+        ctrl = self._controller
+        ctrl.hide_taskbar = _parse_bool_arg(hidden)
+        if not ctrl.hwnd:
+            return {"ok": False, "hide_taskbar": ctrl.hide_taskbar,
+                    "error": "窗口句柄尚未就绪"}
+        ok = set_taskbar_hidden(ctrl.hwnd, ctrl.hide_taskbar)
+        if ok and ctrl.hide_taskbar:
+            # 确认样式确实写入，并再刷新一次任务栏
+            if not _has_toolwindow_style(ctrl.hwnd):
+                ok = False
+            else:
+                refresh_taskbar_button(ctrl.hwnd)
+        return {"ok": bool(ok), "hide_taskbar": ctrl.hide_taskbar,
+                "error": None if ok else "设置任务栏图标失败"}
+
     def get_state(self) -> dict:
         """返回当前窗口状态，供前端初始化控件。
 
@@ -768,10 +833,21 @@ class NativeWindow:
 
         self.hwnd = hwnd
         set_topmost(hwnd, self.topmost)
-        if self.hide_taskbar:
-            set_taskbar_hidden(hwnd, True)
         if self.title:
             set_window_title(hwnd, self.title)
+
+        # 隐藏任务栏图标：必须在窗口已经显示之后做，并且依赖 set_taskbar_hidden
+        # 内部的「隐藏→改样式→显示」循环，否则已注册的按钮不会消失。
+        taskbar_state = "关"
+        if self.hide_taskbar:
+            set_taskbar_hidden(hwnd, True)
+            # 任务栏可能在窗口首次显示时抢先登记了按钮，这里确认样式并补一次刷新
+            if not _has_toolwindow_style(hwnd):
+                logger.warning("⚠ 隐藏任务栏图标未生效（样式未写入）")
+                taskbar_state = "失败"
+            else:
+                refresh_taskbar_button(hwnd)
+                taskbar_state = "开"
 
         # 透明度：仅当小于 1.0 时才启用分层窗口（避免无谓地改动窗口样式）
         opacity_state = "100%（不透明）"
@@ -794,7 +870,7 @@ class NativeWindow:
             "开" if self.topmost else "关",
             opacity_state,
             capture_state,
-            "开" if self.hide_taskbar else "关",
+            taskbar_state,
         )
         self._started.set()
 

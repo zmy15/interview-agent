@@ -15,6 +15,7 @@ import {
   getWindowState,
   setWindowOpacity,
   setWindowTopmost,
+  setTaskbarHidden,
 } from '@/api/windowControl'
 
 const { Text } = Typography
@@ -40,6 +41,7 @@ const WindowSettings: React.FC = () => {
   // 统一以「百分数」作为内部状态单位，避免与后端小数混用
   const [opacityPercent, setOpacityPercent] = useState(DEFAULT_PERCENT)
   const [topmost, setTopmost] = useState(false)
+  const [hideTaskbar, setHideTaskbar] = useState(false)
   const [captureExclude, setCaptureExclude] = useState(false)
   const [open, setOpen] = useState(false)
   // 拖动过程中的实时值（避免频繁触发后端调用）
@@ -70,6 +72,7 @@ const WindowSettings: React.FC = () => {
           : toPercent(state.opacity)
       setOpacityPercent(Math.max(MIN_PERCENT, Math.min(MAX_PERCENT, Math.round(percent))))
       setTopmost(!!state.topmost)
+      setHideTaskbar(!!state.hide_taskbar)
       setCaptureExclude(!!state.capture_exclude)
     }
     void load()
@@ -109,6 +112,15 @@ const WindowSettings: React.FC = () => {
     }
   }, [])
 
+  const handleHideTaskbarChange = useCallback(async (checked: boolean) => {
+    setHideTaskbar(checked)
+    const result = await setTaskbarHidden(checked)
+    if (!result.ok) {
+      setHideTaskbar(!checked)
+      message.warning(result.error || '设置任务栏图标失败')
+    }
+  }, [])
+
   const resetOpacity = useCallback(() => {
     setOpacityPercent(DEFAULT_PERCENT)
     commitOpacity(DEFAULT_PERCENT)
@@ -124,6 +136,7 @@ const WindowSettings: React.FC = () => {
       typeof state.opacity_percent === 'number' ? state.opacity_percent : toPercent(state.opacity)
     setOpacityPercent(Math.max(MIN_PERCENT, Math.min(MAX_PERCENT, Math.round(percent))))
     setTopmost(!!state.topmost)
+    setHideTaskbar(!!state.hide_taskbar)
     setCaptureExclude(!!state.capture_exclude)
   }, [])
 
@@ -172,6 +185,13 @@ const WindowSettings: React.FC = () => {
             <Space style={{ width: '100%', justifyContent: 'space-between' }}>
               <Text style={{ fontSize: 13 }}>窗口置顶</Text>
               <Switch size="small" checked={topmost} onChange={handleTopmostChange} />
+            </Space>
+
+            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+              <Tooltip title="开启后任务栏与 Alt+Tab 中不显示该窗口">
+                <Text style={{ fontSize: 13 }}>隐藏任务栏图标</Text>
+              </Tooltip>
+              <Switch size="small" checked={hideTaskbar} onChange={handleHideTaskbarChange} />
             </Space>
 
             <Space style={{ width: '100%', justifyContent: 'space-between' }}>
