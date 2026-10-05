@@ -1,4 +1,4 @@
-﻿<p align="center">
+<p align="center">
   <img src="https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" alt="React">
@@ -60,10 +60,11 @@ Interview Agent 是一个基于大语言模型的 AI 模拟面试平台，支持
 
 ## 🚀 一键启动
 
-三种方式任选其一：
+四种方式任选其一：
 
 | 方式 | 命令 | 平台 |
 |------|------|------|
+| 🪟 独立窗口 | `start_app.bat` / `python desktop.py` | Windows（原生窗口） |
 | 📜 本地脚本 | `start.bat` / `./start.sh` | Windows / macOS / Linux |
 | 🐳 Docker Compose | `docker-compose up -d` | 全平台 |
 | 📦 单容器 | `docker run` | 全平台 |
@@ -94,7 +95,99 @@ Interview Agent 是一个基于大语言模型的 AI 模拟面试平台，支持
 | `TTS_SPEED` | `1.0` | 朗读语速（0.5-2.0） |
 
 <details>
-<summary><b>方式一：本地脚本（开发推荐）</b></summary>
+<summary><b>方式一：独立窗口模式（desktop.py）</b></summary>
+
+把整个应用（后端 + 已构建前端）装进**一个独立的应用窗口**里，不依赖浏览器标签页，
+适合面试 / 演示场景。
+
+**Windows** — 双击 `start_app.bat`，或：
+
+```bash
+python desktop.py
+```
+
+**等价的 main.py 写法**（参数会自动转发）：
+
+```bash
+python main.py --desktop
+python main.py --desktop --no-topmost --width 1366 --height 768
+```
+
+**常用参数**
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--width` / `--height` | `1280` / `800` | 窗口尺寸 |
+| `--topmost [BOOL]` / `--no-topmost` | `true` | 窗口置顶 |
+| `--opacity N` | `1.0` | 窗口透明度 `0.2`-`1.0`（也可写 `20`-`100` 百分数） |
+| `--capture-exclude [BOOL]` | `true` | 从屏幕捕获（截屏/录屏）中排除窗口 |
+| `--hide-taskbar [BOOL]` | `false` | 隐藏任务栏图标 |
+| `--fullscreen [BOOL]` | `false` | 全屏启动 |
+| `--window-title TEXT` | `面试 Agent — AI 模拟面试助手` | 窗口标题 |
+| `--shell {auto,native,browser}` | `auto` | 窗口实现方式（见下） |
+| `--port N` / `--auto-port` | `8000` / `false` | 端口；被占用时可自动顺延 |
+| `--app PATH` | — | 启动后打开的页面，如 `--app /login` |
+| `--debug` | `false` | 开启 WebView 开发者工具 |
+
+**界面配色（背景色 / 文字色）**
+
+设置面板顶部提供界面配色控制，浏览器与独立窗口模式下都可用：
+
+- **7 套预设方案**：默认浅色 / 护眼米色 / 护眼绿 / 淡雅蓝 / 深色 / 午夜蓝 / 暗褐
+- **背景色**与**文字色**取色器，可自由调整
+- **自动调整文字色**：选深色背景时自动把文字切成浅色，避免深底黑字看不清
+- **对比度提示**：实时显示 WCAG 对比度，低于 4.5:1 会提示并提供「自动修正」
+
+配色通过 antd `ConfigProvider` 全局生效（侧边栏 / 顶栏 / 内容区 / 卡片都跟随），
+并保存在 `localStorage`，刷新后保持。深色背景会自动启用 antd 暗色算法，
+确保弹窗、下拉框等浮层也保持可读。
+
+**界面内实时调整透明度**
+
+独立窗口模式下，界面顶栏会出现 **设置** 按钮（齿轮图标），点开后包含：
+
+- **窗口透明度滑块**（20% - 100%）—— 拖动即时生效，无需重启
+- **窗口置顶**开关
+- **捕获排除**状态显示
+- 「恢复不透明」快捷按钮
+
+> 该类窗口项在普通浏览器中自动隐藏 —— 透明度是 Windows 窗口属性，只能由 Python 侧修改，
+> 网页滑块通过 pywebview 的 JS↔Python 桥接（`window.pywebview.api`）回写窗口。
+> 透明度下限为 20%，避免窗口过淡导致无法操作。
+
+**两种窗口实现**
+
+| `--shell` | 内核 | 置顶 | 捕获排除 | 依赖 |
+|-----------|------|------|----------|------|
+| `native`（默认优先） | Edge WebView2 | ✅ | ✅ **真正生效** | `pywebview` + WebView2 运行时 |
+| `browser` | 系统 Edge/Chrome `--app` | ✅ | ❌ 系统限制 | 无（零依赖） |
+
+> **为什么 `browser` 模式做不到「捕获排除」？**
+> Windows 的 `SetWindowDisplayAffinity` 只能作用于**本进程拥有**的窗口。
+> `browser` 模式下窗口属于浏览器进程，跨进程调用会被系统拒绝（实测返回 `False`）。
+> `native` 模式窗口由本进程创建，因此该功能真正生效 ——
+> 截图 / 录屏 / 直播中该窗口内容不可见（可通过 `GetWindowDisplayAffinity` 验证返回值为 `0x11`）。
+
+未安装 `pywebview` 时会自动回退到 `browser` 模式，功能不受影响（仅捕获排除无效）。
+
+**配置项**（可写入 `.env`，命令行参数优先级更高）
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `HOST` / `PORT` | `127.0.0.1` / `8000` | 监听地址与端口（默认仅本机可访问） |
+| `DESKTOP_WIDTH` / `DESKTOP_HEIGHT` | `1280` / `800` | 窗口尺寸 |
+| `DESKTOP_TOPMOST` | `true` | 窗口置顶 |
+| `DESKTOP_OPACITY` | `1.0` | 窗口透明度（0.2-1.0 或 20-100） |
+| `DESKTOP_CAPTURE_EXCLUDE` | `true` | 排除屏幕捕获（仅 native 生效） |
+| `DESKTOP_HIDE_TASKBAR` | `false` | 隐藏任务栏图标 |
+| `DESKTOP_BROWSER` | — | 指定浏览器路径（仅 browser 模式） |
+
+> 独立窗口模式要求先构建前端：`cd frontend && npm run build`
+> （`start_app.bat` 会在缺失时自动构建）
+</details>
+
+<details>
+<summary><b>方式二：本地脚本（开发推荐）</b></summary>
 
 **Windows** — 双击 `start.bat`
 
@@ -108,7 +201,7 @@ chmod +x start.sh
 </details>
 
 <details>
-<summary><b>方式二：Docker Compose（部署推荐）</b></summary>
+<summary><b>方式三：Docker Compose（部署推荐）</b></summary>
 
 #### 前置条件
 
@@ -193,7 +286,7 @@ docker compose --profile tts up    # 仅 TTS
 </details>
 
 <details>
-<summary><b>方式三：单容器 Docker</b></summary>
+<summary><b>方式四：单容器 Docker</b></summary>
 
 ```bash
 # 构建（不含 RAG）
@@ -253,11 +346,13 @@ docker run -d \
 ```
 interview-agent/
 ├── main.py                  # FastAPI 入口
+├── desktop.py               # 独立窗口启动器（置顶 / 捕获排除 / 原生窗口）
 ├── config.py                # 环境变量配置
 ├── requirements.txt         # Python 依赖
 ├── Dockerfile               # 多阶段构建（前端+后端）
 ├── docker-compose.yml       # Docker Compose 编排
 ├── start.bat                # Windows 一键启动
+├── start_app.bat            # Windows 独立窗口启动
 ├── start.sh                 # macOS/Linux 一键启动
 ├── .env.example             # 环境变量模板
 ├── positions.json           # 岗位数据
