@@ -1,5 +1,5 @@
 import React from 'react'
-import { Layout, Menu, Button, Space, Dropdown } from 'antd'
+import { Layout, Menu, Button, Space, Dropdown, theme } from 'antd'
 import {
   MessageOutlined,
   ProfileOutlined,
@@ -12,6 +12,7 @@ import {
 } from '@ant-design/icons'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
+import WindowSettings from '@/components/WindowSettings'
 
 const { Sider, Content, Header } = Layout
 
@@ -28,6 +29,8 @@ const MainLayout: React.FC = () => {
   const navigate = useNavigate()
   const location = useLocation()
   const { user, logout } = useAuthStore()
+  // 取当前主题 token，使写死的底色/边框跟随用户选择
+  const { token } = theme.useToken()
 
   const selectedKey = menuItems.find((item) =>
     location.pathname.startsWith(item.key),
@@ -60,7 +63,10 @@ const MainLayout: React.FC = () => {
         breakpoint="lg"
         collapsedWidth="64"
         theme="light"
-        style={{ borderRight: '1px solid #f0f0f0' }}
+        style={{
+          borderRight: `1px solid ${token.colorBorderSecondary}`,
+          background: token.colorBgContainer,
+        }}
       >
         <div
           style={{
@@ -70,7 +76,8 @@ const MainLayout: React.FC = () => {
             justifyContent: 'center',
             fontWeight: 700,
             fontSize: 16,
-            borderBottom: '1px solid #f0f0f0',
+            color: token.colorText,
+            borderBottom: `1px solid ${token.colorBorderSecondary}`,
           }}
         >
           🎯 面试 Agent
@@ -80,34 +87,40 @@ const MainLayout: React.FC = () => {
           selectedKeys={[selectedKey]}
           items={menuItems}
           onClick={({ key }) => navigate(key)}
-          style={{ borderRight: 0, marginTop: 8 }}
+          style={{ borderRight: 0, marginTop: 8, background: 'transparent' }}
         />
       </Sider>
       <Layout>
         <Header
           style={{
-            background: '#fff',
+            background: token.colorBgContainer,
             padding: '0 24px',
-            borderBottom: '1px solid #f0f0f0',
+            borderBottom: `1px solid ${token.colorBorderSecondary}`,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
             height: 48,
           }}
         >
-          <span style={{ fontSize: 14, color: '#888' }}>
+          <span style={{ fontSize: 14, color: token.colorTextSecondary }}>
             DeepSeek 驱动 · RAG 增强面试助手
           </span>
-          <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
-            <Button type="text" icon={<UserOutlined />}>
-              {user?.display_name || user?.email || '用户'}
-            </Button>
-          </Dropdown>
+          <Space size={4}>
+            {/* 独立窗口模式下显示窗口设置（透明度/置顶）；浏览器中自动隐藏 */}
+            <WindowSettings />
+            <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
+              <Button type="text" icon={<UserOutlined />}>
+                {user?.display_name || user?.email || '用户'}
+              </Button>
+            </Dropdown>
+          </Space>
         </Header>
         <Content
           style={{
             padding: 24,
-            background: '#fafafa',
+            // 跟随用户选择的背景色（由 ConfigProvider 注入）
+            background: token.colorBgLayout,
+            color: token.colorText,
             overflow: 'auto',
           }}
         >

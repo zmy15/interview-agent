@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import {
   Upload, Tag, Typography, App, List, Button, Popconfirm,
-  Empty, Spin,
+  Empty, Spin, theme,
 } from 'antd'
 import {
   InboxOutlined, FileTextOutlined,
@@ -34,6 +34,7 @@ const UploadPage: React.FC = () => {
   const [uploading, setUploading] = useState(false)
   const [filesLoading, setFilesLoading] = useState(false)
   const { message } = App.useApp()
+  const { token } = theme.useToken()
 
   const refreshFileList = useCallback(async () => {
     setFilesLoading(true)
@@ -110,7 +111,7 @@ const UploadPage: React.FC = () => {
           <div style={{ marginTop: 16 }}>
             <Text strong>解析结果 — {resumeResult.filename}</Text>
             <Paragraph
-              style={{ marginTop: 8, padding: 12, background: '#fafafa', borderRadius: 6, whiteSpace: 'pre-wrap', maxHeight: 400, overflow: 'auto' }}
+              style={{ marginTop: 8, padding: 12, background: token.colorFillSecondary, color: token.colorText, borderRadius: 6, whiteSpace: 'pre-wrap', maxHeight: 400, overflow: 'auto' }}
               copyable
             >
               {resumeResult.text}
@@ -130,7 +131,7 @@ const UploadPage: React.FC = () => {
         ) : (
           <>
             {activeResumeId && (
-              <div style={{ marginBottom: 12, padding: '8px 12px', background: '#e6f4ff', borderRadius: 6, border: '1px solid #91caff' }}>
+              <div style={{ marginBottom: 12, padding: '8px 12px', background: token.colorPrimaryBg, borderRadius: 6, border: `1px solid ${token.colorPrimaryBorder}` }}>
                 <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>当前简历：</Text>
                 <Tag color="blue" closable onClose={() => setActiveResume(null)}>
                   {resumes.find((u) => u.id === activeResumeId)?.filename || '未知'}
@@ -145,9 +146,12 @@ const UploadPage: React.FC = () => {
                   <List.Item
                     style={{
                       padding: '12px 16px',
-                      background: isActive ? '#f6ffed' : '#fff',
+                      background: isActive ? token.colorSuccessBg : token.colorBgContainer,
+                      color: token.colorText,
                       borderRadius: 6, marginBottom: 8,
-                      border: isActive ? '1px solid #b7eb8f' : '1px solid #f0f0f0',
+                      border: isActive
+                        ? `1px solid ${token.colorSuccessBorder}`
+                        : `1px solid ${token.colorBorderSecondary}`,
                     }}
                     actions={[
                       isActive ? (

@@ -10,6 +10,7 @@ import {
   Typography,
   App,
   Tag,
+  theme,
 } from 'antd'
 import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
 import { usePositionStore } from '@/stores/positionStore'
@@ -24,6 +25,7 @@ const PositionPage: React.FC = () => {
   const [modalOpen, setModalOpen] = useState(false)
   const [editingPos, setEditingPos] = useState<PositionResponse | null>(null)
   const [form] = Form.useForm()
+  const { token } = theme.useToken()
 
   // JD 管理
   const [jdModalOpen, setJdModalOpen] = useState(false)
@@ -274,7 +276,7 @@ const PositionPage: React.FC = () => {
                 style={{
                   padding: '8px 12px',
                   marginBottom: 8,
-                  background: '#fafafa',
+                  background: token.colorFillSecondary,
                   borderRadius: 6,
                   display: 'flex',
                   justifyContent: 'space-between',

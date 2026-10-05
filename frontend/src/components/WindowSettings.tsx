@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 窗口设置面板 — 透明度滑块 / 置顶 / 窗口状态
  *
  * 仅在独立窗口模式（desktop.py 启动）下显示；
@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, Popover, Slider, Switch, Space, Typography, Tooltip, Divider, message } from 'antd'
 import { SettingOutlined } from '@ant-design/icons'
+import ThemeColorSettings from '@/components/ThemeColorSettings'
 import {
   isDesktopWindow,
   waitForBridge,
@@ -126,57 +127,63 @@ const WindowSettings: React.FC = () => {
     setCaptureExclude(!!state.capture_exclude)
   }, [])
 
-  // 非独立窗口模式：不渲染任何控件
-  if (!available) return null
-
+  // 配色在浏览器和独立窗口下都可用；透明度/置顶只在独立窗口模式下有意义
   const content = (
-    <div style={{ width: 240 }}>
+    <div style={{ width: 250 }}>
       <Space direction="vertical" size={4} style={{ width: '100%' }}>
-        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+        <ThemeColorSettings />
+
+        {available && (
+          <>
+            <Divider style={{ margin: '8px 0' }} />
+
+            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
               <Text strong style={{ fontSize: 13 }}>
-            窗口透明度
-          </Text>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            {opacityPercent}%
-          </Text>
-        </Space>
+                窗口透明度
+              </Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {opacityPercent}%
+              </Text>
+            </Space>
 
-        <Slider
-          min={MIN_PERCENT}
-          max={MAX_PERCENT}
-          step={1}
-          value={opacityPercent}
-          onChange={handleOpacityChange}
-          tooltip={{ formatter: (v) => `${v}%` }}
-          marks={{ 20: '20', 50: '50', 100: '100' }}
-          // marks 会渲染在滑块下方，需留出空间，否则会压住下一个元素
-          style={{ marginBottom: 26 }}
-        />
+            <Slider
+              min={MIN_PERCENT}
+              max={MAX_PERCENT}
+              step={1}
+              value={opacityPercent}
+              onChange={handleOpacityChange}
+              tooltip={{ formatter: (v) => `${v}%` }}
+              marks={{ 20: '20', 50: '50', 100: '100' }}
+              // marks 会渲染在滑块下方，需留出空间，否则会压住下一个元素
+              style={{ marginBottom: 26 }}
+            />
 
-        <Button
-          size="small"
-          type="link"
-          style={{ padding: 0, fontSize: 12, alignSelf: 'flex-start' }}
-          onClick={resetOpacity}
-        >
-          恢复不透明
-        </Button>
+            <Button
+              size="small"
+              type="link"
+              style={{ padding: 0, fontSize: 12, alignSelf: 'flex-start' }}
+              onClick={resetOpacity}
+            >
+              恢复不透明
+            </Button>
 
-        <Divider style={{ margin: '8px 0' }} />
+            <Divider style={{ margin: '8px 0' }} />
 
-        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-          <Text style={{ fontSize: 13 }}>窗口置顶</Text>
-          <Switch size="small" checked={topmost} onChange={handleTopmostChange} />
-        </Space>
+            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+              <Text style={{ fontSize: 13 }}>窗口置顶</Text>
+              <Switch size="small" checked={topmost} onChange={handleTopmostChange} />
+            </Space>
 
-        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-          <Tooltip title="截屏 / 录屏中该窗口不可见（由启动参数控制）">
-            <Text style={{ fontSize: 13 }}>捕获排除</Text>
-          </Tooltip>
-          <Text type={captureExclude ? 'success' : 'secondary'} style={{ fontSize: 12 }}>
-            {captureExclude ? '已开启' : '未开启'}
-          </Text>
-        </Space>
+            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+              <Tooltip title="截屏 / 录屏中该窗口不可见（由启动参数控制）">
+                <Text style={{ fontSize: 13 }}>捕获排除</Text>
+              </Tooltip>
+              <Text type={captureExclude ? 'success' : 'secondary'} style={{ fontSize: 12 }}>
+                {captureExclude ? '已开启' : '未开启'}
+              </Text>
+            </Space>
+          </>
+        )}
       </Space>
     </div>
   )
@@ -184,13 +191,13 @@ const WindowSettings: React.FC = () => {
   return (
     <Popover
       content={content}
-      title="窗口设置"
+      title="界面与窗口设置"
       trigger="click"
       placement="bottomRight"
       open={open}
       onOpenChange={handleOpenChange}
     >
-      <Tooltip title="窗口设置（透明度 / 置顶）">
+      <Tooltip title="界面与窗口设置（配色 / 透明度 / 置顶）">
         <Button type="text" size="small" icon={<SettingOutlined />} />
       </Tooltip>
     </Popover>

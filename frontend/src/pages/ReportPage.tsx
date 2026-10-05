@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Button, Typography, Spin, App } from 'antd'
+import { Button, Typography, Spin, App, theme } from 'antd'
 import { FileTextOutlined, CopyOutlined } from '@ant-design/icons'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -16,6 +16,7 @@ const ReportPage: React.FC = () => {
   const [loading, setLoading] = useState(false)
   const { message } = App.useApp()
   const [generated, setGenerated] = useState(false)
+  const { token } = theme.useToken()
 
   const handleGenerate = async () => {
     setLoading(true)
@@ -96,15 +97,16 @@ const ReportPage: React.FC = () => {
       {loading ? (
         <div style={{ textAlign: 'center', padding: 48 }}>
           <Spin size="large" />
-          <p style={{ marginTop: 16, color: '#888' }}>正在生成报告...</p>
+          <p style={{ marginTop: 16, color: token.colorTextSecondary }}>正在生成报告...</p>
         </div>
       ) : (
         <div
           style={{
-            background: '#fff',
+            background: token.colorBgContainer,
+            color: token.colorText,
             padding: 24,
             borderRadius: 8,
-            border: '1px solid #f0f0f0',
+            border: `1px solid ${token.colorBorderSecondary}`,
           }}
         >
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{report}</ReactMarkdown>

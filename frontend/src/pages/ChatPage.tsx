@@ -13,6 +13,7 @@ import {
   Tag,
   Tooltip,
   Progress,
+  theme,
 } from 'antd'
 import {
   SendOutlined,
@@ -93,6 +94,7 @@ const ChatPage: React.FC = () => {
   } = useChatStore()
 
   const { message } = App.useApp()
+  const { token } = theme.useToken()
   const { highlightCode, toggleHighlightCode, apiKey, setApiKey, interviewDuration, setInterviewDuration } = useAppStore()
   const { sendMessage, abort } = useSSE()
   const { sttAvailable, ttsAvailable } = useVoiceAvailability()
@@ -646,7 +648,7 @@ const ChatPage: React.FC = () => {
             position: 'sticky',
             top: 0,
             zIndex: 10,
-            background: '#e6f4ff',
+            background: token.colorPrimaryBg,
             borderRadius: 8,
             padding: '8px 16px',
             marginBottom: 12,
@@ -917,8 +919,10 @@ const ChatPage: React.FC = () => {
                       cursor: 'pointer',
                       borderRadius: 6,
                       marginBottom: 4,
-                      background: checked ? '#e6f4ff' : '#fff',
-                      border: checked ? '1px solid #1677ff' : '1px solid #f0f0f0',
+                      background: checked ? token.colorPrimaryBg : token.colorBgContainer,
+                      border: checked
+                        ? `1px solid ${token.colorPrimary}`
+                        : `1px solid ${token.colorBorderSecondary}`,
                       display: 'flex',
                       alignItems: 'center',
                       gap: 8,
