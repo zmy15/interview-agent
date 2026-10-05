@@ -76,7 +76,15 @@ WDA_EXCLUDEFROMCAPTURE = 0x00000011  # Win10 2004+：截屏/录屏中完全不�
 GWL_EXSTYLE = -20
 WS_EX_TOOLWINDOW = 0x00000080   # 不在任务栏 / Alt-Tab 中显示
 WS_EX_APPWINDOW = 0x00040000    # 强制在任务栏显示（与 TOOLWINDOW 互斥）
+WS_EX_LAYERED = 0x00080000      # 分层窗口（透明度的前提）
 
+# SetLayeredWindowAttributes 的 flags
+LWA_COLORKEY = 0x00000001
+LWA_ALPHA = 0x00000002
+
+# 透明度取值范围（0-255）；低于该下限窗口将难以操作，因此做保护性限制
+MIN_OPACITY = 0.20
+MAX_OPACITY = 1.0
 
 SW_SHOW = 5
 SW_RESTORE = 9
@@ -102,6 +110,15 @@ if IS_WINDOWS:
     _user32.IsWindow.restype = ctypes.c_bool
     _user32.SetWindowTextW.argtypes = (ctypes.c_void_p, ctypes.c_wchar_p)
     _user32.SetWindowTextW.restype = ctypes.c_bool
+    _user32.SetLayeredWindowAttributes.argtypes = (
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_ubyte, ctypes.c_uint32,
+    )
+    _user32.SetLayeredWindowAttributes.restype = ctypes.c_bool
+    _user32.GetLayeredWindowAttributes.argtypes = (
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32),
+        ctypes.POINTER(ctypes.c_ubyte), ctypes.POINTER(ctypes.c_uint32),
+    )
+    _user32.GetLayeredWindowAttributes.restype = ctypes.c_bool
 
     if hasattr(ctypes, "WINFUNCTYPE"):
         # 64 位下窗口句柄为 8 字节，必须使用 LongPtr 版本
@@ -218,6 +235,59 @@ def _install_title_keeper(hwnd: int, title: str) -> None:
             time.sleep(0.5)
 
     threading.Thread(target=_keeper, name="window-title", daemon=True).start()
+
+
+def clamp_opacity(value: float) -> float:
+    """把透明度限制在可用范围内（过低会导致窗口无法操作）"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return MAX_OPACITY
+    return max(MIN_OPACITY, min(MAX_OPACITY, number))
+
+
+def set_window_opacity(hwnd: int, opacity: float) -> bool:
+    """设置窗口整体透明度。
+
+    opacity: 0.2 ~ 1.0（1.0 = 完全不透明）
+
+    实现要点：
+      * 必须先给窗口加上 WS_EX_LAYERED 扩展样式，否则
+        SetLayeredWindowAttributes 会失败（ERROR_INVALID_PARAMETER）；
+      * WS_EX_LAYERED 与 WebView2 渲染兼容（实测 alpha 255/180/120/60 均生效）。
+
+    注意：透明度作用于整个顶层窗口，包括标题栏与其中的 WebView 内容。
+    """
+    if not IS_WINDOWS or not hwnd:
+        return False
+
+    opacity = clamp_opacity(opacity)
+    alpha = int(round(opacity * 255))
+    hwnd_ptr = ctypes.c_void_p(hwnd)
+
+    ex_style = int(_get_window_long(hwnd_ptr, GWL_EXSTYLE))
+    if not (ex_style & WS_EX_LAYERED):
+        _set_window_long(hwnd_ptr, GWL_EXSTYLE, ex_style | WS_EX_LAYERED)
+
+    ok = _user32.SetLayeredWindowAttributes(hwnd_ptr, 0, alpha, LWA_ALPHA)
+    if not ok:
+        logger.debug("SetLayeredWindowAttributes 失败 (hwnd=%s, alpha=%s)", hwnd, alpha)
+    return bool(ok)
+
+
+def get_window_opacity(hwnd: int) -> Optional[float]:
+    """读取窗口当前透明度（非分层窗口返回 None）"""
+    if not IS_WINDOWS or not hwnd:
+        return None
+    key = ctypes.c_uint32(0)
+    alpha = ctypes.c_ubyte(0)
+    flags = ctypes.c_uint32(0)
+    ok = _user32.GetLayeredWindowAttributes(
+        ctypes.c_void_p(hwnd), ctypes.byref(key), ctypes.byref(alpha), ctypes.byref(flags)
+    )
+    if not ok or not (flags.value & LWA_ALPHA):
+        return None
+    return alpha.value / 255.0
 
 
 def find_window_by_pid(pid: int, need_title: bool = False) -> int:
@@ -517,6 +587,105 @@ def is_native_available() -> bool:
         return False
 
 
+# ══════════════════════════════════════════════════════════════
+# 前端 ↔ 窗口控制 桥接 API
+# ══════════════════════════════════════════════════════════════
+
+class WindowControlApi:
+    """暴露给前端 JS 的窗口控制接口（webview.js_api）。
+
+    前端通过 window.pywebview.api.<方法名>(...) 调用，返回 Promise。
+    所有方法都返回统一的 dict，便于前端判断成功与否：
+        {"ok": bool, "opacity": float, "error": str|None}
+
+    只有在 native 窗口模式下才可用；浏览器模式下 window.pywebview 不存在，
+    前端会据此隐藏相关控件。
+    """
+
+    def __init__(self, controller: "NativeWindow"):
+        self._controller = controller
+
+    # ── 透明度 ──
+
+    def set_opacity(self, value) -> dict:
+        """设置窗口透明度，value 取 0.2 ~ 1.0（也可传 20~100 的百分数）"""
+        opacity = _parse_opacity_arg(value)
+        ctrl = self._controller
+        if not ctrl.hwnd:
+            return {"ok": False, "opacity": opacity, "error": "窗口句柄尚未就绪"}
+        if not set_window_opacity(ctrl.hwnd, opacity):
+            return {"ok": False, "opacity": opacity,
+                    "error": "设置透明度失败（可能是当前系统或窗口不支持）"}
+        ctrl.opacity = opacity
+        return {"ok": True, "opacity": opacity, "error": None}
+
+    def get_opacity(self) -> dict:
+        ctrl = self._controller
+        value = get_window_opacity(ctrl.hwnd) if ctrl.hwnd else None
+        if value is None:
+            value = ctrl.opacity
+        return {"ok": True, "opacity": value, "error": None}
+
+    # ── 其它窗口开关（便于前端统一放置设置项）──
+
+    def set_topmost(self, enabled) -> dict:
+        ctrl = self._controller
+        ctrl.topmost = _parse_bool_arg(enabled)
+        ok = set_topmost(ctrl.hwnd, ctrl.topmost) if ctrl.hwnd else False
+        return {"ok": bool(ok), "topmost": ctrl.topmost, "error": None if ok else "设置置顶失败"}
+
+    def get_state(self) -> dict:
+        """返回当前窗口状态，供前端初始化控件。
+
+        透明度同时提供两种单位，避免前后端单位混淆：
+            opacity          —— 0.0-1.0 小数（权威值）
+            opacity_percent  —— 20-100 整数百分数（便于直接绑定滑块）
+        """
+        ctrl = self._controller
+        value = get_window_opacity(ctrl.hwnd) if ctrl.hwnd else ctrl.opacity
+        if value is None:
+            value = ctrl.opacity
+        return {
+            "ok": True,
+            "opacity": value,
+            "opacity_percent": int(round(value * 100)),
+            "topmost": ctrl.topmost,
+            "capture_exclude": ctrl.capture_exclude,
+            "hide_taskbar": ctrl.hide_taskbar,
+            "min_opacity": MIN_OPACITY,
+            "max_opacity": MAX_OPACITY,
+            "error": None,
+        }
+
+    def close_window(self) -> dict:
+        """关闭窗口（前端可提供退出按钮）"""
+        try:
+            if self._controller.window is not None:
+                self._controller.window.destroy()
+            return {"ok": True, "error": None}
+        except Exception as exc:  # pragma: no cover
+            return {"ok": False, "error": str(exc)}
+
+
+def _parse_opacity_arg(value) -> float:
+    """解析透明度入参：接受 0.2~1.0 或 20~100（百分数）"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return MAX_OPACITY
+    if number > 1.0:  # 视为百分数
+        number = number / 100.0
+    return clamp_opacity(number)
+
+
+def _parse_bool_arg(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in ("1", "true", "yes", "y", "on", "是", "开")
+
+
 class NativeWindow:
     """基于 pywebview（Edge WebView2 内核）的独立窗口。
 
@@ -536,6 +705,7 @@ class NativeWindow:
         hide_taskbar: bool = False,
         fullscreen: bool = False,
         debug: bool = False,
+        opacity: float = MAX_OPACITY,
     ):
         self.url = url
         self.title = title
@@ -546,11 +716,14 @@ class NativeWindow:
         self.hide_taskbar = hide_taskbar
         self.fullscreen = fullscreen
         self.debug = debug
+        self.opacity = clamp_opacity(opacity)
 
         self.window = None
         self.hwnd: int = 0
         self._closed = False
         self._started = threading.Event()
+        # 暴露给前端的桥接 API（window.pywebview.api）
+        self.api = WindowControlApi(self)
 
     # ── 生命周期 ──
 
@@ -567,6 +740,7 @@ class NativeWindow:
             min_size=(800, 600),
             confirm_close=False,
             text_select=True,
+            js_api=self.api,
         )
 
         # 窗口就绪后应用窗口特效（置顶 / 捕获排除 / 隐藏任务栏）
@@ -599,6 +773,14 @@ class NativeWindow:
         if self.title:
             set_window_title(hwnd, self.title)
 
+        # 透明度：仅当小于 1.0 时才启用分层窗口（避免无谓地改动窗口样式）
+        opacity_state = "100%（不透明）"
+        if self.opacity < MAX_OPACITY:
+            if set_window_opacity(hwnd, self.opacity):
+                opacity_state = f"{int(round(self.opacity * 100))}%"
+            else:
+                opacity_state = "设置失败"
+
         capture_state = "关"
         if self.capture_exclude:
             if set_capture_exclusion(hwnd, True):
@@ -607,9 +789,10 @@ class NativeWindow:
                 capture_state = "失败（系统拒绝）"
 
         logger.info(
-            "🪟 原生窗口已就绪 (HWND=%s)：置顶=%s, 捕获排除=%s, 隐藏任务栏=%s",
+            "🪟 原生窗口已就绪 (HWND=%s)：置顶=%s, 透明度=%s, 捕获排除=%s, 隐藏任务栏=%s",
             hwnd,
             "开" if self.topmost else "关",
+            opacity_state,
             capture_state,
             "开" if self.hide_taskbar else "关",
         )
@@ -793,6 +976,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="[browser 模式] 浏览器用户数据目录（默认 ~/.interview-agent/desktop-profile）")
     window.add_argument("--hide-taskbar", type=_str2bool, nargs="?", const=True, default=False,
                         help="隐藏任务栏图标（默认关闭）")
+    window.add_argument("--opacity", type=float, default=MAX_OPACITY,
+                        help=f"窗口透明度 {MIN_OPACITY}-{MAX_OPACITY}（1.0=不透明，默认 1.0）；"
+                             f"也可传 20-100 的百分数，运行中可在界面顶栏拖动滑块调整")
     window.add_argument("--debug", type=_str2bool, nargs="?", const=True, default=False,
                         help="[native 模式] 开启 WebView 开发者工具与调试日志（默认关闭）")
 
@@ -919,6 +1105,7 @@ def run_desktop(args: argparse.Namespace) -> int:
             hide_taskbar=args.hide_taskbar,
             fullscreen=args.fullscreen,
             debug=args.debug,
+            opacity=_parse_opacity_arg(args.opacity),
         )
         logger.info("ℹ 关闭窗口或按 Ctrl+C 即可退出应用")
         try:
@@ -1053,6 +1240,10 @@ def _apply_env_defaults(args: argparse.Namespace) -> None:
                 logger.warning("⚠ PORT 的值无法解析为整数: %r（已忽略）", raw_port)
     if "browser" not in took_arg and not args.browser:
         args.browser = os.getenv("DESKTOP_BROWSER", "")
+    if "opacity" not in took_arg:
+        raw_opacity = os.getenv("DESKTOP_OPACITY")
+        if raw_opacity:
+            args.opacity = _parse_opacity_arg(raw_opacity)
 
 
 def _explicit_arg_names(argv: list[str]) -> set[str]:

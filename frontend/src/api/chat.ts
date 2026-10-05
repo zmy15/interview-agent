@@ -25,6 +25,9 @@ export async function streamChat(
     interview_duration_minutes?: number
     interview_question_count?: number
     interview_coding_min?: number
+    // 题库选题（由 useSSE 传入，后端据此限制提问来源）
+    question_bank_ids?: string[]
+    question_bank_mode?: string
   },
   onReasoning: (chunk: string) => void,
   onContent: (chunk: string) => void,
