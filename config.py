@@ -42,6 +42,24 @@ class Settings:
     CHROMA_PERSIST_PATH: str = os.getenv("CHROMA_PERSIST_PATH", "./chroma_data")
     VECTOR_SEARCH_TOP_K: int = int(os.getenv("VECTOR_SEARCH_TOP_K", "3"))
 
+    # ── 独立窗口 / 服务监听配置 ──
+    # 独立窗口模式（desktop.py）默认绑定的地址与端口
+    HOST: str = os.getenv("HOST", "127.0.0.1")
+    PORT: int = int(os.getenv("PORT", "8000"))
+    # 是否以独立窗口模式启动（由 desktop.py 设置，也可在 .env 中固定开启）
+    DESKTOP_MODE: bool = os.getenv("DESKTOP_MODE", "false").lower() == "true"
+    # 独立窗口默认尺寸
+    DESKTOP_WIDTH: int = int(os.getenv("DESKTOP_WIDTH", "1280"))
+    DESKTOP_HEIGHT: int = int(os.getenv("DESKTOP_HEIGHT", "800"))
+    # 窗口置顶
+    DESKTOP_TOPMOST: bool = os.getenv("DESKTOP_TOPMOST", "true").lower() == "true"
+    # 尝试从屏幕捕获中排除窗口（截屏/录屏不可见）
+    DESKTOP_CAPTURE_EXCLUDE: bool = os.getenv("DESKTOP_CAPTURE_EXCLUDE", "true").lower() == "true"
+    # 隐藏任务栏图标
+    DESKTOP_HIDE_TASKBAR: bool = os.getenv("DESKTOP_HIDE_TASKBAR", "false").lower() == "true"
+    # 指定浏览器可执行文件路径（留空则自动查找 Edge / Chrome）
+    DESKTOP_BROWSER: str = os.getenv("DESKTOP_BROWSER", "")
+
     # CORS 允许的前端来源（逗号分隔），生产环境应指定具体域名
     CORS_ORIGINS: str = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173")
 

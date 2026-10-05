@@ -1,4 +1,4 @@
-﻿fastapi>=0.115.0
+fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 sse-starlette>=2.0.0
 openai>=1.50.0
@@ -23,3 +23,7 @@ asyncpg>=0.29.0
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
 bcrypt==4.0.1
+
+# 独立窗口模式（desktop.py）所需的原生窗口（Edge WebView2 内核）
+# 未安装时会自动回退到系统浏览器 --app 窗口模式
+pywebview>=5.0

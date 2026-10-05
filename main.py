@@ -5,12 +5,39 @@ SSE 流式输出，支持 RAG 向量知识库 + 联网搜索
 
 启动方式：
     python -m uvicorn main:app --port 8000     # 常规服务模式
+    python main.py --desktop                   # 独立窗口模式（参数转发给 desktop.py）
 """
 
 import logging
 import os
 import sys
 from contextlib import asynccontextmanager
+
+# ============ 独立窗口模式（必须在导入 config 之前解析参数） ============
+# --desktop / --app-window 会把其余参数原样转发给 desktop.py，
+# 使独立窗口模式也能通过 main.py 启动：
+#     python main.py --desktop --width 1600 --height 900 --no-topmost
+#
+# 注意：sys.argv[0] 是脚本名（main.py），必须排除，否则会被当成未知参数。
+
+_DESKTOP_FLAGS = ("--desktop", "--app-window")
+
+
+def _extract_desktop_args(argv: list[str]) -> list[str]:
+    """若命令行包含独立窗口开关，则剥离该开关并返回其余参数（不含脚本名）。"""
+    for flag in _DESKTOP_FLAGS:
+        if flag in argv:
+            index = argv.index(flag)
+            return argv[:index] + argv[index + 1:]
+    return []
+
+
+if any(flag in sys.argv for flag in _DESKTOP_FLAGS):
+    # 不在此处立即启动：此时 app 尚未构建完成，
+    # 具体分发放在文件末尾（app 与路由注册完毕之后）。
+    _DESKTOP_ARGV = _extract_desktop_args(sys.argv[1:])
+else:
+    _DESKTOP_ARGV = None
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, FileResponse
@@ -243,3 +270,11 @@ if _HAS_FRONTEND:
     logger.info(f"Frontend static files served from: {FRONTEND_DIST}")
     logger.info("API routes also available under /api prefix for production SPA mode")
 
+
+# ============ 独立窗口模式分发（必须在 app 构建完成之后） ============
+# 到这里 app 及全部路由已就绪，desktop 模块可直接从 __main__ 取到该应用实例。
+
+if _DESKTOP_ARGV is not None:
+    from desktop import main as _desktop_main
+
+    sys.exit(_desktop_main(_DESKTOP_ARGV))
