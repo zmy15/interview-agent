@@ -13,8 +13,41 @@ from langchain_core.messages import (
 
 from models.schemas import Message
 
+
+class _TokenCounter:
+    """tiktoken 编码器封装。
+
+    说明：tiktoken.get_encoding() 在本地缓存缺失时会联网下载词表。
+    离线 / 网络受限环境下会抛异常，因此这里做惰性加载 + 降级：
+    加载失败时退化为「约 4 字符 = 1 token」的估算，保证服务仍可启动。
+    """
+
+    def __init__(self, name: str = "cl100k_base"):
+        self._name = name
+        self._encoding = None
+        self._failed = False
+
+    @property
+    def encoding(self):
+        if self._encoding is None and not self._failed:
+            try:
+                self._encoding = tiktoken.get_encoding(self._name)
+            except Exception:
+                # 离线环境：不阻塞启动，交由 estimate_tokens 走估算分支
+                self._failed = True
+        return self._encoding
+
+    def encode(self, text: str) -> list:
+        enc = self.encoding
+        if enc is None:
+            # 降级估算：中文约 1 字符≈0.6 token，英文约 4 字符≈1 token，
+            # 取 1 字符 ≈ 0.7 token 作为保守估计
+            return [0] * max(1, int(len(text) * 0.7))
+        return enc.encode(text)
+
+
 # tiktoken 编码器（cl100k_base 与 DeepSeek/OpenAI 兼容）
-_encoding = tiktoken.get_encoding("cl100k_base")
+_encoding = _TokenCounter("cl100k_base")
 
 
 def estimate_tokens(text: str) -> int:
