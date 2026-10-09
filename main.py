@@ -313,7 +313,26 @@ if _HAS_FRONTEND:
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_frontend(full_path: str):
-        """SPA 回退：所有非 API/非静态资源路由返回 index.html"""
+        """SPA 回退：所有非 API/非静态资源路由返回 index.html
+
+        但 /api/* 必须返回 **JSON 错误**，不能回退到 index.html：
+        前端拿到 HTML 去 JSON.parse 会抛出
+        「Unexpected token '<', "<!doctype "... is not valid JSON」，
+        完全看不出真正原因（通常是「功能开关没开，路由未注册」）。
+        """
+        if full_path.startswith("api/"):
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "detail": (
+                        f"接口 /{full_path} 不存在。"
+                        "若这是某个功能（如系统音频捕获）的接口，"
+                        "通常是该功能的开关未开启导致路由未注册，"
+                        "请在 .env 中设置对应开关后重启服务。"
+                    )
+                },
+            )
+
         file_path = os.path.join(FRONTEND_DIST, full_path)
         if full_path and os.path.isfile(file_path):
             return FileResponse(file_path)
