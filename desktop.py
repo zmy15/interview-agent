@@ -1,8 +1,22 @@
 """
 面试 Agent — 独立窗口启动器（桌面应用模式）
 
-在一个独立的原生窗口中启动整个服务（后端 + 已构建前端），
+在一个独立的原生窗口中启动整个服务（后端 + 已构建前端 + 语音微服务），
 并支持：窗口置顶、从屏幕捕获中排除（截屏/录屏不可见）、隐藏任务栏图标。
+
+与网页版（start.bat）的关系：
+    功能与流程完全一致 —— 同样会初始化数据库、按需启动 STT/TTS 语音
+    微服务；区别只在于形态：网页版会开 4 个控制台窗口 + 1 个浏览器，
+    桌面版只留下**一个独立窗口**，其余窗口（启动器控制台、语音微服务
+    控制台）都不出现。
+
+    语音微服务不通过 `start cmd /c uvicorn` 拉子进程，而是把它们的
+    FastAPI app 挂在本进程的 uvicorn 线程上（见 VoiceServices）。
+    端口仍是 .env 约定的 8001 / 8002，对 /api/stt、/api/tts 代理路由
+    与系统音频捕获完全透明。
+
+    是否启动语音由 .env 决定（VOICE_ENABLED / STT_ENABLED / TTS_ENABLED），
+    桌面版不做 y/n 交互询问，保持双击即用的无交互体验。
 
 启动方式：
     python desktop.py                          # 默认 1280x800，置顶 + 捕获排除
@@ -10,6 +24,7 @@
     python desktop.py --width 1600 --height 900
     python desktop.py --port 8123              # 自定义端口
     python desktop.py --capture-exclude false  # 允许被截屏捕获（用于调试）
+    python desktop.py --hide-console false     # 保留控制台黑窗口（排查问题）
     python desktop.py --window-title "我的面试"
     python desktop.py --shell browser          # 强制使用浏览器窗口（不依赖 pywebview）
 
@@ -604,6 +619,34 @@ class DesktopWindow:
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if IS_WINDOWS else 0,
         )
 
+    def _delegated_to_existing(self, grace: float = 3.0) -> bool:
+        """判断本次启动是否「把 URL 交给已在运行的浏览器后立刻退出」。
+
+        为什么需要这个判断：
+            Chromium 内核浏览器在发现已有实例持有**同一个 --user-data-dir**
+            时，不会新建窗口，而是把 URL 转交给那个实例然后自己立刻退出。
+            此时 subprocess 的 poll() 马上非 None，外层
+            `while window.is_running()` 会误判成「用户关闭了窗口」，
+            导致整个应用刚起来就自动退出（实测启动约 0.7 秒后
+            `👋 已退出`，后端也跟着关了）。
+
+        为什么是「等一小段时间再判定」而不是只看 poll()：
+            正常启动的浏览器进程也会在几秒内进入稳定状态，
+            这里给一个宽限期，避免把「启动较慢」误判成交接。
+
+        返回 True 表示：进程已退出，但多半是交接给了已有实例 ——
+        窗口仍然存在，应用不该退出。
+        """
+        if self.process is None:
+            return False
+        deadline = time.time() + grace
+        while time.time() < deadline:
+            if self.process.poll() is None:
+                return False  # 进程还活着，正常情况
+            time.sleep(0.2)
+        # 进程已退出：若归还码为 0，几乎可以确定是「移交后正常退出」
+        return self.process.returncode == 0
+
     def apply_window_effects(self, timeout: float = 20.0, interval: float = 0.5) -> bool:
         """等待窗口出现并应用置顶 / 捕获排除 / 隐藏任务栏图标"""
         if not IS_WINDOWS or self.process is None:
@@ -611,14 +654,22 @@ class DesktopWindow:
 
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if self.process.poll() is not None:
-                logger.error("❌ 浏览器窗口在初始化前已退出（code=%s）", self.process.returncode)
-                return False
             hwnd = find_window_by_pid(self.process.pid, need_title=True)
             if hwnd:
                 self.hwnd = hwnd
                 break
+            # 交接给已有实例时，只关心 pid 会一直找不到；补一次全窗口搜索
+            if self.process.poll() is not None:
+                hwnd = self._find_window_by_title()
+                if hwnd:
+                    self.hwnd = hwnd
+                    break
+                logger.debug("浏览器进程已退出，且未按标题找到窗口")
             time.sleep(interval)
+
+        if not self.hwnd:
+            logger.warning("⚠ 未能定位浏览器窗口句柄，置顶/捕获排除未生效")
+            return False
 
         if not self.hwnd:
             logger.warning("⚠ 未能定位浏览器窗口句柄，置顶/捕获排除未生效")
@@ -664,8 +715,58 @@ class DesktopWindow:
                 "ℹ 跨进程设置捕获排除失败（系统限制），窗口仍可正常使用"
             )
 
+    def _find_window_by_title(self, title: Optional[str] = None) -> int:
+        """按窗口标题查找可见顶层窗口（跨进程）
+
+        用于「浏览器把 URL 交接给已有实例」的场景：此时本次启动的进程
+        已经退出，按 pid 找不到任何窗口，但窗口其实开在已有实例里。
+        """
+        if not IS_WINDOWS:
+            return 0
+        want = title or self.title or _DEFAULT_WINDOW_TITLE
+        found: list[int] = []
+
+        def _callback(hwnd, _lparam):  # noqa: ANN001
+            try:
+                if not _user32.IsWindowVisible(ctypes.c_void_p(hwnd)):
+                    return True
+                length = _user32.GetWindowTextLengthW(ctypes.c_void_p(hwnd))
+                if length <= 0:
+                    return True
+                buf = ctypes.create_unicode_buffer(length + 1)
+                _user32.GetWindowTextW(ctypes.c_void_p(hwnd), buf, length + 1)
+                if buf.value.strip() == want.strip():
+                    found.append(int(hwnd))
+                    return False
+            except Exception:  # pragma: no cover
+                pass
+            return True
+
+        try:
+            _user32.EnumWindows(_EnumWindowsProc(_callback), None)
+        except Exception:  # pragma: no cover
+            pass
+        return found[0] if found else 0
+
     def is_running(self) -> bool:
-        return self.process is not None and self.process.poll() is None
+        # 进程已退出时不能直接判定「窗口已关闭」：
+        # 浏览器可能只是把 URL 交接给了已有实例（见 _delegated_to_existing）。
+        # 只要句柄还在且窗口真实存在，就认为仍在运行。
+        if self.hwnd and IS_WINDOWS:
+            if _user32.IsWindow(ctypes.c_void_p(self.hwnd)):
+                return True
+            # 句柄失效（用户真的关了窗口）
+            return False
+        if self.process is None:
+            return False
+        if self.process.poll() is None:
+            return True
+        # 进程退出但句柄没记录过：再按标题找一次，避免误退出
+        hwnd = self._find_window_by_title()
+        if hwnd:
+            self.hwnd = hwnd
+            return True
+        return False
 
     def wait(self) -> None:
         if self.process is not None:
@@ -1204,12 +1305,82 @@ def _configure_console() -> None:
     Windows 控制台默认使用 GBK，日志中的 emoji（🪟 / 🚀 / ✅）会触发
     UnicodeEncodeError 并被 logging 记为「Logging error」。
     这里显式切换为 UTF-8（失败则退回 ASCII 安全模式）。
+
+    errors="replace" 是必须的：隐藏控制台（--hide-console）后，
+    写入失效句柄可能直接抛 OSError，不能让日志把整个启动流程带崩。
     """
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
-        except (AttributeError, ValueError):  # pragma: no cover
+        except (AttributeError, ValueError, OSError):  # pragma: no cover
             pass
+
+
+# 隐藏控制台需要的常量与 API
+SW_HIDE_CONSOLE = 0
+
+_console_hidden = False
+
+
+def hide_console_window() -> bool:
+    """隐藏本进程的控制台窗口（桌面版「只有一个窗口」的关键一步）
+
+    实现要点：
+      * GetConsoleWindow() 返回 0 表示本进程**没有**控制台 ——
+        典型情况是用户在已有终端里手动执行 `python desktop.py`。
+        此时不隐藏（也无从隐藏），保留日志可见性方便排查。
+      * 双击 start_app.bat 时父进程是 explorer，系统会新开一个
+        控制台，GetConsoleWindow() 非 0，这时才隐藏。
+      * 只隐藏窗口，不 FreeConsole()：日志仍可写入（虽然看不见），
+        且不会因为句柄失效而抛异常。
+
+    返回值仅表示「是否执行了隐藏」，不代表窗口状态可查询。
+    """
+    global _console_hidden
+    if not IS_WINDOWS:
+        return False
+
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetConsoleWindow.restype = ctypes.c_void_p
+        hwnd = kernel32.GetConsoleWindow()
+        if not hwnd:
+            logger.info("ℹ 未检测到控制台窗口（从终端启动），保持日志可见")
+            return False
+
+        _user32.ShowWindow(ctypes.c_void_p(hwnd), SW_HIDE_CONSOLE)
+        _console_hidden = True
+        logger.info("🫥 启动器控制台已隐藏（日志见 logs/desktop.log）")
+        return True
+    except Exception as exc:  # pragma: no cover
+        logger.debug("隐藏控制台失败（可忽略）: %s", exc)
+        return False
+
+
+def _setup_file_logging() -> Optional[str]:
+    """把日志同时写入 logs/desktop.log。
+
+    控制台隐藏后日志就无处可见了，出问题时必须有文件可查。
+    用 RotatingFileHandler 限制体积，避免长期使用撑爆磁盘。
+    """
+    try:
+        from logging.handlers import RotatingFileHandler
+
+        log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, "desktop.log")
+
+        handler = RotatingFileHandler(
+            log_path, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8"
+        )
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+        )
+        logging.getLogger().addHandler(handler)
+        return log_path
+    except Exception as exc:  # pragma: no cover
+        logger.debug("配置日志文件失败（可忽略）: %s", exc)
+        return None
 
 
 def _load_fastapi_app():
@@ -1286,6 +1457,293 @@ def _find_free_port(host: str, start: int, attempts: int = 20) -> int:
 
 
 # ══════════════════════════════════════════════════════════════
+# 语音微服务（STT / TTS）— 进程内启动
+# ══════════════════════════════════════════════════════════════
+#
+# 为什么放在进程内而不是像 start.bat 那样 `start cmd /c uvicorn ...`：
+#
+#   本模块的存在意义就是「只有一个窗口」。用 start 拉子进程会给每个
+#   微服务弹出一个控制台窗口，与桌面版的形态直接冲突 —— 用户要的是
+#   一个独立窗口，不是四个黑框。
+#
+#   关键在于 STT / TTS 服务并不需要独立进程：
+#     * /api/stt、/api/tts 代理路由通过 STT_SERVICE_URL / TTS_SERVICE_URL
+#       走 HTTP，地址指向哪里都行；
+#     * 系统音频捕获（services/audio_transcribe.py）自己从
+#       STT_SERVICE_URL 推导 ws 地址，同样不在乎进程边界。
+#   因此把它们的 FastAPI app 挂在本进程的 uvicorn 线程上即可，
+#   端口仍是 .env 里约定的 8001 / 8002，对调用方完全透明。
+#
+#   代价：STT 的 Whisper 推理会与主服务共享 GIL。实测可接受 ——
+#   主服务是 IO 密集（等 DeepSeek 流式返回），Whisper 在
+#   faster-whisper 内部走 CTranslate2，会主动释放 GIL。
+
+# stt_service / tts_service 目录下没有 __init__.py，不能作为包导入。
+# 导入前需要把各自的目录临时插入 sys.path，导入后立刻还原，
+# 避免污染主进程的模块搜索路径。
+_VOICE_SERVICE_MODULES = {
+    "STT": ("stt_service", "main", "faster_whisper"),
+    "TTS": ("tts_service", "main", "piper"),
+}
+
+
+def _service_port_from_url(url: str, fallback: int) -> int:
+    """从 STT_SERVICE_URL / TTS_SERVICE_URL 推导端口。
+
+    推导而不是硬编码的原因：.env 里这两个地址是唯一的配置来源
+    （start.bat 与 Docker 都靠它），如果这里写死 8001/8002，
+    用户改了 .env 就会出现「服务起在 8001、调用方连 8002」的错配。
+
+    注意 Docker 默认值（http://stt:8000）在本地场景下没有意义：
+    那是容器内网的服务名，本机解析不了。这种情况下回退到本地默认端口。
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return fallback
+
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(raw if "//" in raw else f"//{raw}")
+        host = (parsed.hostname or "").lower()
+        # 容器内网服务名：本地跑没有意义，用本地默认端口
+        if host in ("stt", "tts"):
+            return fallback
+        if parsed.port:
+            return int(parsed.port)
+    except ValueError:
+        logger.warning("⚠ 无法解析服务地址 %r，改用默认端口 %s", raw, fallback)
+
+    return fallback
+
+
+def _service_host_from_url(url: str, fallback: str = "127.0.0.1") -> str:
+    """从服务地址推导监听用的 host（容器服务名一律回落到本机）"""
+    raw = (url or "").strip()
+    if not raw:
+        return fallback
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(raw if "//" in raw else f"//{raw}")
+        host = (parsed.hostname or "").lower()
+        if host in ("", "stt", "tts", "0.0.0.0"):
+            return fallback
+        return host
+    except ValueError:
+        return fallback
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    """读取布尔型环境变量（.env 已由 main() 提前加载）"""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "y", "on", "是", "开")
+
+
+def voice_services_enabled() -> tuple[bool, bool]:
+    """按 .env 判定 STT / TTS 是否需要启动。
+
+    判定条件与 main.py 条件注册语音路由的逻辑保持一致：
+        VOICE_ENABLED 是总开关，STT_ENABLED / TTS_ENABLED 是分开关，
+        三者任一为真即启用对应服务。
+
+    额外一条：**系统音频监听开启时也必须起 STT**。
+        系统音频链路是「后端直连 STT_SERVICE_URL」，虽然不依赖
+        STT_ENABLED（那条开关只管浏览器的 /stt 代理路由），
+        但没有 STT 服务就只抓音频、出不来文字 —— 表现为界面上
+        一直显示「监听中（语音识别未连接）」。
+        既然默认就开启了监听，STT 就得跟着起来，否则「默认能用」是假的。
+    """
+    voice = _env_flag("VOICE_ENABLED")
+    stt = voice or _env_flag("STT_ENABLED")
+    tts = voice or _env_flag("TTS_ENABLED")
+
+    if not stt and _env_flag("SYSTEM_AUDIO_ENABLED"):
+        stt = True
+        logger.info("ℹ 系统音频监听已启用，自动一并启动 STT 服务")
+
+    return (stt, tts)
+
+
+class _MicroService:
+    """在本进程内以 uvicorn 线程运行的语音微服务"""
+
+    def __init__(self, name: str, directory: str, module: str, host: str, port: int):
+        self.name = name
+        self.directory = directory
+        self.module = module
+        self.host = host
+        self.port = port
+        self.server = None
+        self.thread: Optional[threading.Thread] = None
+
+    @property
+    def url(self) -> str:
+        return f"http://{self.host}:{self.port}"
+
+    def _import_app(self):
+        """临时插 sys.path 导入微服务的 FastAPI app
+
+        不 chdir：stt_service / tts_service 依赖 CWD 去找 .env 与模型目录，
+        但主进程的 CWD 必须保持在项目根（否则后端托管的 frontend/dist
+        与 data/ 相对路径全部失效）。二者冲突时以主进程为准 ——
+        微服务自己会按 __file__ 推算项目根并加载 .env
+        （见 stt_service/main.py 顶部的 load_dotenv 逻辑）。
+        """
+        # importlib.util 是子模块，必须显式导入：只 `import importlib`
+        # 在部分环境下拿不到 .util（AttributeError: module 'importlib'
+        # has no attribute 'util'）。
+        import importlib.util
+
+        abs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), self.directory)
+        if not os.path.isdir(abs_dir):
+            raise FileNotFoundError(f"未找到目录: {abs_dir}")
+
+        inserted = abs_dir not in sys.path
+        if inserted:
+            sys.path.insert(0, abs_dir)
+        try:
+            # 微服务模块名统一是 main，与项目根的 main.py 冲突，
+            # 因此按完整文件路径加载，不复用模块缓存。
+            spec = importlib.util.spec_from_file_location(
+                f"{self.directory}.main", os.path.join(abs_dir, "main.py")
+            )
+            if spec is None or spec.loader is None:
+                raise ImportError(f"无法加载 {self.directory}/main.py")
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            spec.loader.exec_module(module)
+            return getattr(module, "app")
+        finally:
+            # 移除我们插入的路径 —— 以及 exec_module 期间 Python 自己
+            # 加进去的同名目录，否则微服务的目录会一直留在 sys.path 上，
+            # 让后续 `import main` 之类解析到 stt_service/main.py。
+            while abs_dir in sys.path:
+                sys.path.remove(abs_dir)
+
+    def start(self) -> bool:
+        """检查依赖 → 导入 app → 起 uvicorn 线程；成功返回 True"""
+        # 端口被占用：多半是上次残留或用户已用 start.bat 起过一个。
+        # 不抢占、不报错退出，直接复用已有服务。
+        if not _port_available(self.host, self.port):
+            logger.warning(
+                "ℹ %s 端口 %s 已被占用，复用已在运行的服务（%s）",
+                self.name, self.port, self.url,
+            )
+            return True
+
+        _dir, _mod, dep = _VOICE_SERVICE_MODULES[self.name]
+        try:
+            __import__(dep)
+        except ImportError:
+            logger.warning(
+                "⚠ %s 依赖 `%s` 未安装，跳过启动。\n"
+                "   可执行:  %s -m pip install faster-whisper silero-vad piper-tts zhconv",
+                self.name, dep, os.path.basename(sys.executable),
+            )
+            return False
+
+        try:
+            app = self._import_app()
+        except Exception as exc:
+            logger.error("❌ %s 模块加载失败: %s: %s", self.name, type(exc).__name__, exc)
+            logger.debug("%s 导入详情", self.name, exc_info=True)
+            return False
+
+        import uvicorn
+
+        config = uvicorn.Config(
+            app,
+            host=self.host,
+            port=self.port,
+            log_level=os.getenv("LOG_LEVEL", "info").lower(),
+            access_log=False,
+        )
+        self.server = uvicorn.Server(config)
+        self.thread = threading.Thread(
+            target=self.server.run, name=f"{self.name.lower()}-service", daemon=True
+        )
+        self.thread.start()
+
+        if not _wait_for_server(self.url + "/health", timeout=60.0):
+            logger.error("❌ %s 服务启动超时（%s）", self.name, self.url)
+            self.stop()
+            return False
+
+        logger.info("🎙 %s 服务已就绪: %s", self.name, self.url)
+        return True
+
+    def stop(self) -> None:
+        if self.server is not None:
+            self.server.should_exit = True
+        if self.thread is not None and self.thread.is_alive():
+            self.thread.join(timeout=8)
+
+
+class VoiceServices:
+    """STT / TTS 微服务的编排（按 .env 开关决定是否启动）"""
+
+    def __init__(self) -> None:
+        self._services: list[_MicroService] = []
+
+    def start(self) -> None:
+        want_stt, want_tts = voice_services_enabled()
+        if not (want_stt or want_tts):
+            logger.info(
+                "🔇 语音服务未启用（VOICE_ENABLED/STT_ENABLED/TTS_ENABLED 均为 false）"
+            )
+            return
+
+        # 延迟到真正要启动时才读 config：import config 会拉起 pydantic
+        # 与 .env 解析，在不需要语音时没必要付这个开销。
+        try:
+            from config import settings
+        except Exception as exc:  # pragma: no cover
+            logger.error("❌ 读取语音配置失败，跳过语音服务: %s", exc)
+            return
+
+        if want_stt:
+            self._services.append(
+                _MicroService(
+                    name="STT",
+                    directory="stt_service",
+                    module="main",
+                    host=_service_host_from_url(settings.STT_SERVICE_URL),
+                    port=_service_port_from_url(settings.STT_SERVICE_URL, 8001),
+                )
+            )
+        if want_tts:
+            self._services.append(
+                _MicroService(
+                    name="TTS",
+                    directory="tts_service",
+                    module="main",
+                    host=_service_host_from_url(settings.TTS_SERVICE_URL),
+                    port=_service_port_from_url(settings.TTS_SERVICE_URL, 8002),
+                )
+            )
+
+        started = [svc for svc in self._services if svc.start()]
+        if started:
+            logger.info(
+                "🔊 语音服务: %s",
+                ", ".join(f"{svc.name}={svc.url}" for svc in started),
+            )
+        else:
+            logger.warning("⚠ 语音服务全部启动失败，语音功能不可用")
+
+    def stop(self) -> None:
+        for svc in self._services:
+            try:
+                svc.stop()
+            except Exception:  # pragma: no cover
+                pass
+        self._services.clear()
+
+
+# ══════════════════════════════════════════════════════════════
 # 命令行参数
 # ══════════════════════════════════════════════════════════════
 
@@ -1355,10 +1813,19 @@ def build_parser() -> argparse.ArgumentParser:
                              f"也可传 20-100 的百分数，运行中可在界面顶栏拖动滑块调整")
     window.add_argument("--debug", type=_str2bool, nargs="?", const=True, default=False,
                         help="[native 模式] 开启 WebView 开发者工具与调试日志（默认关闭）")
+    window.add_argument("--hide-console", type=_str2bool, nargs="?", const=True, default=True,
+                        help="启动完成后隐藏启动器自身的控制台窗口（默认开启，"
+                             "使桌面版只剩一个独立窗口；从终端手动运行时不隐藏）。"
+                             "排查问题时用 --hide-console false 保留黑窗口")
 
     # ── 其他 ──
     parser.add_argument("--no-console", type=_str2bool, nargs="?", const=True, default=False,
                         help="不输出启动日志（适合无控制台的打包运行）")
+    parser.add_argument("--auth-required", type=_str2bool, nargs="?", const=None, default=None,
+                        help="是否要求登录。桌面版默认**关闭**（单用户模式，"
+                             "数据归属固定的本机账号 desktop@local）；"
+                             "传 --auth-required true 可恢复登录页。"
+                             "不传时以 .env 的 AUTH_REQUIRED 为准")
     parser.add_argument("--open-timeout", type=float, default=90.0,
                         help="等待服务就绪的最长秒数（默认 90）")
     return parser
@@ -1380,14 +1847,38 @@ def run_desktop(args: argparse.Namespace) -> int:
             handlers=[logging.StreamHandler(sys.stdout)],
         )
 
+    # 控制台会被隐藏，日志必须同时落盘，否则出问题无从查起
+    log_path = _setup_file_logging() if not args.no_console else None
+
     # 独立窗口模式固定使用桌面配置（可被 .env 覆盖）
     os.environ.setdefault("DESKTOP_MODE", "true")
     os.environ.setdefault("HOST", args.host)
     os.environ.setdefault("PORT", str(args.port))
 
+    # ── 认证模式：桌面版默认免登录 ──
+    #
+    # 桌面版是「一个人的本机应用」，每次启动都要求登录没有意义。
+    # AUTH_REQUIRED=false 时后端会让所有路由使用一个固定的本机账号
+    # （见 utils/auth.py 的 LOCAL_USER_ID），前端 AuthGuard 也会自动
+    # 建立会话、跳过登录页。
+    #
+    # 用 setdefault 而不是直接赋值：
+    #   若用户在 .env 里显式写了 AUTH_REQUIRED=true（例如想给本机也
+    #   加上登录保护），应当尊重该选择；命令行 --auth-required 优先级最高。
+    if args.auth_required is not None:
+        os.environ["AUTH_REQUIRED"] = "true" if args.auth_required else "false"
+    else:
+        os.environ.setdefault("AUTH_REQUIRED", "false")
+
     logger.info("=" * 56)
     logger.info("  面试 Agent — 独立窗口模式")
     logger.info("=" * 56)
+    if log_path:
+        logger.info("📄 日志文件: %s", log_path)
+    logger.info(
+        "🔓 单用户模式（免登录）" if os.getenv("AUTH_REQUIRED", "false").lower() != "true"
+        else "🔒 认证模式（需要登录）"
+    )
 
     # ── 1. 选择端口 ──
     host, port = args.host, args.port
@@ -1414,7 +1905,20 @@ def run_desktop(args: argparse.Namespace) -> int:
         return 1
     logger.info("📦 前端构建产物: %s", os.path.dirname(dist_index))
 
-    # ── 3. 启动后端服务（含前端静态托管）──
+    # ── 3. 先启动语音微服务（STT / TTS）──
+    #    必须**早于**主后端：主后端的 lifespan 里会按 SYSTEM_AUDIO_AUTOSTART
+    #    自动开始捕获系统音频并立刻去连 STT_SERVICE_URL。
+    #    如果 STT 起得晚（原先的顺序），启动日志里会出现一次
+    #    「无法连接 STT 微服务：远程计算机拒绝网络连接」，虽然后台重连
+    #    最终能连上，但用户会先看到「语音识别未连接」，属于无谓的抖动。
+    #    先起 STT 就没有这个空窗期。
+    voice = VoiceServices()
+    try:
+        voice.start()
+    except Exception as exc:  # pragma: no cover - 语音失败不应阻断主流程
+        logger.error("❌ 语音服务启动异常（不影响主功能）: %s", exc)
+
+    # ── 3.2 启动后端服务（含前端静态托管）──
     #    注意：必须在独立线程中启动 uvicorn。
     #    uvicorn 的信号处理要求运行在主线程，非主线程会自动跳过安装 signal handler。
     import uvicorn
@@ -1426,6 +1930,7 @@ def run_desktop(args: argparse.Namespace) -> int:
         logger.error("   请检查依赖是否完整（pip install -r requirements.txt）"
                      "以及 .env 配置是否正确。")
         logger.debug("导入 main 失败详情", exc_info=True)
+        voice.stop()
         return 1
 
     config = uvicorn.Config(
@@ -1445,8 +1950,15 @@ def run_desktop(args: argparse.Namespace) -> int:
     if not _wait_for_server(base_url + "/", timeout=args.open_timeout):
         logger.error("❌ 服务启动超时（%s 秒），请检查上方日志。", args.open_timeout)
         server.should_exit = True
+        voice.stop()
         return 1
     logger.info("🚀 服务已就绪: %s", base_url)
+
+    # ── 3.6 隐藏启动器控制台 ──
+    #    放在这里而不是更早：服务启动日志仍能在窗口里看到，
+    #    隐藏后用户看到的「一闪而过的黑框」正好在窗口出现前消失。
+    if args.hide_console and not args.no_console:
+        hide_console_window()
 
     # ── 4. 打开独立窗口 ──
     url = base_url + (args.app_path if args.app_path.startswith("/") or not args.app_path else "/" + args.app_path)
@@ -1493,9 +2005,11 @@ def run_desktop(args: argparse.Namespace) -> int:
             window.close()
             server.should_exit = True
             server_thread.join(timeout=10)
+            voice.stop()
             return 1
         finally:
             window.close()
+            voice.stop()
             server.should_exit = True
             server_thread.join(timeout=10)
         logger.info("👋 已退出")
@@ -1525,12 +2039,22 @@ def run_desktop(args: argparse.Namespace) -> int:
         logger.error("❌ 打开独立窗口失败: %s", exc)
         logger.info("   回退方案：请手动在浏览器中访问 %s", base_url)
         server.should_exit = True
+        voice.stop()
         return 1
 
     # 窗口特效在后台应用（等待窗口出现期间不阻塞服务）
     threading.Thread(
         target=window.apply_window_effects, name="window-effects", daemon=True
     ).start()
+
+    # 交接给已有浏览器实例时，本次启动的进程会立刻退出。
+    # 这里先等一下，确认到底是「交接」还是「真的启动失败」，
+    # 否则下面的等待循环会在 0.5 秒内判定窗口已关闭并把应用整个关掉。
+    if window._delegated_to_existing():
+        logger.info(
+            "ℹ 浏览器将页面交给了已在运行的实例（同一用户数据目录），"
+            "窗口仍然可用 —— 继续运行"
+        )
 
     logger.info("ℹ 关闭窗口或按 Ctrl+C 即可退出应用")
 
@@ -1542,6 +2066,7 @@ def run_desktop(args: argparse.Namespace) -> int:
         logger.info("收到中断信号，正在退出...")
     finally:
         window.close()
+        voice.stop()
         server.should_exit = True
         server_thread.join(timeout=10)
         logger.info("👋 已退出")
