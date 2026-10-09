@@ -155,22 +155,27 @@ class StreamingTranscriber:
 
             segment_texts = []
             for segment in segments:
-                # Whisper 中文默认输出繁体，这里先转简体再累积：
-                # partial/final 都是「累积全文」，若在累积后才转换，
-                # 主进程侧的增量前缀比对会因繁简不一致而错乱。
+                # Whisper 中文默认输出繁体，这里先转简体。
                 segment_texts.append(to_simplified(segment.text))
-                # 输出 partial
-                partial = self._full_text + "".join(segment_texts)
-                if self.on_partial:
+                # partial 输出「本段已识别的内容」（不跨段累积）：
+                # 累积会让前一句在后续每次推送里重复出现。
+                partial = "".join(segment_texts).strip()
+                if partial and self.on_partial:
                     self.on_partial(partial)
 
-            # 最终文本
-            new_text = "".join(segment_texts)
+            # 本段最终文本。
+            #
+            # 关键：final 只推**本段**，不再推跨段累积的全文。
+            # 早期实现把 _full_text（跨断句不断累积）当 final 推送，
+            # 于是第二句话的 final = "第一句话 + 第二句话"，
+            # 前端表现为「第二次的内容和第一次连在一起且重复」。
+            new_text = "".join(segment_texts).strip()
             if new_text:
+                # _full_text 仅用于 flush 时取回整场文本，不参与推送
                 self._full_text += new_text
                 if final:
                     if self.on_final:
-                        self.on_final(self._full_text.strip())
+                        self.on_final(new_text)
 
             logger.info(
                 "转写片段: %.1fs 音频 → '%s' (lang=%s)",

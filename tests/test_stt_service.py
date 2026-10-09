@@ -132,6 +132,82 @@ def test_buffer_cleared_after_consuming():
     assert len(vad.get_buffer_and_reset()) == 0
 
 
+# ══════════════════════════════════════════════════════════════
+# 静音不得进入转录（识别慢 / 空白也被转录）
+# ══════════════════════════════════════════════════════════════
+#
+# 早期实现把**每一帧**都塞进 buffer，静音也不例外。后果：
+#   - 用户说完一句话，前面的几十秒静音也一起送去 Whisper，
+#     既慢又容易产生与内容无关的幻觉文本（实测出现过 44s/77s 的片段）；
+#   - 两次说话之间只要没断句就被并成一大段。
+
+
+def test_silence_before_speech_not_buffered():
+    """说话前的长时间静音不能进入 buffer"""
+    vad = VADProcessor(sample_rate=SR, silence_timeout=1.0)
+    vad._speech_probability = lambda frame: 0.0
+
+    # 5 秒静音
+    for _ in range(50):
+        vad.process_frame(np.zeros(FRAME, dtype=np.float32))
+
+    assert len(vad._buffer) == 0, "静音被放进了待转录缓冲"
+
+
+def test_preroll_keeps_small_window_only():
+    """静默期间只保留一小段前置缓冲（用于接住起头字）"""
+    vad = VADProcessor(sample_rate=SR, silence_timeout=1.0, preroll_seconds=0.3)
+    vad._speech_probability = lambda frame: 0.0
+
+    for _ in range(50):
+        vad.process_frame(np.zeros(FRAME, dtype=np.float32))
+
+    buffered = sum(len(f) for f in vad._preroll)
+    # 0.3s @16k = 4800 样本，允许一帧的误差
+    assert FRAME <= buffered <= FRAME * 4, f"前置缓冲长度异常: {buffered}"
+
+
+def test_segment_audio_excludes_silence_tail():
+    """取到的音频不应含断句前那 1 秒静音尾巴"""
+    vad = VADProcessor(sample_rate=SR, silence_timeout=1.0, preroll_seconds=0.3)
+
+    # 说话 2 秒
+    vad._speech_probability = lambda frame: 0.9
+    for _ in range(20):
+        vad.process_frame(np.ones(FRAME, dtype=np.float32) * 0.1)
+
+    # 1.5 秒静音触发断句
+    vad._speech_probability = lambda frame: 0.0
+    for _ in range(15):
+        vad.process_frame(np.zeros(FRAME, dtype=np.float32))
+
+    audio = vad.get_buffer_and_reset()
+    duration = len(audio) / SR
+    # 期望 ≈ 0.3s 前置 + 2s 语音 = 2.3s；若把静音尾巴算进来会到 3.5s+
+    assert 2.0 <= duration <= 2.8, f"音频时长异常（含静音尾巴？）: {duration:.2f}s"
+
+
+def test_consecutive_segments_do_not_bleed():
+    """连续两段语音必须各自独立，不能互相粘连"""
+    vad = VADProcessor(sample_rate=SR, silence_timeout=1.0)
+
+    def speak(seconds):
+        vad._speech_probability = lambda frame: 0.9
+        for _ in range(int(seconds * 10)):
+            vad.process_frame(np.ones(FRAME, dtype=np.float32) * 0.1)
+        vad._speech_probability = lambda frame: 0.0
+        for _ in range(15):
+            vad.process_frame(np.zeros(FRAME, dtype=np.float32))
+
+    speak(2.0)
+    first = vad.get_buffer_and_reset()
+    speak(1.0)
+    second = vad.get_buffer_and_reset()
+
+    assert 1.8 <= len(first) / SR <= 2.8, f"第一段时长异常: {len(first)/SR:.2f}s"
+    assert 0.8 <= len(second) / SR <= 1.8, f"第二段时长异常: {len(second)/SR:.2f}s"
+
+
 def test_short_speech_is_discarded():
     """短于 min_speech_duration 的噪声应被丢弃，不触发 speech_end"""
     vad = VADProcessor(sample_rate=SR, silence_timeout=1.0, min_speech_duration=0.3)
@@ -256,3 +332,42 @@ def test_flush_transcribes_pending_buffer():
     text = asyncio.run(run())
     assert "最后一句" in (text or "")
     assert finals, "flush 也应触发 on_final"
+
+
+def test_final_is_per_segment_not_cumulative():
+    """final 只推本段，不能把前面所有句子累积进来。
+
+    回归：早期实现把 _full_text（跨断句不断累积）当 final 推送，
+    于是第二句话的 final = "第一句话 + 第二句话"。前端表现为
+    「第二次的内容和第一次连在一起且重复」。
+    """
+    finals = []
+    tr = _make_transcriber(_FakeWhisper("第一句话。"), finals)
+
+    async def go():
+        # 第一段
+        tr._model = _FakeWhisper("第一句话。")
+        await _drive_speech_then_silence(tr)
+        # 第二段（换模型输出，模拟识别到不同内容）
+        tr._model = _FakeWhisper("第二句话。")
+        await _drive_speech_then_silence(tr)
+
+    asyncio.run(go())
+
+    assert finals == ["第一句话。", "第二句话。"], f"final 出现累积: {finals}"
+
+
+def test_partial_is_per_segment_not_cumulative():
+    """partial 同样只反映本段，不累积前文"""
+    partials = []
+    tr = _make_transcriber(_FakeWhisper("第一句话。"), partials=partials)
+
+    async def go():
+        tr._model = _FakeWhisper("第一句话。")
+        await _drive_speech_then_silence(tr)
+        tr._model = _FakeWhisper("第二句话。")
+        await _drive_speech_then_silence(tr)
+
+    asyncio.run(go())
+
+    assert partials == ["第一句话。", "第二句话。"], f"partial 出现累积: {partials}"

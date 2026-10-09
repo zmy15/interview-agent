@@ -50,12 +50,16 @@ class VADProcessor:
         silence_timeout: float = 1.0,
         min_speech_duration: float = 0.3,
         max_speech_duration: float = 30.0,
+        preroll_seconds: float = 0.3,
     ):
         self.sample_rate = sample_rate
         self.speech_threshold = speech_threshold
         self.silence_timeout = silence_timeout
         self.min_speech_duration = min_speech_duration
         self.max_speech_duration = max_speech_duration
+        # 语音起点前保留的音频长度：VAD 需要几帧才能确认「开始说话」，
+        # 不留前置缓冲会把第一个字吃掉（听感上就是「断头」）。
+        self.preroll_seconds = max(0.0, preroll_seconds)
 
         # Silero VAD 模型（懒加载）
         self._model = None
@@ -67,8 +71,11 @@ class VADProcessor:
         self._silence_start_time: Optional[float] = None
         self._current_time: float = 0.0
 
-        # 音频缓冲
+        # 正在累积的语音段音频
         self._buffer: list[np.ndarray] = []
+        # 语音开始前的滑动窗口（只保留最近 preroll_seconds 的帧）
+        self._preroll: list[np.ndarray] = []
+        self._preroll_samples = int(self.preroll_seconds * sample_rate)
 
     # ── 懒加载模型 ──
 
@@ -162,13 +169,25 @@ class VADProcessor:
             self._current_time = timestamp
         ts = self._current_time
 
-        # 累积 buffer
-        self._buffer.append(audio_frame)
-
         # VAD 检测：使用 Silero 模型判断当前帧是否为语音
         speech_prob = self._speech_probability(audio_frame)
-
         is_speech = speech_prob > self.speech_threshold
+
+        # 累积 buffer 的策略决定了转录质量与速度：
+        #
+        # 早期实现把**每一帧**都塞进 buffer，静音也不例外。后果：
+        #   - 用户说完一句话后，前面的几十秒静音也一起送去转录，
+        #     Whisper 在静音上白跑（实测出现过 44s / 77s 的片段），
+        #     既慢又容易产生与内容无关的幻觉文本；
+        #   - 两次说话之间只要没触发断句，就会被并成一大段。
+        #
+        # 现在改为：
+        #   - 静默状态：帧进**滑动窗口** _preroll，只保留最近
+        #     preroll_seconds 秒（用于接住被 VAD 判定延迟的起头字）；
+        #   - 一旦判定开始说话：把窗口里的帧作为前置缓冲并入 buffer，
+        #     之后只累积说话期间的帧。
+        self._append_frame(audio_frame, is_speech)
+
         events = []
 
         if self._state == VADState.SILENCE:
@@ -178,6 +197,7 @@ class VADProcessor:
                 self._state = VADState.SPEECH
                 self._speech_start_time = ts
                 self._silence_start_time = None
+                self._promote_preroll()
         else:  # SPEECH
             # 注意：不能写 `self._speech_start_time or ts` —— 语音从第 0 秒
             # 就开始时，_speech_start_time 是 0.0（falsy），会被错误地替换成
@@ -245,6 +265,39 @@ class VADProcessor:
 
     # ── 内部 ──
 
+    def _append_frame(self, frame: np.ndarray, is_speech: bool) -> None:
+        """按当前状态决定这一帧进哪里。
+
+        - 正在说话：进正式 buffer
+        - 静默（包括「说话后等待断句」的那段静音，以及说话前）：进滑动窗口
+
+        注意不能简单用 `state == SPEECH` 判断：断句要等 silence_timeout
+        秒静默才触发，期间 state 仍是 SPEECH，若无条件写入，
+        每段尾巴都会拖上 1 秒静音，长录音里累积起来很可观。
+        """
+        in_speech = is_speech and self._silence_start_time is None
+        if in_speech:
+            self._buffer.append(frame)
+        else:
+            self._preroll.append(frame)
+            self._trim_preroll()
+
+    def _trim_preroll(self) -> None:
+        """把前置窗口裁剪到 preroll_seconds 以内"""
+        if self._preroll_samples <= 0:
+            self._preroll = []
+            return
+
+        total = sum(len(f) for f in self._preroll)
+        while len(self._preroll) > 1 and total - len(self._preroll[0]) >= self._preroll_samples:
+            total -= len(self._preroll.pop(0))
+
+    def _promote_preroll(self) -> None:
+        """开始说话时，把前置窗口的帧并入 buffer（接住起头字）"""
+        if self._preroll:
+            self._buffer.extend(self._preroll)
+            self._preroll = []
+
     def _reset(self, *, keep_buffer: bool = False):
         """重置状态机。
 
@@ -256,5 +309,8 @@ class VADProcessor:
         self._state = VADState.SILENCE
         self._speech_start_time = None
         self._silence_start_time = None
+        # 前置窗口每次都清：新的一段语音应有自己的起头缓冲，
+        # 留着上一段的尾巴会把两句话粘在一起。
+        self._preroll = []
         if not keep_buffer:
             self._buffer = []
