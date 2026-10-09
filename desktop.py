@@ -91,9 +91,36 @@ SW_SHOW = 5
 SW_SHOWNA = 8
 SW_RESTORE = 9
 
+# ── 全局热键（RegisterHotKey）──
+# 全局热键由系统投递 WM_HOTKEY 到注册它的线程消息队列，
+# 因此**窗口失焦时同样能触发** —— 这正是网页 JS keydown 做不到的事。
+WM_HOTKEY = 0x0312
+# 投递给线程消息队列以结束 GetMessage 循环
+WM_QUIT = 0x0012
+
+# 修饰键（RegisterHotKey 的 fsModifiers）
+MOD_ALT = 0x0001
+MOD_CONTROL = 0x0002
+MOD_SHIFT = 0x0004
+MOD_WIN = 0x0008
+# 按住不放时只触发一次，避免长按连发截图
+MOD_NOREPEAT = 0x4000
+
+# 虚拟键码：F1..F24 连续排列，VK_F1 = 0x70
+VK_F1 = 0x70
+VK_F8 = 0x77
+VK_F24 = 0x87
+
+# 热键 id（同一线程内唯一即可）
+_HOTKEY_ID_F8 = 1
+
 _user32 = None
+_kernel32 = None
 if IS_WINDOWS:
+    from ctypes import wintypes
+
     _user32 = ctypes.WinDLL("user32", use_last_error=True)
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
     _user32.SetWindowDisplayAffinity.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
     _user32.SetWindowDisplayAffinity.restype = ctypes.c_bool
@@ -125,6 +152,25 @@ if IS_WINDOWS:
         ctypes.POINTER(ctypes.c_ubyte), ctypes.POINTER(ctypes.c_uint32),
     )
     _user32.GetLayeredWindowAttributes.restype = ctypes.c_bool
+
+    # ── 全局热键 ──
+    _user32.RegisterHotKey.argtypes = (
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_uint32, ctypes.c_uint32,
+    )
+    _user32.RegisterHotKey.restype = ctypes.c_bool
+    _user32.UnregisterHotKey.argtypes = (ctypes.c_void_p, ctypes.c_int)
+    _user32.UnregisterHotKey.restype = ctypes.c_bool
+    # 消息循环：GetMessageW 阻塞直到有消息；返回 0=WM_QUIT，-1=出错
+    _user32.GetMessageW.argtypes = (
+        ctypes.POINTER(wintypes.MSG), ctypes.c_void_p, ctypes.c_uint32,
+        ctypes.c_uint32,
+    )
+    _user32.GetMessageW.restype = ctypes.c_int
+    _user32.PostThreadMessageW.argtypes = (
+        ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p,
+    )
+    _user32.PostThreadMessageW.restype = ctypes.c_bool
+    _kernel32.GetCurrentThreadId.restype = ctypes.c_uint32
 
     if hasattr(ctypes, "WINFUNCTYPE"):
         # 64 位下窗口句柄为 8 字节，必须使用 LongPtr 版本
@@ -653,6 +699,142 @@ def is_native_available() -> bool:
 
 
 # ══════════════════════════════════════════════════════════════
+# 全局热键（窗口失焦也能触发）
+# ══════════════════════════════════════════════════════════════
+
+class GlobalHotkey:
+    """基于 Win32 RegisterHotKey 的系统级热键。
+
+    为什么需要它：网页里的 keydown 只在窗口**聚焦**时才有事件 —— 用户按 F8
+    截图时，焦点往往在题目所在的窗口（浏览器/IDE/考试客户端）上，本应用并不
+    聚焦，此时 JS 永远收不到按键。RegisterHotKey 由**系统**投递 WM_HOTKEY，
+    因此窗口失焦时同样有效。
+
+    实现要点：
+      * 热键绑定到「注册它的线程」的消息队列，所以必须在专用线程里注册，
+        并在**同一线程**跑消息循环（GetMessage），否则收不到 WM_HOTKEY；
+      * 回调通过传入的 callback 抛回主流程，不直接触碰 UI；
+      * 注册失败（例如 F8 已被其它程序占用）不抛异常，而是把原因回传给前端，
+        由前端决定是否退化为窗口内快捷键。
+    """
+
+    def __init__(self, callback, hotkey_id: int = _HOTKEY_ID_F8,
+                 vk: int = VK_F8 if IS_WINDOWS else 0,
+                 modifiers: int = MOD_NOREPEAT):
+        self._callback = callback
+        self._hotkey_id = hotkey_id
+        self._vk = vk
+        self._modifiers = modifiers
+        self._thread: Optional[threading.Thread] = None
+        self._registered = threading.Event()
+        self._stop = threading.Event()
+        self._error: Optional[str] = None
+        self._lock = threading.Lock()
+        self._thread_id: int = 0
+
+    # ── 生命周期 ──
+
+    def start(self) -> dict:
+        """在专用线程注册热键并开始消息循环（幂等）"""
+        if not IS_WINDOWS:
+            return {"ok": False, "error": "全局热键仅支持 Windows"}
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return self.status()
+
+            self._registered.clear()
+            self._stop.clear()
+            self._error = None
+            self._thread = threading.Thread(
+                target=self._run, name="global-hotkey", daemon=True,
+            )
+            self._thread.start()
+
+        # 等注册结果，避免前端拿到「还没注册完」就以为成功了
+        self._registered.wait(timeout=3.0)
+        return self.status()
+
+    def stop(self) -> None:
+        """注销热键并结束消息循环"""
+        with self._lock:
+            thread = self._thread
+            self._thread = None
+        self._stop.set()
+        # 让阻塞在 GetMessage 的线程醒过来：向该线程投递一条 WM_QUIT
+        if thread is not None and self._thread_id:
+            try:
+                _user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
+            except Exception as exc:  # pragma: no cover
+                logger.debug("PostThreadMessage 失败: %s", exc)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+        # 线程内已 UnregisterHotKey；若消息循环未跑起来，这里兜底再注销一次
+        if self._thread_id:
+            try:
+                _user32.UnregisterHotKey(None, self._hotkey_id)
+            except Exception:  # pragma: no cover
+                pass
+        self._thread_id = 0
+
+    @property
+    def active(self) -> bool:
+        return self._thread is not None and self._thread.is_alive() and not self._error
+
+    def status(self) -> dict:
+        return {
+            "ok": self.active,
+            "hotkey": self._name(),
+            "error": self._error,
+        }
+
+    def _name(self) -> str:
+        return "F8" if self._vk == VK_F8 else f"VK_{self._vk:#04x}"
+
+    # ── 线程体 ──
+
+    def _run(self) -> None:
+        """专用线程：注册热键 → 消息循环 → 退出时注销"""
+        try:
+            self._thread_id = _kernel32.GetCurrentThreadId()
+        except Exception as exc:  # pragma: no cover
+            self._error = f"获取线程 id 失败: {exc}"
+            self._registered.set()
+            return
+
+        if not _user32.RegisterHotKey(None, self._hotkey_id,
+                                      self._modifiers, self._vk):
+            err = ctypes.get_last_error()
+            # 1409 = ERROR_HOTKEY_ALREADY_REGISTERED：多开或别的程序占了 F8
+            if err == 1409:
+                self._error = f"热键 {self._name()} 已被其它程序占用"
+            else:
+                self._error = f"注册热键 {self._name()} 失败（错误码 {err}）"
+            logger.warning("⚠ %s", self._error)
+            self._registered.set()
+            return
+
+        logger.info("⌨️ 全局热键 %s 已注册（窗口失焦也能触发）", self._name())
+        self._registered.set()
+
+        msg = wintypes.MSG()
+        try:
+            # GetMessageW 返回 0 表示 WM_QUIT；-1 表示出错
+            while not self._stop.is_set():
+                ret = _user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+                if ret in (0, -1):
+                    break
+                if msg.message == WM_HOTKEY and msg.wParam == self._hotkey_id:
+                    try:
+                        self._callback()
+                    except Exception as exc:  # pragma: no cover
+                        # 回调异常绝不能打断消息循环，否则热键从此失效
+                        logger.error("全局热键回调异常: %s", exc)
+        finally:
+            _user32.UnregisterHotKey(None, self._hotkey_id)
+            logger.info("⌨️ 全局热键 %s 已注销", self._name())
+
+
+# ══════════════════════════════════════════════════════════════
 # 前端 ↔ 窗口控制 桥接 API
 # ══════════════════════════════════════════════════════════════
 
@@ -774,6 +956,52 @@ class WindowControlApi:
         except Exception as exc:  # pragma: no cover
             return {"ok": False, "error": str(exc)}
 
+    # ── 全局热键 ──
+
+    def register_screenshot_hotkey(self) -> dict:
+        """注册全局 F8 热键（窗口失焦也能触发截图）。
+
+        注册成功后，每次按下 F8 都会由系统回调到前端：
+        前端需先用 on_hotkey 注入一个 JS 函数名，这里通过
+        window.evaluate_js 调用它 —— pywebview 的 js_api 是
+        「前端调后端」的单向通道，后端主动通知前端只能走 evaluate_js。
+        """
+        ctrl = self._controller
+        if ctrl.hotkey is None:
+            return {"ok": False, "hotkey": "F8",
+                    "error": "当前窗口模式不支持全局热键"}
+        result = ctrl.hotkey.start()
+        return {**result, "hotkey": ctrl.hotkey_name()}
+
+    def unregister_screenshot_hotkey(self) -> dict:
+        """注销全局 F8 热键"""
+        ctrl = self._controller
+        if ctrl.hotkey is None:
+            return {"ok": True, "hotkey": "F8", "error": None}
+        ctrl.hotkey.stop()
+        return {"ok": True, "hotkey": ctrl.hotkey_name(), "error": None}
+
+    def get_hotkey_state(self) -> dict:
+        """查询全局热键状态，供前端初始化"""
+        ctrl = self._controller
+        if ctrl.hotkey is None:
+            return {"ok": False, "available": False, "hotkey": "F8",
+                    "error": "全局热键仅在独立窗口模式下可用"}
+        state = ctrl.hotkey.status()
+        return {**state, "available": True}
+
+    def on_hotkey(self, js_function_name) -> dict:
+        """登记按下热键时要调用的前端 JS 函数名。
+
+        由前端在页面加载后调用一次，例如 on_hotkey('__onScreenshotHotkey')，
+        之后每次按 F8，后端都会执行 window.__onScreenshotHotkey()。
+        """
+        name = str(js_function_name or "").strip()
+        if not name or not name.replace("_", "").replace("$", "").isalnum():
+            return {"ok": False, "error": "非法的前端回调函数名"}
+        self._controller.hotkey_callback_name = name
+        return {"ok": True, "callback": name, "error": None}
+
 
 def _parse_opacity_arg(value) -> float:
     """解析透明度入参：接受 0.2~1.0 或 20~100（百分数）"""
@@ -830,8 +1058,31 @@ class NativeWindow:
         self.hwnd: int = 0
         self._closed = False
         self._started = threading.Event()
+        # 全局热键：窗口失焦时也能触发截图
+        self.hotkey: Optional[GlobalHotkey] = None
+        self.hotkey_callback_name: str = ""
+        if IS_WINDOWS:
+            self.hotkey = GlobalHotkey(self._on_hotkey_fired)
         # 暴露给前端的桥接 API（window.pywebview.api）
         self.api = WindowControlApi(self)
+
+    def hotkey_name(self) -> str:
+        return "F8"
+
+    def _on_hotkey_fired(self) -> None:
+        """全局热键触发（在热键线程里）→ 调用前端登记的 JS 回调。
+
+        pywebview 的 evaluate_js 需要窗口已就绪；窗口正在销毁时调用会抛异常，
+        这里全部吞掉并记日志 —— 热键线程绝不能因异常退出。
+        """
+        name = self.hotkey_callback_name
+        if not name or self.window is None:
+            logger.debug("热键触发，但前端尚未登记回调，忽略")
+            return
+        try:
+            self.window.evaluate_js(f"window.{name} && window.{name}()")
+        except Exception as exc:
+            logger.debug("热键回调执行失败: %s", exc)
 
     # ── 生命周期 ──
 
@@ -930,6 +1181,10 @@ class NativeWindow:
         if self._closed:
             return
         self._closed = True
+        # 先注销热键：窗口销毁后再调 evaluate_js 会失败，
+        # 且热键不注销会一直占用 F8，直到进程退出
+        if self.hotkey is not None:
+            self.hotkey.stop()
         if self.hwnd and IS_WINDOWS:
             set_topmost(self.hwnd, False)
         try:

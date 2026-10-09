@@ -48,6 +48,9 @@ import {
   isDesktopWindow,
   getWindowState,
   setCaptureExclude,
+  registerScreenshotHotkey,
+  unregisterScreenshotHotkey,
+  setHotkeyHandler,
 } from '@/api/windowControl'
 
 const { TextArea } = Input
@@ -130,6 +133,11 @@ const ChatPage: React.FC = () => {
   // 截图答题：截图期间禁用按钮，并显示已用秒数
   const [capturing, setCapturing] = useState(false)
   const [captureElapsed, setCaptureElapsed] = useState(0)
+
+  // F8 快捷键要用「最新」的 handleScreenshot，但全局监听只在挂载时绑定一次。
+  // handleScreenshot 每次渲染都会重建，直接绑定会拿到过期的 capturing/isStreaming
+  // 闭包（按一次后 F8 就永久失效）。这里用 ref 持有最新实现，监听只读 ref。
+  const screenshotRef = useRef<() => void>(() => {})
 
   // 用于追踪上一轮 AI 的提问内容（配对 QA 记录）
   const lastAIQuestionRef = useRef<string>('')
@@ -408,6 +416,82 @@ const ChatPage: React.FC = () => {
       setCaptureElapsed(0)
     }
   }
+
+  // 始终指向最新一次渲染的 handleScreenshot（见 screenshotRef 的声明说明）
+  useEffect(() => {
+    screenshotRef.current = handleScreenshot
+  })
+
+  /**
+   * 全局 F8 快捷键：等价于点击「截图」按钮。
+   *
+   * 分两层，优先用第一层：
+   *
+   * 1) **独立窗口模式（desktop.py）**：调用后端注册 Win32 全局热键
+   *    （RegisterHotKey）。热键由系统投递，**窗口失焦时同样能触发** ——
+   *    这正是截图场景的关键：按 F8 时焦点通常在题目所在的窗口上，
+   *    本应用并不聚焦，网页的 keydown 根本收不到按键。
+   *    后端的 js_api 是单向的（前端调后端），所以这里还要在 window 上
+   *    挂一个回调函数，并把它登记给后端，由后端 evaluate_js 调用。
+   *
+   * 2) **浏览器模式**：拿不到全局热键（浏览器安全边界所限），
+   *    退化为窗口内的 keydown 监听 —— 只在窗口聚焦时生效。
+   */
+  useEffect(() => {
+    const invoke = () => screenshotRef.current()
+
+    // 窗口内监听：浏览器模式下是唯一手段；独立窗口模式下作为
+    // 全局热键注册失败（例如 F8 被别的程序占用）时的兜底。
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'F8') return
+      // 按住不放会连续触发 keydown，截图是重操作，只认首次按下
+      if (e.repeat) return
+      e.preventDefault()
+      invoke()
+    }
+    const addWindowListener = () => window.addEventListener('keydown', onKeyDown)
+
+    // 后端热键触发时会执行 window.__onScreenshotHotkey()
+    const HOTKEY_CALLBACK = '__onScreenshotHotkey'
+    const w = window as unknown as Record<string, unknown>
+
+    if (isDesktopWindow()) {
+      w[HOTKEY_CALLBACK] = invoke
+      // 全局热键注册成功前先挂上窗口内监听，保证 F8「至少能用」；
+      // 注册成功后再摘掉，避免同一次按键触发两次截图。
+      addWindowListener()
+      let cancelled = false
+      void (async () => {
+        // 先登记回调再注册热键，避免热键已生效但回调还没挂上
+        const bound = await setHotkeyHandler(HOTKEY_CALLBACK)
+        if (cancelled) return
+        if (!bound.ok) {
+          console.warn('登记全局热键回调失败，仅窗口内快捷键可用:', bound.error)
+          return
+        }
+        const res = await registerScreenshotHotkey()
+        if (cancelled) return
+        if (res.ok) {
+          // 全局热键已生效，摘掉窗口内监听防止重复触发
+          window.removeEventListener('keydown', onKeyDown)
+          console.info(`已注册全局热键 ${res.hotkey}（窗口失焦也能触发）`)
+        } else {
+          console.warn('注册全局热键失败，仅窗口内快捷键可用:', res.error)
+        }
+      })()
+      return () => {
+        cancelled = true
+        delete w[HOTKEY_CALLBACK]
+        window.removeEventListener('keydown', onKeyDown)
+        // 注销热键，把 F8 还给其它程序；否则会一直占用到进程退出
+        void unregisterScreenshotHotkey()
+      }
+    }
+
+    // 浏览器模式：仅在窗口聚焦时有效
+    addWindowListener()
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   const handleClear = () => {
     clearChat()
@@ -1011,8 +1095,8 @@ const ChatPage: React.FC = () => {
           onKeyDown={handleKeyDown}
           placeholder={
             selectedMode === 'interviewer'
-              ? '你是面试官，输入你的提问... (Enter 发送, Shift+Enter 换行)｜点「截图」可识别屏幕上的题目'
-              : '你是求职者，输入你的回答... (Enter 发送, Shift+Enter 换行)｜点「截图」可识别屏幕上的题目'
+              ? '你是面试官，输入你的提问... (Enter 发送, Shift+Enter 换行)｜点「截图」或按 F8 可识别屏幕上的题目'
+              : '你是求职者，输入你的回答... (Enter 发送, Shift+Enter 换行)｜点「截图」或按 F8 可识别屏幕上的题目'
           }
           autoSize={{ minRows: 1, maxRows: 5 }}
           disabled={isStreaming}
@@ -1039,12 +1123,12 @@ const ChatPage: React.FC = () => {
           </Button>
         )}
 
-        {/* 截图答题：抓取整个屏幕，交给视觉模型识别题目并作答 */}
+        {/* 截图答题：抓取整个屏幕，交给视觉模型识别题目并作答（也可按 F8） */}
         <Tooltip
           title={
             capturing
               ? '正在截图并识别…'
-              : '截取主显示器画面，AI 提取题目并作答（结果直接显示在对话中）'
+              : '截取主显示器画面，AI 提取题目并作答（结果直接显示在对话中）｜快捷键 F8'
           }
         >
           <Button

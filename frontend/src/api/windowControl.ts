@@ -16,6 +16,10 @@ interface PywebviewApi {
   set_taskbar_hidden: (hidden: boolean) => Promise<TaskbarResult>
   set_capture_exclude: (exclude: boolean) => Promise<CaptureResult>
   close_window: () => Promise<{ ok: boolean; error: string | null }>
+  register_screenshot_hotkey: () => Promise<HotkeyResult>
+  unregister_screenshot_hotkey: () => Promise<HotkeyResult>
+  get_hotkey_state: () => Promise<HotkeyStateResult>
+  on_hotkey: (jsFunctionName: string) => Promise<HotkeyCallbackResult>
 }
 
 interface PywebviewBridge {
@@ -64,6 +68,23 @@ interface TaskbarResult {
 interface CaptureResult {
   ok: boolean
   capture_exclude: boolean
+  error: string | null
+}
+
+export interface HotkeyResult {
+  ok: boolean
+  hotkey: string
+  error: string | null
+}
+
+export interface HotkeyStateResult extends HotkeyResult {
+  /** 当前环境是否支持全局热键（仅独立窗口模式为 true） */
+  available: boolean
+}
+
+interface HotkeyCallbackResult {
+  ok: boolean
+  callback?: string
   error: string | null
 }
 
@@ -148,5 +169,62 @@ export async function setCaptureExclude(exclude: boolean): Promise<CaptureResult
     return await window.pywebview!.api.set_capture_exclude(exclude)
   } catch (err) {
     return { ok: false, capture_exclude: exclude, error: (err as Error).message || '设置失败' }
+  }
+}
+
+/**
+ * 注册全局 F8 热键（窗口失焦也能触发）。
+ *
+ * 这是网页 JS 做不到的事：keydown 只在窗口聚焦时才有事件，
+ * 而截图时焦点往往在题目所在的窗口上。全局热键由 Python 侧
+ * 用 Win32 RegisterHotKey 向系统注册，焦点在哪都能触发。
+ */
+export async function registerScreenshotHotkey(): Promise<HotkeyResult> {
+  if (!isDesktopWindow()) {
+    return { ok: false, hotkey: 'F8', error: '当前不在独立窗口模式中' }
+  }
+  try {
+    return await window.pywebview!.api.register_screenshot_hotkey()
+  } catch (err) {
+    return { ok: false, hotkey: 'F8', error: (err as Error).message || '注册全局热键失败' }
+  }
+}
+
+/** 注销全局 F8 热键（释放给其它程序使用） */
+export async function unregisterScreenshotHotkey(): Promise<HotkeyResult> {
+  if (!isDesktopWindow()) {
+    return { ok: false, hotkey: 'F8', error: '当前不在独立窗口模式中' }
+  }
+  try {
+    return await window.pywebview!.api.unregister_screenshot_hotkey()
+  } catch (err) {
+    return { ok: false, hotkey: 'F8', error: (err as Error).message || '注销全局热键失败' }
+  }
+}
+
+/** 查询全局热键的注册状态 */
+export async function getHotkeyState(): Promise<HotkeyStateResult | null> {
+  if (!isDesktopWindow()) return null
+  try {
+    return await window.pywebview!.api.get_hotkey_state()
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 登记按下全局热键时要调用的前端函数名。
+ *
+ * 后端是「主动」通知前端的：它会在热键触发时执行
+ * window[jsFunctionName]()，所以前端必须先在 window 上挂一个函数。
+ */
+export async function setHotkeyHandler(jsFunctionName: string): Promise<HotkeyCallbackResult> {
+  if (!isDesktopWindow()) {
+    return { ok: false, error: '当前不在独立窗口模式中' }
+  }
+  try {
+    return await window.pywebview!.api.on_hotkey(jsFunctionName)
+  } catch (err) {
+    return { ok: false, error: (err as Error).message || '登记热键回调失败' }
   }
 }
