@@ -148,7 +148,16 @@ async def start(
 ):
     """开始捕获系统音频并实时转写。
 
-    重复调用会先停掉已在运行的会话（幂等），便于前端「重新开始」。
+    **幂等**：若已在运行且设备一致，直接返回当前状态，不做任何重建。
+
+    为什么必须幂等：
+        界面重挂载（路由切换、React StrictMode 的挂载-卸载-再挂载、
+        状态水合）都会再调一次 start。早期实现每次 start 都把旧会话
+        停掉重建，导致捕获被反复拆装 —— 表现为日志里密集的
+        「已停止 / 已启动」，且每次都丢失已识别的文字。
+        捕获是「持续状态」，不该被重复的启动请求打断。
+
+    只有显式传入不同的 device_id 时，才会切换到新设备。
     """
     global _session
     _ensure_enabled()
@@ -156,8 +165,27 @@ async def start(
     if not sa.is_available():
         raise HTTPException(status_code=503, detail=sa.availability_error())
 
-    # 停掉旧会话，保证同一时刻只有一路捕获
+    requested_device = (req.device_id or settings.SYSTEM_AUDIO_DEVICE or "").strip() or None
+
+    # ── 已在运行：按幂等语义直接复用 ──
     if _session is not None:
+        current = _session.status()
+        if current["capture"].get("running"):
+            running_device_id = (_session.device_id or "").strip() or None
+            # 设备一致（或调用方没指定设备）→ 复用，不重建
+            if requested_device in (None, running_device_id):
+                logger.info("系统音频已在运行，复用现有会话（设备=%s）", current["capture"].get("device"))
+                return SystemAudioStartResponse(
+                    running=True,
+                    device=current["capture"].get("device") or "",
+                    device_id=running_device_id,
+                    stt_connected=current["stt_connected"],
+                    stt_error=current["stt_error"] or None,
+                    sample_rate=sa.TARGET_SAMPLE_RATE,
+                    block_ms=settings.SYSTEM_AUDIO_BLOCK_MS,
+                )
+
+        # 设备变了（或旧会话已死）：停掉再按新设备启动
         try:
             await _session.stop()
         except Exception as exc:
@@ -166,8 +194,7 @@ async def start(
 
     from services.audio_transcribe import AudioTranscribeSession
 
-    device_id = (req.device_id or settings.SYSTEM_AUDIO_DEVICE or "").strip() or None
-    session = AudioTranscribeSession(device_id=device_id)
+    session = AudioTranscribeSession(device_id=requested_device)
 
     try:
         info = await session.start()

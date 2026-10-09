@@ -386,14 +386,47 @@ def test_transcript_store_respects_maxlen():
     assert lines[-1]["text"] == "第19句"
 
 
-def test_transcript_store_clear_resets_seq():
+def test_transcript_store_clear_empties_content_but_keeps_seq_monotonic():
+    """clear 只清内容，**不重置序号**。
+
+    回归：早期 clear 会把序号归零。而前端按「上次拿到的最大 seq」
+    增量拉取且游标只增不减（见 useSystemAudioListener），
+    序号一旦倒退，之后所有新行的 `seq > since` 都不成立，
+    前端会永远拉不到内容 —— 表现为日志里持续 `transcript?since=N` 不推进。
+    """
     from services.audio_transcribe import TranscriptStore
 
     store = TranscriptStore()
-    store.add("a", "final")
+    first = store.add("a", "final")
+    assert store.latest_seq() == first.seq
+
     store.clear()
-    assert store.latest_seq() == 0
-    assert store.since(0) == []
+    assert store.since(0) == [], "内容应被清空"
+
+    # 清空后新产生的行，序号必须仍然大于清空前已消费的值
+    second = store.add("b", "final")
+    assert second.seq > first.seq, "clear 后序号必须继续递增，不能归零"
+    assert [l["text"] for l in store.since(first.seq)] == ["b"]
+
+
+def test_seq_monotonic_across_store_recreated():
+    """会话重建（新建 TranscriptStore）后序号也不能倒退。
+
+    后端每次 start 都可能新建会话与 store；若序号各自从 1 开始，
+    前端已推进到 N 之后就会永远拉不到新内容。
+    """
+    from services.audio_transcribe import TranscriptStore
+
+    s1 = TranscriptStore()
+    a = s1.add("旧会话", "final")
+    b = s1.add("旧会话2", "final")
+
+    # 模拟会话重建
+    s2 = TranscriptStore()
+    c = s2.add("新会话", "final")
+
+    assert c.seq > b.seq, "新会话的序号必须大于旧会话"
+    assert [l["text"] for l in s2.since(b.seq)] == ["新会话"]
 
 
 # ══════════════════════════════════════════════════════════════
@@ -644,3 +677,80 @@ def test_clear_after_start(client, enabled, fake_soundcard, monkeypatch):
         assert resp.json()["cleared"] is True
     finally:
         client.post("/system-audio/stop")
+
+
+# ══════════════════════════════════════════════════════════════
+# start 的幂等性
+# ══════════════════════════════════════════════════════════════
+#
+# 界面重挂载（路由切换、React StrictMode 的挂载-卸载-再挂载、
+# persist 水合）都会再调一次 start。早期实现每次都把旧会话停掉重建，
+# 导致捕获被反复拆装：日志里密集的「已停止 / 已启动」，
+# 且每次都丢失已识别的文字。
+
+
+def test_repeated_start_reuses_session(client, enabled, fake_soundcard, monkeypatch):
+    """连续多次 start 不应重建捕获（秒数持续增长而非归零）"""
+    monkeypatch.setattr(sa, "IS_WINDOWS", True)
+
+    client.post("/system-audio/stop")
+    first = client.post("/system-audio/start", json={})
+    assert first.status_code == 200, first.text
+
+    # 给捕获一点时间累积
+    import time
+
+    time.sleep(0.4)
+    elapsed_before = client.get("/system-audio/status").json()["seconds"]
+    assert elapsed_before > 0
+
+    # 再调三次（模拟重挂载）
+    for _ in range(3):
+        again = client.post("/system-audio/start", json={})
+        assert again.status_code == 200
+        assert again.json()["running"] is True
+
+    elapsed_after = client.get("/system-audio/status").json()["seconds"]
+    # 关键断言：秒数没有被重置。若每次 start 都重建，这里会回到接近 0
+    assert elapsed_after >= elapsed_before, (
+        f"重复 start 重建了捕获会话（{elapsed_before} -> {elapsed_after}）"
+    )
+
+    client.post("/system-audio/stop")
+
+
+def test_start_with_different_device_restarts(client, enabled, monkeypatch):
+    """指定了不同的设备时才允许重建"""
+    monkeypatch.setattr(sa, "IS_WINDOWS", True)
+
+    mic = _FakeMic()
+    speakers = [
+        types.SimpleNamespace(id="spk-a", name="A 扬声器"),
+        types.SimpleNamespace(id="spk-b", name="B 扬声器"),
+    ]
+    monkeypatch.setattr(sa, "SC_AVAILABLE", True)
+
+    def _get_mic(device_id, include_loopback=True):
+        # 只认识 spk-a / spk-b，其它视为不存在
+        return mic if device_id in ("spk-a", "spk-b") else None
+
+    monkeypatch.setattr(
+        sa, "sc",
+        types.SimpleNamespace(
+            all_speakers=lambda: speakers,
+            default_speaker=lambda: speakers[0],
+            get_microphone=_get_mic,
+        ),
+    )
+
+    client.post("/system-audio/stop")
+    r1 = client.post("/system-audio/start", json={"device_id": "spk-a"})
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["device"] == "A 扬声器"
+
+    # 换设备 → 应切换到新设备
+    r2 = client.post("/system-audio/start", json={"device_id": "spk-b"})
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["device"] == "B 扬声器"
+
+    client.post("/system-audio/stop")
