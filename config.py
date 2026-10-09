@@ -159,8 +159,17 @@ class Settings:
     # 100ms 与 stt_service 的帧约定一致。
     SYSTEM_AUDIO_BLOCK_MS: int = int(os.getenv("SYSTEM_AUDIO_BLOCK_MS", "100"))
     # 启动服务时是否自动开始捕获（否则由前端/接口手动 start）
+    #
+    # 默认 true：系统音频监听是「打开就能用」的能力，不该每次启动后
+    # 还要去设置面板里手动打开。前端开关（systemAudioEnabled）默认也是
+    # 开启的，两者保持一致。
+    #
+    # 设为 false 的场景：调试、或不想让后端进程一启动就占用音频设备。
+    # 注意 autostart 会在**服务启动瞬间**就开始抓取，比前端首次渲染还早；
+    # 因此若此刻 STT 微服务尚未就绪，会先记录 stt_error，
+    # 前端显示「监听中（语音识别未连接）」，STT 起来后自动重连。
     SYSTEM_AUDIO_AUTOSTART: bool = (
-        os.getenv("SYSTEM_AUDIO_AUTOSTART", "false").lower() == "true"
+        os.getenv("SYSTEM_AUDIO_AUTOSTART", "true").lower() == "true"
     )
     # 转写结果在内存中保留多少条（前端按 seq 增量拉取）
     SYSTEM_AUDIO_TRANSCRIPT_BUFFER: int = int(
