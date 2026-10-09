@@ -109,7 +109,7 @@ REM HuggingFace 镜像（国内必须，否则模型下载超时）
 if not defined HF_ENDPOINT set HF_ENDPOINT=https://hf-mirror.com
 
 echo.
-echo   选择 STT 推理设备：
+echo   STT 推理设备选择：
 echo     [1] CPU
 echo     [2] GPU
 set /p STT_DEVICE_CHOICE="请选择 [1/2]（默认 1）: "
@@ -122,6 +122,12 @@ if "%STT_DEVICE_CHOICE%"=="2" (
     set STT_PIP_PKGS=faster-whisper
     echo [语音] 已选择 CPU 模式
 )
+
+REM 模型由 .env 的 STT_MODEL 决定（微服务会自行加载该文件）。
+REM 这里只做提示，不覆盖 —— 想换模型请改 .env 后重启。
+for /f "tokens=1,* delims==" %%A in ('findstr /B /C:"STT_MODEL=" ".env" 2^>nul') do set _STT_MODEL_SHOW=%%B
+if not defined _STT_MODEL_SHOW set _STT_MODEL_SHOW=base (default)
+echo [语音] Whisper 模型: %_STT_MODEL_SHOW%  ^(改 .env 的 STT_MODEL 可切换^)
 
 echo [语音] 安装语音依赖...
 %VENV_PYTHON% -m pip install %STT_PIP_PKGS% -q
