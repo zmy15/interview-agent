@@ -36,7 +36,24 @@ export interface UserProfile {
   created_at: string
 }
 
+/** 当前认证模式（桌面版单用户模式下 auth_required 为 false） */
+export interface AuthModeResponse {
+  auth_required: boolean
+  user?: {
+    id: string
+    email: string
+    display_name: string
+    role: string
+  } | null
+}
+
 export const authApi = {
+  /** 查询认证模式（无需 token，用于桌面版跳过登录页） */
+  getMode: async (): Promise<AuthModeResponse> => {
+    const res = await apiClient.get<AuthModeResponse>('/auth/mode')
+    return res.data
+  },
+
   /** 用户注册 */
   register: async (data: RegisterRequest): Promise<TokenResponse> => {
     const res = await apiClient.post<TokenResponse>('/auth/register', data)

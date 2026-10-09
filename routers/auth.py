@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from models.db_models import User
+from config import settings
 from utils.auth import (
     hash_password,
     verify_password,
@@ -19,12 +20,52 @@ from utils.auth import (
     create_refresh_token,
     decode_token,
     get_current_user,
+    get_optional_user,
     CurrentUser,
+    auth_disabled,
+    _ensure_local_user,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+# ============ 认证模式探测 ============
+
+class AuthModeResponse(BaseModel):
+    """当前认证模式 —— 供前端决定是否显示登录页"""
+    auth_required: bool
+    # 单用户模式（桌面版）下，前端可直接用这些信息建立本地会话
+    user: Optional[dict] = None
+
+
+@router.get("/mode", response_model=AuthModeResponse)
+async def get_auth_mode(user: Optional[CurrentUser] = Depends(get_optional_user), db: AsyncSession = Depends(get_db)):
+    """查询是否需要登录（无需 token 即可调用）
+
+    桌面版据此跳过登录页：AUTH_REQUIRED=false 时返回本机账号信息，
+    前端直接写入 authStore，用户完全不会看到登录界面。
+    """
+    if not auth_disabled():
+        return AuthModeResponse(auth_required=True)
+
+    db_user = None
+    if user is not None:
+        result = await db.execute(select(User).where(User.id == user.id))
+        db_user = result.scalar_one_or_none()
+    if db_user is None:
+        db_user = await _ensure_local_user(db)
+
+    return AuthModeResponse(
+        auth_required=False,
+        user={
+            "id": db_user.id,
+            "email": db_user.email,
+            "display_name": db_user.display_name,
+            "role": db_user.role,
+        },
+    )
 
 
 # ============ 请求/响应模型 ============
