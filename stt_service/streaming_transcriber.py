@@ -21,8 +21,22 @@ class StreamingTranscriber:
     工作流程：
     1. 接收 PCM 音频帧 → 送入 VAD 检测语音边界
     2. VAD 检测到 speech_end → 取该段音频 → 异步调用 whisper 转录
-    3. 转录结果通过回调输出：partial（累积文本）+ final（完整句）
+    3. 转录结果通过回调输出：partial（本段已识别）+ final（本段完整句）
     """
+
+    # Whisper 的 initial_prompt：用于唤回短片段上的中文标点。
+    #
+    # 为什么需要：VAD 把音频切成 1~2 秒的碎片，Whisper 在缺乏上下文的
+    # 碎片上**完全不输出标点**（实测 1.5s 碎片仅 1/9 段有标点，
+    # 加长到 3~12 秒仍不稳定，只有整段才有完整标点）。
+    # 给一段「要求带标点」的中文提示即可恢复。这段文字本身不会被输出，
+    # 但在静音片段上可能被误当成内容 —— 由 _has_speech_energy 与
+    # _strip_prompt_leak 两道防线处理。
+    INITIAL_PROMPT = "以下是普通话的句子，请使用简体中文并加上标点符号。"
+
+    # 低于此 RMS 的片段视为静音，直接跳过转录。
+    # 0.002 ≈ -54dBFS：正常说话约 0.02 以上，这里只挡「接近纯静音」。
+    SILENCE_RMS_FLOOR = 0.002
 
     def __init__(
         self,
@@ -39,6 +53,9 @@ class StreamingTranscriber:
         self.device = device
         self.compute_type = compute_type
         self.sample_rate = sample_rate
+
+        # 提示词的紧凑形式（去掉空格），用于识别泄漏结果
+        self._prompt_compact = self.INITIAL_PROMPT.replace(" ", "").replace("，", "")
 
         # 回调
         self.on_partial = on_partial
@@ -139,18 +156,47 @@ class StreamingTranscriber:
         self._ensure_model()
 
         try:
+            # 能量门限：明显是静音/极低电平的片段直接丢弃，不送 Whisper。
+            #
+            # 为什么必须挡：
+            #   Whisper 在纯静音上会产生**幻觉**（实测无提示词时输出
+            #   「我认识你我认识你我认识你」），既污染对话又浪费时间。
+            #   VAD 已经做过一次筛选，但偶尔仍会因底噪误判出片段。
+            if not self._has_speech_energy(audio):
+                logger.debug("片段电平过低（%.4f），跳过转录", self._rms(audio))
+                return
+
             # faster-whisper 需要 float32 输入
             audio_float32 = audio.astype(np.float32)
 
             # Whisper 推理是**同步阻塞**的（CPU 上 base 模型一段几秒音频要
             # 几百毫秒到数秒）。直接在事件循环里跑会卡住整个 WebSocket，
             # 后续音频帧全部堆积。丢到线程池执行。
+            #
+            # initial_prompt 是**标点的关键**：
+            #   VAD 把音频切成 1~2 秒的短片段，Whisper 在缺乏上下文的
+            #   碎片上会**完全不输出标点**。实测数据：
+            #       1.5s 碎片  -> 1/9 段含标点
+            #       3.0s 碎片  -> 2/5
+            #       8.0s 碎片  -> 0/2
+            #       整段音频   -> 有完整标点
+            #   即「靠加长片段」无法解决（试到 12 秒仍不稳定），
+            #   只有 initial_prompt 能把它唤回来：
+            #       碎片 + prompt -> '人测过很多了。' / '游戏本里见过没。'
+            #
+            # 副作用与对策：静音片段上 Whisper 会把 prompt 本身吐出来
+            #   （实测输出 '。。。。。。。。' 或 '请使用简体中文并加上标'）。
+            #   上面的能量门限负责挡住静音，_strip_prompt_leak 再兜一层。
             segments, info = await asyncio.to_thread(
                 self._model.transcribe,
                 audio_float32,
                 language="zh",
                 beam_size=5,
                 vad_filter=False,
+                initial_prompt=self.INITIAL_PROMPT,
+                # 每段是独立音频块，没有前文可参考；开着它反而会让
+                # 上一段的用词漂移到下一段。
+                condition_on_previous_text=False,
             )
 
             segment_texts = []
@@ -170,6 +216,7 @@ class StreamingTranscriber:
             # 于是第二句话的 final = "第一句话 + 第二句话"，
             # 前端表现为「第二次的内容和第一次连在一起且重复」。
             new_text = "".join(segment_texts).strip()
+            new_text = self._strip_prompt_leak(new_text)
             if new_text:
                 # _full_text 仅用于 flush 时取回整场文本，不参与推送
                 self._full_text += new_text
@@ -186,6 +233,48 @@ class StreamingTranscriber:
 
         except Exception as e:
             logger.error("Transcription failed: %s", e)
+
+    # ── 片段质量把关 ──
+
+    def _rms(self, audio: np.ndarray) -> float:
+        """片段的均方根电平"""
+        if audio.size == 0:
+            return 0.0
+        return float(np.sqrt(np.mean(np.square(audio.astype(np.float32)))))
+
+    def _has_speech_energy(self, audio: np.ndarray) -> bool:
+        """片段是否含有足够的语音能量。
+
+        阈值取得很低（0.002 ≈ -54dBFS）：正常说话的人声 RMS 通常在
+        0.02 以上，这里只用于挡掉「接近纯静音」的片段，
+        宁可比 VAD 宽松也不要误杀正常说话的轻声句尾。
+        """
+        return self._rms(audio) >= self.SILENCE_RMS_FLOOR
+
+    def _strip_prompt_leak(self, text: str) -> str:
+        """去掉因 initial_prompt 泄漏而出现在结果里的提示词。
+
+        静音/噪声片段上 Whisper 会把 initial_prompt 当内容输出
+        （实测得到 '。。。。。。。。' 或 '请使用简体中文并加上标'）。
+        能量门限已经挡掉大部分，这里对漏网的做一次文本层兜底：
+        若整段结果就是提示词本身（或其片段），直接丢弃。
+        """
+        if not text:
+            return text
+
+        # 全是标点符号 —— 典型的 prompt 泄漏形态
+        if not any(ch.isalnum() or "\u4e00" <= ch <= "\u9fff" for ch in text):
+            if len(text) <= 12:
+                logger.debug("丢弃纯标点结果（疑似提示词泄漏）: %r", text)
+                return ""
+
+        # 结果落在提示词的任意片段里 → 判定为泄漏
+        compact = text.replace(" ", "")
+        if len(compact) >= 4 and compact in self._prompt_compact:
+            logger.debug("丢弃提示词泄漏: %r", text)
+            return ""
+
+        return text
 
     def reset(self):
         """重置会话（新录音开始前调用）"""

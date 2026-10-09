@@ -139,6 +139,9 @@ async def transcribe(file: UploadFile = File(...)):
             language="zh",
             beam_size=5,
             vad_filter=True,   # HTTP 批量模式用 whisper 内置 VAD
+            # 与 WebSocket 流式路径保持一致：不给这句提示的话，
+            # 短音频会退化成没有标点的连续文字。
+            initial_prompt=StreamingTranscriber.INITIAL_PROMPT,
         )
         text = "".join(seg.text for seg in segments)
 

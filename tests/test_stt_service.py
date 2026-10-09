@@ -371,3 +371,125 @@ def test_partial_is_per_segment_not_cumulative():
     asyncio.run(go())
 
     assert partials == ["第一句话。", "第二句话。"], f"partial 出现累积: {partials}"
+
+
+# ══════════════════════════════════════════════════════════════
+# 标点：短片段上必须带 initial_prompt
+# ══════════════════════════════════════════════════════════════
+#
+# Whisper 在缺乏上下文的 1~2 秒碎片上**完全不输出标点**。
+# 实测（1.5 秒碎片）：
+#     无 prompt -> 1/9 段有标点
+#     有 prompt -> 4/5 段有标点
+# 靠加长片段无法解决（试到 12 秒仍不稳定），只有 initial_prompt 有效。
+
+
+class _CapturingWhisper:
+    """记录 transcribe 调用参数的假模型"""
+
+    def __init__(self, text="测试。"):
+        self.text = text
+        self.kwargs = {}
+
+    def transcribe(self, audio, **kwargs):
+        self.kwargs = kwargs
+        seg = type("Seg", (), {"text": self.text})()
+        info = type("Info", (), {"language": "zh"})()
+        return iter([seg]), info
+
+
+def test_transcribe_passes_initial_prompt():
+    """必须传 initial_prompt，否则短片段会丢失标点"""
+    model = _CapturingWhisper()
+    tr = _make_transcriber(model)
+
+    asyncio.run(_drive_speech_then_silence(tr))
+
+    assert model.kwargs, "transcribe 未被调用"
+    assert model.kwargs.get("initial_prompt") == StreamingTranscriber.INITIAL_PROMPT
+
+
+def test_transcribe_disables_previous_text_conditioning():
+    """每段是独立音频块，不应依赖上一段文本"""
+    model = _CapturingWhisper()
+    tr = _make_transcriber(model)
+
+    asyncio.run(_drive_speech_then_silence(tr))
+
+    assert model.kwargs.get("condition_on_previous_text") is False
+
+
+# ══════════════════════════════════════════════════════════════
+# 静音防护：能量门限 + 提示词泄漏过滤
+# ══════════════════════════════════════════════════════════════
+#
+# initial_prompt 有副作用：在静音/噪声片段上 Whisper 会把提示词本身
+# 吐出来（实测输出 '。。。。。。。。' 或 '请使用简体中文并加上标'）。
+# 而空提示词又会让 Whisper 在静音上产生幻觉
+# （实测输出 '我认识你我认识你我认识你'）。
+# 因此必须两道防线：能量门限挡住静音，文本层过滤兜底。
+
+
+def test_silence_segment_skipped_before_transcribe():
+    """接近纯静音的片段不应送进 Whisper"""
+    model = _CapturingWhisper()
+    tr = _make_transcriber(model)
+    tr._ensure_model = lambda: None
+
+    silence = np.zeros(int(SR * 1.5), dtype=np.float32)
+    asyncio.run(tr._transcribe_segment(silence, final=True))
+
+    assert not model.kwargs, "静音片段被送进了 Whisper"
+
+
+def test_low_level_noise_skipped():
+    """极低电平（底噪）也应被跳过"""
+    model = _CapturingWhisper()
+    tr = _make_transcriber(model)
+    tr._ensure_model = lambda: None
+
+    noise = (np.random.randn(SR) * 0.0005).astype(np.float32)
+    asyncio.run(tr._transcribe_segment(noise, final=True))
+
+    assert not model.kwargs, "底噪片段被送进了 Whisper"
+
+
+def test_normal_speech_level_not_skipped():
+    """正常语音电平不能被误杀"""
+    model = _CapturingWhisper("正常内容。")
+    tr = _make_transcriber(model)
+    tr._ensure_model = lambda: None
+
+    speech = (np.random.randn(SR) * 0.05).astype(np.float32)
+    asyncio.run(tr._transcribe_segment(speech, final=True))
+
+    assert model.kwargs, "正常语音被误判为静音"
+
+
+@pytest.mark.parametrize(
+    "leaked",
+    [
+        "。。。。。。。。",          # 纯标点（实测形态）
+        "请使用简体中文并加上标",     # 提示词片段（实测形态）
+        "以下是普通话的句子",         # 提示词片段
+        "请使用简体中文并加上标点符号。",  # 完整提示词
+    ],
+)
+def test_prompt_leak_filtered(leaked):
+    """提示词泄漏的几种形态都要被过滤掉"""
+    tr = _make_transcriber(_FakeWhisper())
+    assert tr._strip_prompt_leak(leaked) == ""
+
+
+@pytest.mark.parametrize(
+    "normal",
+    [
+        "鼠标的天选我们测过很多了。",
+        "你好，请介绍一下你的项目经验。",
+        "这个问题的答案是需要考虑三个方面的。",
+    ],
+)
+def test_normal_text_not_filtered(normal):
+    """正常转写内容不能被误过滤"""
+    tr = _make_transcriber(_FakeWhisper())
+    assert tr._strip_prompt_leak(normal) == normal
