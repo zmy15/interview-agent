@@ -22,7 +22,7 @@ from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from streaming_transcriber import StreamingTranscriber
+from streaming_transcriber import StreamingTranscriber, preload_shared_models
 from zh_convert import to_simplified
 
 # ── 日志 ──
@@ -45,6 +45,33 @@ app = FastAPI(title="STT Service", version="1.0.0")
 _transcriber: Optional[StreamingTranscriber] = None
 _model_loaded: bool = False
 _model_error: Optional[str] = None
+# 预热是否完成（用于让 /health 反映真实可用性）
+_preload_done: bool = False
+
+
+@app.on_event("startup")
+async def _preload_models():
+    """启动时在后台线程预热模型。
+
+    为什么不在模块导入阶段做：加载要十几秒，会拖住 uvicorn 起来；
+    放到 startup 的后台线程里，服务可以立即响应 /health，
+    等用户真正开始监听时模型通常已经就绪。
+    """
+    global _preload_done, _model_loaded, _model_error
+
+    def _work():
+        global _preload_done, _model_loaded, _model_error
+        try:
+            preload_shared_models(STT_MODEL, STT_DEVICE, STT_COMPUTE_TYPE)
+            _model_loaded = True
+            logger.info("模型预热完成，连接将立即可用")
+        except Exception as exc:
+            _model_error = str(exc)
+            logger.error("模型预热失败（首个连接时会重试）: %s", exc)
+        finally:
+            _preload_done = True
+
+    asyncio.get_running_loop().run_in_executor(None, _work)
 
 
 def get_transcriber() -> StreamingTranscriber:
@@ -75,9 +102,22 @@ def get_transcriber() -> StreamingTranscriber:
 
 @app.get("/health")
 async def health():
-    """健康检查 — 返回模型和设备状态"""
+    """健康检查 — 返回模型和设备状态
+
+    status 语义：
+      ok      模型已就绪，连接可立即使用
+      loading 正在预热（服务可用，只是首次连接会稍慢）
+      error   预热失败（会在首次连接时重试）
+    """
+    if _model_loaded:
+        status = "ok"
+    elif not _preload_done:
+        status = "loading"
+    else:
+        status = "error"
+
     return JSONResponse({
-        "status": "ok" if _model_loaded else "error",
+        "status": status,
         "model": STT_MODEL,
         "device": STT_DEVICE,
         "vad": "loaded" if _model_loaded else "not_loaded",
@@ -189,6 +229,10 @@ async def websocket_stream(ws: WebSocket):
     logger.info("WebSocket client connected")
 
     try:
+        # 复用进程级共享模型：Whisper 加载约 11 秒，每连接各加载一份
+        # 会让每次点开监听都要等十几秒，日志里也会出现成串的
+        # 「Whisper model loaded」。StreamingTranscriber 只有会话状态
+        # （VAD 状态机、音频缓冲、回调）是按连接隔离的。
         transcriber = StreamingTranscriber(
             model_size=STT_MODEL,
             device=STT_DEVICE,

@@ -5,6 +5,7 @@
 
 import asyncio
 import logging
+import threading
 from typing import Callable, Optional
 
 import numpy as np
@@ -13,6 +14,57 @@ from vad_processor import VADProcessor
 from zh_convert import to_simplified
 
 logger = logging.getLogger(__name__)
+
+
+# ══════════════════════════════════════════════════════════════
+# 进程级模型单例
+# ══════════════════════════════════════════════════════════════
+#
+# Whisper 与 Silero VAD 的加载都很慢（实测 Whisper 在 CUDA 上约 11 秒，
+# Silero 约 15 秒，因为要 torch.hub 下载/解包）。早期实现里
+# **每个 WebSocket 连接都 new 一个 StreamingTranscriber 并各自加载**，
+# 于是：
+#   - 每次点开监听都要等十几秒才 ready；
+#   - 日志里出现成串的「Whisper model loaded」「Silero VAD model loaded」；
+#   - 前端重挂载一次就再加载一遍，白白占用显存与时间。
+#
+# 模型是**只读共享**的（transcribe 本身是纯推理，不持有会话状态），
+# 因此做成进程级单例；每个连接只持有自己的会话状态
+# （VAD 状态机、音频缓冲、回调）。
+_model_cache: dict = {}
+_model_lock = threading.Lock()
+
+
+def get_shared_whisper(model_size: str, device: str, compute_type: str):
+    """取（或首次加载）进程级共享的 Whisper 模型"""
+    key = (model_size, device, compute_type)
+    with _model_lock:
+        if key in _model_cache:
+            return _model_cache[key]
+
+        from faster_whisper import WhisperModel
+
+        logger.info(
+            "首次加载 Whisper 模型（size=%s device=%s compute=%s）…",
+            model_size, device, compute_type,
+        )
+        model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        _model_cache[key] = model
+        logger.info("Whisper 模型已加载并缓存，后续连接直接复用")
+        return model
+
+
+def preload_shared_models(model_size: str, device: str, compute_type: str) -> None:
+    """预热共享模型（供启动时调用，让首个连接也无需等待）"""
+    try:
+        get_shared_whisper(model_size, device, compute_type)
+    except Exception as exc:  # pragma: no cover
+        logger.error("预热 Whisper 失败（首个连接时会重试）: %s", exc)
+
+    try:
+        VADProcessor(sample_rate=16000)._ensure_model()
+    except Exception as exc:  # pragma: no cover
+        logger.error("预热 Silero VAD 失败（首个连接时会重试）: %s", exc)
 
 
 class StreamingTranscriber:
@@ -80,25 +132,16 @@ class StreamingTranscriber:
     # ── 懒加载 Whisper ──
 
     def _ensure_model(self):
-        """确保 faster-whisper 模型已加载"""
+        """确保 Whisper 模型可用（复用进程级共享实例）
+
+        模型加载很慢（CUDA 上约 11 秒），因此**不**在每次连接时重新加载。
+        共享实例只做纯推理，不持有任何会话状态。
+        """
         if self._model is not None:
             return
-        try:
-            from faster_whisper import WhisperModel
-            self._model = WhisperModel(
-                self.model_size,
-                device=self.device,
-                compute_type=self.compute_type,
-            )
-            logger.info(
-                "Whisper model loaded: size=%s device=%s compute=%s",
-                self.model_size,
-                self.device,
-                self.compute_type,
-            )
-        except Exception as e:
-            logger.error("Failed to load Whisper model: %s", e)
-            raise
+        self._model = get_shared_whisper(
+            self.model_size, self.device, self.compute_type
+        )
 
     # ── 核心：逐帧处理 ──
 

@@ -493,3 +493,101 @@ def test_normal_text_not_filtered(normal):
     """正常转写内容不能被误过滤"""
     tr = _make_transcriber(_FakeWhisper())
     assert tr._strip_prompt_leak(normal) == normal
+# ══════════════════════════════════════════════════════════════
+# 模型共享：避免每个连接重复加载
+# ══════════════════════════════════════════════════════════════
+#
+# Whisper 加载约 11 秒、Silero 首次约 10 秒。早期实现里
+# **每个 WebSocket 连接都 new 一个 StreamingTranscriber 并各自加载**，
+# 于是每次点开监听都要等十几秒，日志里出现成串的加载记录。
+# 模型只读共享（推理不持有会话状态），因此做成进程级单例。
+
+
+def test_shared_whisper_loaded_once():
+    """同一个 (size, device, compute) 只加载一次"""
+    import streaming_transcriber as st
+
+    calls = {"n": 0}
+
+    class _FakeModel:
+        pass
+
+    def _fake_loader(size, device=None, compute_type=None):
+        calls["n"] += 1
+        return _FakeModel()
+
+    # 清空缓存并替换真实加载器，避免真的去加载模型
+    st._model_cache.clear()
+    import faster_whisper
+
+    orig = faster_whisper.WhisperModel
+    faster_whisper.WhisperModel = _fake_loader
+    try:
+        a = st.get_shared_whisper("base", "cpu", "int8")
+        b = st.get_shared_whisper("base", "cpu", "int8")
+        c = st.get_shared_whisper("base", "cpu", "int8")
+    finally:
+        faster_whisper.WhisperModel = orig
+        st._model_cache.clear()
+
+    assert a is b is c, "同一配置应返回同一个模型实例"
+    assert calls["n"] == 1, f"模型被加载了 {calls['n']} 次，应只加载 1 次"
+
+
+def test_shared_whisper_keyed_by_config():
+    """不同配置（size/device/compute）应各自缓存"""
+    import streaming_transcriber as st
+    import faster_whisper
+
+    calls = []
+
+    class _FakeModel:
+        def __init__(self, *a, **kw):
+            calls.append((a, kw))
+
+    orig = faster_whisper.WhisperModel
+    faster_whisper.WhisperModel = _FakeModel
+    st._model_cache.clear()
+    try:
+        st.get_shared_whisper("base", "cpu", "int8")
+        st.get_shared_whisper("small", "cpu", "int8")   # 不同 size
+        st.get_shared_whisper("base", "cpu", "int8")    # 重复 -> 命中缓存
+    finally:
+        faster_whisper.WhisperModel = orig
+        st._model_cache.clear()
+
+    assert len(calls) == 2, f"应加载 2 个不同配置，实际 {len(calls)}"
+
+
+def test_transcriber_reuses_shared_model():
+    """多个 StreamingTranscriber 实例应共享同一个模型对象"""
+    import streaming_transcriber as st
+    import faster_whisper
+
+    class _FakeModel:
+        def __init__(self, *a, **kw):
+            pass
+
+    orig = faster_whisper.WhisperModel
+    faster_whisper.WhisperModel = _FakeModel
+    st._model_cache.clear()
+    try:
+        t1 = StreamingTranscriber(model_size="base", device="cpu", compute_type="int8")
+        t2 = StreamingTranscriber(model_size="base", device="cpu", compute_type="int8")
+        t1._ensure_model()
+        t2._ensure_model()
+        assert t1._model is t2._model, "两个实例未共享模型"
+    finally:
+        faster_whisper.WhisperModel = orig
+        st._model_cache.clear()
+
+
+def test_silero_model_shared():
+    """Silero VAD 模型也应共享"""
+    import vad_processor as vp
+
+    a = vp.VADProcessor(sample_rate=16000)
+    b = vp.VADProcessor(sample_rate=16000)
+    a._ensure_model()
+    b._ensure_model()
+    assert a._model is b._model, "Silero 模型未共享"

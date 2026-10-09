@@ -4,6 +4,7 @@ Silero VAD 流式处理器
 """
 
 import logging
+import threading
 from typing import Optional
 from enum import Enum
 
@@ -31,6 +32,37 @@ class VADState(Enum):
 # speech_end 一次都不会触发，转写自然永远是空的。
 # 正确做法是把一帧切成 512 样本的小块，逐块推理后取最大概率。
 VAD_WINDOW_SAMPLES = {8000: 256, 16000: 512}
+
+# ── 进程级 Silero 单例 ──
+# 模型加载很慢（首次需 torch.hub 拉取并解包，实测约 15 秒）。
+# 早期每个连接各加载一份，日志里会出现成串的
+# 「Silero VAD model loaded (ONNX)」。模型本身无状态，可安全共享。
+_silero_cache: dict = {}
+_silero_lock = threading.Lock()
+
+
+def _get_shared_silero():
+    """取（或首次加载）进程级共享的 Silero VAD 模型。
+
+    返回 (model, get_speech_timestamps)。
+    """
+    with _silero_lock:
+        if "model" in _silero_cache:
+            return _silero_cache["model"], _silero_cache["utils"]
+
+        import torch
+
+        logger.info("首次加载 Silero VAD 模型（ONNX）…")
+        model, utils = torch.hub.load(
+            repo_or_dir="snakers4/silero-vad",
+            model="silero_vad",
+            force_reload=False,
+            onnx=True,
+        )
+        _silero_cache["model"] = model
+        _silero_cache["utils"] = utils[0]
+        logger.info("Silero VAD 模型已加载并缓存，后续连接直接复用")
+        return model, utils[0]
 
 
 class VADProcessor:
@@ -80,23 +112,16 @@ class VADProcessor:
     # ── 懒加载模型 ──
 
     def _ensure_model(self):
-        """确保 Silero VAD 模型已加载"""
+        """确保 Silero VAD 模型可用（复用进程级共享实例）
+
+        与 Whisper 同理：模型加载慢（首次还要 torch.hub 拉取），
+        每个连接各加载一份会白白浪费十几秒与显存。
+        VAD 模型本身是无状态的（状态机在 VADProcessor 实例上），
+        因此可以安全共享。
+        """
         if self._model is not None:
             return
-        try:
-            import torch
-            model, utils = torch.hub.load(
-                repo_or_dir="snakers4/silero-vad",
-                model="silero_vad",
-                force_reload=False,
-                onnx=True,
-            )
-            self._model = model
-            self._get_speech_timestamps = utils[0]
-            logger.info("Silero VAD model loaded (ONNX)")
-        except Exception as e:
-            logger.error("Failed to load Silero VAD: %s", e)
-            raise
+        self._model, self._get_speech_timestamps = _get_shared_silero()
 
     # ── 核心：逐帧处理 ──
 
