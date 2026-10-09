@@ -11,6 +11,7 @@
 """
 
 import asyncio
+import json
 import types
 
 import numpy as np
@@ -486,6 +487,95 @@ def test_dedup_across_full_sequence():
 
 
 # ══════════════════════════════════════════════════════════════
+# final 必须无条件入库（曾导致「识别成功但从不发送」）
+# ══════════════════════════════════════════════════════════════
+#
+# 回归背景：早期实现让 partial 与 final 共用同一个 _last_text 去重。
+# 而 STT 常先推 partial("你好") 再推内容**完全相同**的 final("你好")，
+# 于是 final 被判为「重复」丢弃 —— 库里只有 partial、一条 final 都没有。
+# 前端只把 final 交给 AI，因此表现为「STT 明明识别出来了，
+# 程序却从不发送」，日志里 since 长期停滞。
+
+
+class _FakeWS:
+    """按顺序回放消息的假 WebSocket"""
+
+    def __init__(self, messages):
+        self._messages = [json.dumps(m) for m in messages]
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._messages:
+            raise StopAsyncIteration
+        return self._messages.pop(0)
+
+
+def _run_recv(messages):
+    """把消息喂给 _recv_loop，返回收集到的 (kind, text)"""
+    import asyncio
+
+    from services.audio_transcribe import AudioTranscribeSession
+
+    sess = AudioTranscribeSession()
+    sess._ws = _FakeWS(messages)
+    asyncio.run(sess._recv_loop())
+    return [(l["kind"], l["text"]) for l in sess.store.since(0)]
+
+
+def test_final_with_same_text_as_partial_is_kept():
+    """partial 与 final 内容相同时，final 也必须入库
+
+    这是最真实的形态：STT 先推 partial，紧接着推内容相同的 final。
+    """
+    got = _run_recv([
+        {"type": "partial", "text": "你好"},
+        {"type": "final", "text": "你好"},
+    ])
+
+    kinds = [k for k, _ in got]
+    assert "final" in kinds, f"final 被丢弃了: {got}"
+
+
+def test_final_always_kept_even_if_repeated():
+    """重复的 final 也不做去重：它代表一句话结束，必须产出"""
+    got = _run_recv([
+        {"type": "final", "text": "请介绍一下你的项目经验"},
+        {"type": "final", "text": "请介绍一下你的项目经验"},
+    ])
+
+    finals = [t for k, t in got if k == "final"]
+    assert len(finals) == 2, f"final 被去重了: {got}"
+
+
+def test_partial_still_deduplicated():
+    """partial 仍要去重：STT 会反复推同样的内容，不去重会刷重复行"""
+    got = _run_recv([
+        {"type": "partial", "text": "你好"},
+        {"type": "partial", "text": "你好"},          # 完全重复 -> 丢
+        {"type": "partial", "text": "你好世界"},      # 变长 -> 取新增
+    ])
+
+    partials = [t for k, t in got if k == "partial"]
+    assert partials == ["你好", "世界"], f"partial 去重异常: {got}"
+
+
+def test_final_does_not_disturb_partial_cursor():
+    """final 不应推进 partial 的前缀游标（两者语义不同）"""
+    got = _run_recv([
+        {"type": "partial", "text": "你好"},
+        {"type": "final", "text": "你好，请你自我介绍"},
+        # final 之后的新 partial 不应被 final 的文本影响
+        {"type": "partial", "text": "你好，请说一下项目"},
+    ])
+
+    partials = [t for k, t in got if k == "partial"]
+    # 游标基于上一条 partial("你好")，因此新增部分是「，请说一下项目」
+    assert partials[-1] == "，请说一下项目", f"游标被 final 干扰: {partials}"
+
+
+# ══════════════════════════════════════════════════════════════
 # STT 地址推导
 # ══════════════════════════════════════════════════════════════
 
@@ -639,7 +729,9 @@ def test_start_and_stop_roundtrip(client, enabled, fake_soundcard, monkeypatch):
     """完整的 start → status → transcript → stop 流程"""
     monkeypatch.setattr(sa, "IS_WINDOWS", True)
 
-    # STT 连不上也不能阻断捕获（只记录 stt_error）
+    # STT 连得上连不上都不能阻断捕获：连不上时只记录 stt_error。
+    # 这里不断言 stt_connected 的具体取值 —— 它取决于本机 8001
+    # 上是否恰好跑着 STT 服务，断言会把测试变成环境相关的。
     resp = client.post("/system-audio/start", json={})
     assert resp.status_code == 200, resp.text
 
@@ -648,9 +740,10 @@ def test_start_and_stop_roundtrip(client, enabled, fake_soundcard, monkeypatch):
     # 展示名用扬声器名（用户视角），而不是 soundcard 的内部回环名
     assert body["device"] == "默认扬声器"
     assert body["sample_rate"] == 16000
-    # STT 微服务未启动时不能假装连上了
-    assert body["stt_connected"] is False
-    assert body["stt_error"]
+    # 字段必须存在；连接失败时要给出原因，成功时为 None
+    assert "stt_connected" in body
+    if not body["stt_connected"]:
+        assert body["stt_error"], "未连上 STT 时必须说明原因"
 
     st = client.get("/system-audio/status").json()
     assert st["running"] is True

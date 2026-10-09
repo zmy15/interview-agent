@@ -313,13 +313,20 @@ class AudioTranscribeSession:
     async def _recv_loop(self) -> None:
         """读取 STT 返回的 partial / final / vad / ready
 
-        去重说明：
-            STT 微服务的 `final` 是「本次会话累积全文」，`partial` 是
-            「累积全文 + 当前段」。二者都会随每次断句重复推送**已经出现过
-            的前缀**，直接全部落库会让前端看到大量重复行。
-            因此这里只保留「新增的那部分」：拿新文本去掉已知前缀，
-            空则丢弃。这是 STT 微服务的既有语义，在主进程侧做归一化
-            比改动微服务协议更安全（前端与测试都按现有协议写）。
+        两种消息的语义与处理方式**不同**：
+
+        - `partial`：本段正在识别的文本。STT 会反复推送，
+          且相邻两次常互为前缀/重复，因此做增量去重，
+          只保留新增部分，避免前端刷重复行。
+        - `final`：一句话已结束，是**给 AI 用的完整句子**，
+          必须无条件产出，不参与去重。
+
+        回归（曾导致功能完全不可用）：
+            早期实现让 partial 与 final 共用同一个 _last_text 去重。
+            由于 STT 常先推 partial("你好") 再推内容完全相同的
+            final("你好")，final 会被判为「重复」而丢弃 ——
+            结果是库里只有 partial、一条 final 都没有，
+            而前端只把 final 交给 AI，于是「识别成功但从不发送」。
         """
         ws = self._ws
         if ws is None:
@@ -339,20 +346,24 @@ class AudioTranscribeSession:
                         "STT 就绪 | model=%s device=%s",
                         msg.get("model"), msg.get("device"),
                     )
-                elif mtype in ("partial", "final"):
+                elif mtype == "final":
                     text = (msg.get("text") or "").strip()
                     if not text:
                         continue
-
+                    # final 必须发出：它是断句后的完整句子，前端据此提问。
+                    # 不做去重，也不推进 partial 的前缀游标。
+                    self._last_final = text
+                    self.store.add(text, "final", msg.get("ts"))
+                    logger.info("转写完成: %s", text[:80])
+                elif mtype == "partial":
+                    text = (msg.get("text") or "").strip()
+                    if not text:
+                        continue
                     added = self._new_suffix(text)
                     if not added:
-                        # 与上一条完全相同或只是旧内容的前缀（重复推送）
                         continue
-
                     self._last_text = text
-                    self.store.add(added, mtype, msg.get("ts"))
-                    if mtype == "final":
-                        self._last_final = text
+                    self.store.add(added, "partial", msg.get("ts"))
                 elif mtype == "error":
                     self.stt_error = msg.get("message") or "STT 返回错误"
                     logger.warning("STT 错误: %s", self.stt_error)
