@@ -10,6 +10,7 @@ from typing import Callable, Optional
 import numpy as np
 
 from vad_processor import VADProcessor
+from zh_convert import to_simplified
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +155,10 @@ class StreamingTranscriber:
 
             segment_texts = []
             for segment in segments:
-                segment_texts.append(segment.text)
+                # Whisper 中文默认输出繁体，这里先转简体再累积：
+                # partial/final 都是「累积全文」，若在累积后才转换，
+                # 主进程侧的增量前缀比对会因繁简不一致而错乱。
+                segment_texts.append(to_simplified(segment.text))
                 # 输出 partial
                 partial = self._full_text + "".join(segment_texts)
                 if self.on_partial:

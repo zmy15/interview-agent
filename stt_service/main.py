@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from streaming_transcriber import StreamingTranscriber
+from zh_convert import to_simplified
 
 # ── 日志 ──
 logging.basicConfig(
@@ -142,7 +143,9 @@ async def transcribe(file: UploadFile = File(...)):
         text = "".join(seg.text for seg in segments)
 
         return JSONResponse({
-            "text": text.strip(),
+            # 与 WebSocket 流式路径保持一致：繁转简后再返回，
+            # 否则两条路径输出繁简不同，用户会以为识别结果不一致。
+            "text": to_simplified(text).strip(),
             "segments": [],
             "language": info.language,
         })

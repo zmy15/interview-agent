@@ -127,6 +127,8 @@ echo [语音] 安装语音依赖...
 %VENV_PYTHON% -m pip install %STT_PIP_PKGS% -q
 %VENV_PYTHON% -m pip install silero-vad numpy ffmpeg-python -q
 %VENV_PYTHON% -m pip install piper-tts huggingface_hub -q
+REM 繁简转换（Whisper 中文输出默认繁体，转简体后再返回）
+%VENV_PYTHON% -m pip install zhconv -q
 echo [语音] 依赖安装完成
 :voice_done
 

@@ -7,3 +7,7 @@ websockets>=12.0
 silero-vad>=5.0
 numpy>=1.24.0
 torch>=2.0.0
+
+# 繁简转换：faster-whisper 的中文输出默认是繁体，转成简体后再返回。
+# 纯 Python 实现，无需编译。
+zhconv>=1.4.3
