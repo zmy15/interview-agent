@@ -211,6 +211,14 @@ async def websocket_stream(ws: WebSocket):
                 logger.info("WebSocket client disconnected")
                 break
 
+            # 客户端主动关闭时，receive() 返回的是 disconnect 消息而非抛异常。
+            # 若不在这里 break，下一次 receive() 会报
+            # 「Cannot call "receive" once a disconnect message has been received」，
+            # 被下方 except Exception 记成 ERROR —— 实际只是正常挂断。
+            if data.get("type") == "websocket.disconnect":
+                logger.info("WebSocket client disconnected")
+                break
+
             if "bytes" in data:
                 # binary PCM 帧
                 raw = data["bytes"]

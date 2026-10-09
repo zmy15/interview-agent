@@ -270,3 +270,72 @@ class CaptureResponse(BaseModel):
     image_path: Optional[str] = None # 保存路径（未保存则为空）
     elapsed_ms: int                  # 端到端耗时
     captured_at: str                 # ISO 时间戳
+
+
+# ============ 系统音频捕获（电脑播放的声音 → STT） ============
+
+class SystemAudioDevice(BaseModel):
+    """可作为回环捕获来源的播放设备"""
+    id: str                      # soundcard 的设备 id
+    name: str                    # 展示名，如「扬声器 (Realtek(R) Audio)」
+    is_default: bool = False     # 是否为系统默认播放设备
+
+
+class SystemAudioInfoResponse(BaseModel):
+    """系统音频捕获能力与配置"""
+    available: bool                              # 功能是否可用（依赖 Windows + soundcard）
+    error: Optional[str] = None                  # 不可用时的原因
+    devices: list[SystemAudioDevice] = []
+    configured_device: Optional[str] = None      # .env 中配置的设备 id
+    running: bool = False                        # 当前是否有捕获会话
+    block_ms: Optional[int] = None               # 音频块长度（毫秒）
+    sample_rate: Optional[int] = None            # 输出采样率（固定 16000）
+
+
+class SystemAudioStartRequest(BaseModel):
+    """开始捕获"""
+    device_id: Optional[str] = None   # 留空则用默认播放设备 / .env 配置
+
+
+class SystemAudioStartResponse(BaseModel):
+    """捕获已启动"""
+    running: bool
+    device: str                              # 实际使用的设备名
+    device_id: Optional[str] = None
+    stt_connected: bool = False              # 是否成功连上 STT 微服务
+    stt_error: Optional[str] = None           # 未连上时的原因
+    sample_rate: int = 16000
+    block_ms: int = 100
+
+
+class SystemAudioStatusResponse(BaseModel):
+    """运行状态"""
+    available: bool = True
+    error: Optional[str] = None
+    running: bool = False
+    device: Optional[str] = None
+    seconds: float = 0.0                     # 已捕获时长
+    peak: float = 0.0                        # 近期峰值（0-1）
+    rms: float = 0.0                         # 近期 RMS（0-1）
+    voiced: bool = False                     # 近期是否检测到声音
+    stt_connected: bool = False
+    stt_error: Optional[str] = None
+    audio_error: Optional[str] = None
+    transcript_count: int = 0
+
+
+class SystemAudioTranscriptLine(BaseModel):
+    """一条转写结果"""
+    seq: int                                 # 递增序号，用于增量拉取
+    text: str
+    kind: str                                # "partial"（正在说）/ "final"（已断句）
+    ts: float                                # 时间戳（秒）
+
+
+class SystemAudioTranscriptResponse(BaseModel):
+    """增量转写结果"""
+    lines: list[SystemAudioTranscriptLine] = []
+    latest_seq: int = 0
+    running: bool = False
+    stt_connected: bool = False
+    stt_error: Optional[str] = None

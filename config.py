@@ -139,6 +139,33 @@ class Settings:
     # TTS 语音合成独立开关
     TTS_ENABLED: bool = os.getenv("TTS_ENABLED", "false").lower() == "true"
 
+    # ── 系统音频捕获（services/system_audio.py） ──
+    # 抓取「电脑正在播放的声音」（WASAPI 回环）并送去 STT。
+    # 与截图答题对称：截图抓屏幕，这个抓扬声器。
+    # 仅 Windows 可用；关闭时 /system-audio 路由不注册。
+    SYSTEM_AUDIO_ENABLED: bool = (
+        os.getenv("SYSTEM_AUDIO_ENABLED", "false").lower() == "true"
+    )
+    # 捕获设备 id（soundcard 的扬声器 id）。留空则用系统默认播放设备，
+    # 可通过 GET /system-audio/devices 查看可选项。
+    SYSTEM_AUDIO_DEVICE: str = os.getenv("SYSTEM_AUDIO_DEVICE", "")
+    # 每次从回环读取的音频块长度（毫秒）。越小越实时，但线程唤醒更频繁；
+    # 100ms 与 stt_service 的帧约定一致。
+    SYSTEM_AUDIO_BLOCK_MS: int = int(os.getenv("SYSTEM_AUDIO_BLOCK_MS", "100"))
+    # 启动服务时是否自动开始捕获（否则由前端/接口手动 start）
+    SYSTEM_AUDIO_AUTOSTART: bool = (
+        os.getenv("SYSTEM_AUDIO_AUTOSTART", "false").lower() == "true"
+    )
+    # 转写结果在内存中保留多少条（前端按 seq 增量拉取）
+    SYSTEM_AUDIO_TRANSCRIPT_BUFFER: int = int(
+        os.getenv("SYSTEM_AUDIO_TRANSCRIPT_BUFFER", "200")
+    )
+    # 连接 STT 微服务的超时（秒）。首次连接时对方可能正在加载 Whisper 模型，
+    # 因此给得比较宽松，避免把「正在加载」误报成「连不上」。
+    SYSTEM_AUDIO_STT_TIMEOUT: float = float(
+        os.getenv("SYSTEM_AUDIO_STT_TIMEOUT", "30")
+    )
+
     # ── STT 语音识别配置 ──
     # whisper 模型大小: tiny / base / small / medium
     STT_MODEL: str = os.getenv("STT_MODEL", "base")

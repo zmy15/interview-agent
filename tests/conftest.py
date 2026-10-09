@@ -11,6 +11,12 @@ os.environ["DATABASE_URL"] = (
     "sqlite+aiosqlite:///" + os.path.join(_TEST_DB_DIR, "test_platform.db").replace("\\", "/")
 )
 
+# 系统音频捕获的路由是**按开关在导入 main 时条件注册**的，
+# 因此必须在 `from main import app` 之前打开开关，否则
+# /system-audio/* 根本不存在，测试会拿到 404/405。
+# 生产默认仍是关闭（见 .env.example）。
+os.environ.setdefault("SYSTEM_AUDIO_ENABLED", "true")
+
 import pytest
 from fastapi.testclient import TestClient
 

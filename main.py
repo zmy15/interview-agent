@@ -45,7 +45,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from config import settings
-from routers import chat, upload, interview, position, knowledge, auth, sessions, analytics, question_bank, screenshot
+from routers import chat, upload, interview, position, knowledge, auth, sessions, analytics, question_bank, screenshot, system_audio
 
 # ============ 日志配置 ============
 
@@ -140,7 +140,39 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("🔓 单用户模式 — 无需登录即可使用")
 
+    # 启动：按需自动开始系统音频捕获
+    if _s.SYSTEM_AUDIO_ENABLED and _s.SYSTEM_AUDIO_AUTOSTART:
+        try:
+            from services.audio_transcribe import AudioTranscribeSession
+            from routers import system_audio as _sa_router
+
+            session = AudioTranscribeSession(device_id=_s.SYSTEM_AUDIO_DEVICE or None)
+            await session.start()
+            _sa_router._session = session
+            logger.info("🎧 系统音频捕获已自动启动")
+        except Exception as e:
+            logger.warning(f"⚠ 系统音频自动启动失败（可手动调用 /system-audio/start）: {e}")
+
     yield  # 应用运行中...
+
+    # 关闭：停止系统音频捕获并断开 STT
+    try:
+        from routers import system_audio as _sa_router
+
+        if _sa_router._session is not None:
+            await _sa_router._session.stop()
+            _sa_router._session = None
+            logger.info("🎧 系统音频捕获已停止")
+    except Exception:
+        pass
+    finally:
+        # 兜底：确保抓取线程一定退出，否则进程无法正常结束
+        try:
+            from services import system_audio as _sa
+
+            _sa.stop_capture()
+        except Exception:
+            pass
 
     # 关闭：清理资源
     try:
@@ -188,6 +220,13 @@ if settings.SCREENSHOT_ENABLED:
     logger.info("📷 截图识别路由已注册")
 else:
     logger.info("📷 截图识别路由已关闭（SCREENSHOT_ENABLED=false）")
+
+# ── 条件注册系统音频捕获路由（Windows 专用；默认关闭） ──
+if settings.SYSTEM_AUDIO_ENABLED:
+    app.include_router(system_audio.router)
+    logger.info("🎧 系统音频捕获路由已注册")
+else:
+    logger.info("🎧 系统音频捕获路由已关闭（SYSTEM_AUDIO_ENABLED=false）")
 
 # ── 条件注册语音路由（默认关闭，需 .env 中启用） ──
 if settings.VOICE_ENABLED or settings.STT_ENABLED:
@@ -264,6 +303,9 @@ if _HAS_FRONTEND:
 
     if settings.SCREENSHOT_ENABLED:
         app.include_router(screenshot.router, prefix="/api")
+
+    if settings.SYSTEM_AUDIO_ENABLED:
+        app.include_router(system_audio.router, prefix="/api")
 
     # 挂载静态资源（JS/CSS/图片等）
     if os.path.isdir(os.path.join(FRONTEND_DIST, "assets")):

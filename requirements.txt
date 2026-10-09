@@ -34,3 +34,9 @@ pywebview>=5.0
 # 安装时会一并带上 numpy 与 opencv-python。
 windows-capture>=2.0.1
 pillow>=10.0.0
+
+# 系统音频捕获（services/system_audio.py + /system-audio 接口）
+# soundcard：纯 cffi 实现，直接暴露 WASAPI 回环，
+# 用于抓取「电脑正在播放的声音」并送去 STT。仅 Windows 可用。
+# 相比 sounddevice/PyAudio，它无需编译、loopback 开箱即用。
+soundcard>=0.4.3
