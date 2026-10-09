@@ -27,7 +27,7 @@ class ChatRequest(BaseModel):
     coding_enabled: bool = False  # 是否启用编程题（仅求职者模式+技术岗生效）
     model: Optional[str] = None  # 覆盖默认模型
     thinking_enabled: Optional[bool] = None  # 覆盖默认思考开关
-    reasoning_effort: Optional[str] = None  # "high" / "max"
+    reasoning_effort: Optional[str] = None  # "low" / "high" / "max"
     api_key: Optional[str] = None  # 前端传入的 API Key，覆盖 .env 配置
     resume_text: Optional[str] = None  # 上传的简历文本
     code_context: Optional[str] = None  # 上传的代码文本（仅面试官模式使用）
@@ -53,10 +53,14 @@ class ModelInfo(BaseModel):
     name: str
     description: str
     supports_thinking: bool
+    # 是否支持图片输入（来自官方 /models 的 input_modalities 含 "image"）
+    supports_vision: bool = False
 
 
 class ModelsResponse(BaseModel):
     models: list[ModelInfo]
+    # 模型列表来源：remote（官方 /models 接口）/ fallback（本地 AVAILABLE_MODELS 配置）
+    source: str = "remote"
 
 
 # ============ 面试相关 ============
@@ -234,22 +238,31 @@ class ScreenshotInfoResponse(BaseModel):
     available: bool                  # 截图功能是否可用
     error: Optional[str] = None      # 不可用时的原因
     monitors: list[MonitorItem] = []
-    vision_model: Optional[str] = None  # 当前配置/解析到的视觉模型
+    # 当前生效的视觉模型（没选模型时由后端按账号可用模型挑选，可能为空）
+    vision_model: Optional[str] = None
+    # 界面当前选中的模型；若它不支持图片，vision_supported=False
+    selected_model: Optional[str] = None
+    vision_supported: bool = True    # 选中的模型是否支持图片输入
+    vision_models: list[str] = []    # 账号下支持图片输入的模型，供前端提示
 
 
 class CaptureRequest(BaseModel):
     """主显示器截图并识别"""
     include_cursor: bool = False     # 是否把鼠标光标画进截图
     prompt: Optional[str] = None     # 自定义提问，为空则用 prompts/screenshot.txt
-    model: Optional[str] = None      # 覆盖视觉模型
+    model: Optional[str] = None      # 覆盖视觉模型（界面选中的模型）
     api_key: Optional[str] = None    # 前端传入的 Key，覆盖 .env
     save: Optional[bool] = None      # 是否保存到磁盘，覆盖 settings.SCREENSHOT_SAVE
+    # 思考模式与推理强度：与界面上的模型/思考开关保持一致
+    thinking_enabled: Optional[bool] = None
+    reasoning_effort: Optional[str] = None  # "low" / "high" / "max"
 
 
 class CaptureResponse(BaseModel):
     """截图识别结果"""
     answer: str                      # 模型回答（Markdown）
     model: str                       # 实际使用的模型
+    thinking_enabled: bool = False   # 实际使用的思考模式
     monitor: str = "primary"         # 截取目标（固定主显示器）
     width: int                       # 捕获到的原始尺寸
     height: int

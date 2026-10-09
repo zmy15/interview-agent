@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { Message, ChatMode, PromptTemplates, CandidateLevel, InterviewRound, QARecord, InterviewPlanResponse, AnswerLength } from '@/types'
+import type { Message, ChatMode, PromptTemplates, CandidateLevel, InterviewRound, QARecord, InterviewPlanResponse, AnswerLength, ReasoningEffort } from '@/types'
 
 interface ChatState {
   // 按模式分别存储的消息历史
@@ -16,7 +16,7 @@ interface ChatState {
   // 设置
   selectedModel: string
   thinkingEnabled: boolean
-  reasoningEffort: 'high' | 'max'
+  reasoningEffort: ReasoningEffort
   selectedMode: ChatMode
   selectedPosition: string | null
   selectedJdId: string | null
@@ -58,7 +58,7 @@ interface ChatState {
   // Actions — 设置
   setModel: (model: string) => void
   setThinking: (enabled: boolean) => void
-  setReasoningEffort: (effort: 'high' | 'max') => void
+  setReasoningEffort: (effort: ReasoningEffort) => void
   setMode: (mode: ChatMode) => void
   setPosition: (name: string | null) => void
   setJdId: (jdId: string | null) => void

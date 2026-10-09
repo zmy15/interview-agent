@@ -31,6 +31,7 @@ import {
 import { useChatStore } from '@/stores/chatStore'
 import { useAppStore } from '@/stores/appStore'
 import { useSSE } from '@/hooks/useSSE'
+import { useModels } from '@/hooks/useModels'
 import ChatMessage from '@/components/ChatMessage'
 import ModelSelector from '@/components/ModelSelector'
 import PositionSelect from '@/components/PositionSelect'
@@ -72,7 +73,9 @@ const ChatPage: React.FC = () => {
     currentReasoning,
     currentContent,
     selectedMode,
+    selectedModel,
     thinkingEnabled,
+    reasoningEffort,
     useSearch,
     codingEnabled,
     candidateLevel,
@@ -107,6 +110,8 @@ const ChatPage: React.FC = () => {
   const { highlightCode, toggleHighlightCode, apiKey, setApiKey, interviewDuration, setInterviewDuration } = useAppStore()
   const { sendMessage, abort } = useSSE()
   const { sttAvailable, ttsAvailable } = useVoiceAvailability()
+  // 模型列表来自后端调用的官方 /models 接口，用于判断选中模型能否看图
+  const { models } = useModels()
 
   const [inputValue, setInputValue] = useState('')
   const [promptEditorOpen, setPromptEditorOpen] = useState(false)
@@ -215,6 +220,21 @@ const ChatPage: React.FC = () => {
   const handleScreenshot = async () => {
     if (capturing || isStreaming) return
 
+    // 前置拦截：选中的模型明确不支持图片时，直接告知用户，省掉一次截屏开销
+    const captureModel = models.find((m) => m.id === selectedModel)
+    if (captureModel && captureModel.supports_vision === false) {
+      const detail =
+        `当前模型「${captureModel.name}」不支持图片输入，无法识别截图。` +
+        '请在模型选择器中改用带 🖼 标记的模型。'
+      addMessage({
+        role: 'user',
+        content: `📷 截图答题${inputValue.trim() ? `：${inputValue.trim()}` : ''}`,
+      })
+      addMessage({ role: 'assistant', content: `> ⚠️ 截图识别失败\n\n${detail}` })
+      message.error(detail)
+      return
+    }
+
     setCapturing(true)
     setCaptureElapsed(0)
     const startedAt = Date.now()
@@ -248,6 +268,12 @@ const ChatPage: React.FC = () => {
           // 把输入框内容作为附加要求；为空则用后端内置提示词
           prompt: inputValue.trim() || undefined,
           api_key: apiKey || undefined,
+          // 模型与思考配置跟随界面选择：
+          // 后端会用官方 /models 的 input_modalities 校验该模型能否看图，
+          // 不支持时直接返回「不支持图片输入」，不会静默换成别的模型。
+          model: selectedModel || undefined,
+          thinking_enabled: thinkingEnabled,
+          reasoning_effort: thinkingEnabled ? reasoningEffort : undefined,
         })
       } finally {
         // 恢复用户原本的捕获排除设置，不改变他的窗口行为
@@ -258,7 +284,8 @@ const ChatPage: React.FC = () => {
 
       const meta =
         `> 📷 屏幕截图 · ${res.width}×${res.height} · ` +
-        `${(res.elapsed_ms / 1000).toFixed(1)}s · 模型 \`${res.model}\``
+        `${(res.elapsed_ms / 1000).toFixed(1)}s · 模型 \`${res.model}\`` +
+        `${res.thinking_enabled ? ' · 🧠 思考' : ''}`
 
       addMessage({ role: 'assistant', content: `${meta}\n\n${res.answer}` })
       setInputValue('')

@@ -42,10 +42,14 @@ async def stream_chat(
     - {"type": "reasoning", "content": "..."}  思考链
     - {"type": "content", "content": "..."}    最终回答
     - {"type": "done", "content": ""}          结束
+
+    reasoning_effort 支持 low / high / max 三档，非规范值会被归一化。
     """
+    from services.screen_capture import normalize_effort
     _model = model or settings.DEEPSEEK_MODEL
     _thinking = thinking_enabled if thinking_enabled is not None else settings.DEEPSEEK_THINKING_ENABLED
-    _effort = reasoning_effort or settings.DEEPSEEK_REASONING_EFFORT
+    # 归一化成 low / high / max（官方规范档位）
+    _effort = normalize_effort(reasoning_effort or settings.DEEPSEEK_REASONING_EFFORT)
 
     # 将 Pydantic models 转为 dict
     msgs = []

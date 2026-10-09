@@ -24,6 +24,8 @@ class Settings:
     DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
     DEEPSEEK_THINKING_ENABLED: bool = os.getenv("DEEPSEEK_THINKING_ENABLED", "true").lower() == "true"
+    # 思考强度：low（更快更省）/ high（官方默认）/ max（最充分）
+    # 界面上的思考强度选择优先于本配置。
     DEEPSEEK_REASONING_EFFORT: str = os.getenv("DEEPSEEK_REASONING_EFFORT", "high")
 
     # 可用模型
@@ -103,11 +105,13 @@ class Settings:
     FREE_DAILY_INTERVIEW_LIMIT: int = int(os.getenv("FREE_DAILY_INTERVIEW_LIMIT", "10"))
 
     # ── 截图识别（services/screen_capture.py） ──
-    # 视觉模型名。注意：必须是支持图片输入的模型，
-    # 纯文本模型（deepseek-v4-flash 等）会忽略图片并编造答案。
-    # 官方现名 deepseek-flash；旧名 deepseek-v4-flash-vision-exp 已下线但仍可调用。
-    SCREENSHOT_VISION_MODEL: str = os.getenv("SCREENSHOT_VISION_MODEL", "deepseek-flash")
-    # 截图保存目录（相对于项目根目录）
+    # 视觉模型不再写死：截图默认使用界面「模型选择器」里选中的模型，
+    # 后端通过官方 GET /models 的 input_modalities 判断其是否支持图片，
+    # 不支持则直接返回「不支持图片输入」，不会把图片发给纯文本模型。
+    #
+    # SCREENSHOT_VISION_MODEL 仅作为「界面未选择任何模型」时的兜底偏好。
+    # 留空则自动挑选账号下第一个支持图片输入的模型。
+    SCREENSHOT_VISION_MODEL: str = os.getenv("SCREENSHOT_VISION_MODEL", "")
     SCREENSHOT_DIR: str = os.getenv("SCREENSHOT_DIR", "screenshots")
     # 上传给模型前图片的最长边（官方会把图片缩放到约 1300×1300 再计费，
     # 单图 token 上限 1024，因此本地先缩小可显著减少上传耗时）
@@ -115,9 +119,10 @@ class Settings:
     # 单次回答的最大 token 数。注意：DeepSeek 思考模式默认开启，
     # 思维链与正文共享该预算，2048 容易被推理吃光导致正文被截断。
     SCREENSHOT_MAX_TOKENS: int = int(os.getenv("SCREENSHOT_MAX_TOKENS", "8192"))
-    # 截图问答是否启用思考模式。
+    # 截图问答在界面未传思考开关时的默认值。
     # 截图答题是「照抄题干 + 给答案」，不需要长链推理；
     # 开启只会占用输出预算并拖慢响应，故默认关闭。
+    # （界面上的思考开关优先于本配置）
     SCREENSHOT_THINKING_ENABLED: bool = (
         os.getenv("SCREENSHOT_THINKING_ENABLED", "false").lower() == "true"
     )

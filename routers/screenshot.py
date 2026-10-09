@@ -25,6 +25,7 @@ from models.schemas import (
     ScreenshotInfoResponse,
 )
 from services import screen_capture as sc
+from services.model_registry import get_vision_models, resolve_vision_model
 from utils.auth import CurrentUser, get_optional_user
 from utils.prompt_loader import load_prompt
 
@@ -51,21 +52,44 @@ def _ensure_enabled() -> None:
 
 @router.get("/info", response_model=ScreenshotInfoResponse)
 async def screenshot_info(
+    model: Optional[str] = None,
     user: Optional[CurrentUser] = Depends(get_optional_user),
 ):
     """返回截图可用性与显示器列表。
 
     即使截图不可用也返回 200，由 available/error 字段说明原因，
     这样前端可以展示明确的引导提示，而不是一个红色报错。
+
+    `model` 为界面当前选中的模型（可选）：若它不支持图片输入，
+    返回 vision_supported=False，前端可据此提前提示「不支持图片」。
     """
     _ensure_enabled()
+
+    # 账号下支持图片输入的模型（来自官方 /models 的 input_modalities）
+    vision_models: list[str] = []
+    resolved: Optional[str] = None
+    try:
+        vision_models = [m.id for m in await get_vision_models()]
+        resolved = await resolve_vision_model()
+    except Exception as exc:
+        logger.warning("获取模型列表失败（截图信息降级）: %s", exc)
+
+    if model:
+        chosen = model
+        vision_supported = model in vision_models if vision_models else None
+    else:
+        chosen = resolved
+        vision_supported = True if resolved else None
 
     if not sc.is_available():
         return ScreenshotInfoResponse(
             available=False,
             error=sc.availability_error(),
             monitors=[],
-            vision_model=settings.SCREENSHOT_VISION_MODEL,
+            vision_model=chosen,
+            selected_model=model,
+            vision_supported=vision_supported is not False,
+            vision_models=vision_models,
         )
 
     try:
@@ -78,7 +102,10 @@ async def screenshot_info(
         available=True,
         error=None,
         monitors=[MonitorItem(**m) for m in monitors],
-        vision_model=settings.SCREENSHOT_VISION_MODEL,
+        vision_model=chosen,
+        selected_model=model,
+        vision_supported=vision_supported is not False,
+        vision_models=vision_models,
     )
 
 
@@ -87,7 +114,13 @@ async def capture(
     req: CaptureRequest,
     user: Optional[CurrentUser] = Depends(get_optional_user),
 ):
-    """截取整个屏幕，交给 DeepSeek 视觉模型识别题目并作答。"""
+    """截取整个屏幕，交给界面选中的模型识别题目并作答。
+
+    模型与思考模式都跟随界面选择：
+        - req.model 为模型选择器里选中的模型；不支持图片输入时返回 400
+          （明确告知「不支持」，而不是发出去让模型编答案）。
+        - req.thinking_enabled / req.reasoning_effort 与界面的思考开关一致。
+    """
     _ensure_enabled()
 
     if not sc.is_available():
@@ -139,24 +172,31 @@ async def capture(
 
     question = (req.prompt or "").strip() or _DEFAULT_QUESTION
 
-    # ── 6) 调用视觉模型 ──
+    # ── 6) 调用界面选中的模型 ──
     try:
-        answer, used_model = await sc.ask_vision(
+        answer, used_model, used_thinking = await sc.ask_vision(
             data_url,
             prompt=question,
             system_prompt=system_prompt,
             api_key=req.api_key,
             model=req.model,
+            thinking=req.thinking_enabled,
+            reasoning_effort=req.reasoning_effort,
         )
     except sc.CaptureError as exc:
-        # 模型侧问题（Key 无效 / 无视觉模型）返回 502
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        # 「模型不支持图片」/「模型不在可用列表里」都是用户在界面上选错了模型，
+        # 用 400 让前端能直接把原因提示给用户；
+        # 其余模型侧问题（Key 无效 / 调用失败）返回 502。
+        detail = str(exc)
+        status = 400 if ("不支持图片输入" in detail or "不在当前 API Key 的可用模型列表" in detail) else 502
+        raise HTTPException(status_code=status, detail=detail) from exc
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
 
     return CaptureResponse(
         answer=answer,
         model=used_model,
+        thinking_enabled=used_thinking,
         monitor="primary",
         width=img.width,
         height=img.height,

@@ -20,8 +20,13 @@
 ⚠️ 关键：模型必须支持视觉
     纯文本模型（如 deepseek-v4-flash）不具备视觉能力。把图片发给它
     **不会报错**，而是忽略图片、编造一个看似合理的答案 —— 这是最危险的
-    失败模式。因此本模块默认使用 settings.SCREENSHOT_VISION_MODEL，
-    并在发送前校验模型可用性。
+    失败模式。因此本模块不写死模型名，而是在发送前调用官方
+    `GET /models` 接口（services/model_registry.py），用模型元数据里的
+    `input_modalities` 判断它能否看图；不支持时直接返回「不支持图片输入」，
+    绝不把图片发出去赌运气。
+
+    使用哪个模型、是否开启思考，均以界面上的选择为准（前端把当前选中的
+    模型与思考开关透传给 /screenshot/capture）。
 """
 
 from __future__ import annotations
@@ -396,97 +401,117 @@ def screenshot_dir() -> str:
 
 
 # ══════════════════════════════════════════════════════════════
-# 视觉模型调用
+# 思考强度（reasoning_effort）
 # ══════════════════════════════════════════════════════════════
 
-# 视觉模型候选：按顺序尝试。
-# 官方文档中 deepseek-v4-flash-vision-exp 已下线（请求仍由最新 Flash 承接），
-# 保留为兜底以兼容旧账号。
-VISION_MODEL_CANDIDATES = [
-    "deepseek-flash",
-    "deepseek-v4-flash-vision-exp",
-]
+# 官方规范档位：{"reasoning_effort": "low/high/max"}
+# 服务端还会做一次映射：minimal→low、medium/xhigh→high、ultra→max，
+# 这里统一收敛到三个规范值，避免把映射关系散落在各处。
+VALID_EFFORTS = ("low", "high", "max")
 
-# 进程内缓存「账号可用的视觉模型」，避免每次截图都打一次 /models
-_resolved_model: Optional[str] = None
-_model_lock = threading.Lock()
+# 常见别名 → 规范档位（兼容手写 .env 或旧数据）
+_EFFORT_ALIASES = {
+    "minimal": "low",
+    "medium": "high",
+    "xhigh": "high",
+    "ultra": "max",
+}
 
-
-def _candidate_models() -> list[str]:
-    out: list[str] = []
-    preferred = (settings.SCREENSHOT_VISION_MODEL or "").strip()
-    if preferred:
-        out.append(preferred)
-    for m in VISION_MODEL_CANDIDATES:
-        if m not in out:
-            out.append(m)
-    return out
+DEFAULT_EFFORT = "high"
 
 
-async def resolve_vision_model(api_key: Optional[str] = None) -> str:
-    """选出账号下实际可用的视觉模型。
+def normalize_effort(value: Optional[str]) -> str:
+    """把任意 reasoning_effort 输入归一化成 low / high / max。
 
-    纯文本模型无法看图，若直接发送会得到「假装看过」的幻觉答案，
-    因此这里必须确认模型真实存在，而不是盲目使用配置值。
+    未知值回落到 high（官方默认），并记一条警告 —— 直接透传非法值
+    虽然服务端不一定报错，但会让「界面显示」与「实际生效」对不上。
     """
-    global _resolved_model
+    raw = (value or "").strip().lower()
+    if not raw:
+        return DEFAULT_EFFORT
+    if raw in VALID_EFFORTS:
+        return raw
+    if raw in _EFFORT_ALIASES:
+        return _EFFORT_ALIASES[raw]
+    logger.warning("未知的 reasoning_effort=%r，回落到 %s", value, DEFAULT_EFFORT)
+    return DEFAULT_EFFORT
 
-    with _model_lock:
-        if _resolved_model:
-            return _resolved_model
 
-    from services.llm_client import get_client
+# ══════════════════════════════════════════════════════════════
+# 视觉模型调用
+# ══════════════════════════════════════════════════════════════
+#
+# 模型不写死：候选模型完全来自官方 `GET /models` 接口
+# （services/model_registry.py），并以其 input_modalities 是否含
+# "image" 判断该模型能否看图。
+#
+# ⚠️ 关键：纯文本模型收到图片**不会报错**，而是忽略图片、编造一个
+# 看似合理的答案。因此发送前必须完成「能否看图」的校验，不支持时
+# 直接返回明确的不支持提示，而不是把图片发出去赌运气。
 
-    client = get_client(api_key=api_key)
 
-    try:
-        resp = await client.models.list()
-        available = [m.id for m in getattr(resp, "data", []) or []]
-    except Exception as exc:
-        text = str(exc)
-        # 鉴权失败必须上抛：否则「拿不到列表」会被误判为「模型名没问题」
-        if "401" in text or "Authentication" in text or "invalid_api_key" in text.lower():
+async def resolve_capture_model(
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+) -> tuple[str, bool]:
+    """决定本次截图使用哪个模型，并确认它支持图片输入。
+
+    参数：
+        model   —— 界面当前选中的模型；为空时由后端按账号可用模型挑选。
+    返回：
+        (model_id, supports_vision)
+    异常：
+        CaptureError —— 模型不存在 / 不支持图片 / 账号下没有视觉模型。
+    """
+    from services import model_registry as registry
+
+    models = await registry.get_available_models(api_key=api_key)
+    by_id = {m.id: m for m in models}
+    vision_models = [m.id for m in models if m.supports_vision]
+
+    # ── 情况 1：界面选了模型，就用它（不再静默替换成别的模型）──
+    if model:
+        info = by_id.get(model)
+        if info is None:
+            listed = "、".join(by_id) or "（空）"
             raise CaptureError(
-                "DeepSeek API Key 无效或已失效（401）。"
-                "请检查 .env 中的 DEEPSEEK_API_KEY，或在前端设置中填入有效 Key。"
-            ) from exc
-        logger.warning("获取模型列表失败，沿用配置值 %s: %s", settings.SCREENSHOT_VISION_MODEL, exc)
-        return settings.SCREENSHOT_VISION_MODEL
+                f"模型 {model} 不在当前 API Key 的可用模型列表中，无法截图识别。"
+                f"可用模型：{listed}。"
+            )
+        if not info.supports_vision:
+            hint = (
+                f"当前账号支持图片输入的模型：{'、'.join(vision_models)}。"
+                if vision_models
+                else "当前 API Key 下没有任何支持图片输入的模型。"
+            )
+            raise CaptureError(
+                f"模型 {model} 不支持图片输入，无法识别截图。"
+                "请在模型选择器中改用支持视觉的模型。"
+                + hint
+            )
+        return model, True
 
-    if not available:
-        return settings.SCREENSHOT_VISION_MODEL
+    # ── 情况 2：未指定模型，挑账号下第一个可用的视觉模型 ──
+    preferred = (settings.SCREENSHOT_VISION_MODEL or "").strip()
+    if preferred and preferred in vision_models:
+        return preferred, True
+    if vision_models:
+        return vision_models[0], True
 
-    chosen: Optional[str] = None
-    for cand in _candidate_models():
-        if cand in available:
-            chosen = cand
-            break
-
-    if chosen is None:
-        # 退而求其次：任何同时带 vision 与 flash 的模型
-        fuzzy = [m for m in available if "vision" in m.lower() and "flash" in m.lower()]
-        if fuzzy:
-            chosen = sorted(fuzzy, key=len, reverse=True)[0]
-
-    if chosen is None:
-        raise CaptureError(
-            "当前 API Key 下没有可用的 DeepSeek 视觉模型，无法识别截图。"
-            f"可用模型：{', '.join(available)}。"
-            "纯文本模型不支持图片输入，请改用支持视觉的模型"
-            "（如 deepseek-flash），或在 .env 中设置 SCREENSHOT_VISION_MODEL。"
+    # ── 情况 3：远端列表拿不到（回退到本地配置）时，无法确认视觉能力 ──
+    fallback = preferred or (settings.DEEPSEEK_MODEL or "").strip()
+    if fallback:
+        logger.warning(
+            "无法从模型列表确认 %s 是否支持图片输入（远端列表不可用），将按配置尝试",
+            fallback,
         )
+        return fallback, False
 
-    with _model_lock:
-        _resolved_model = chosen
-    logger.info("使用视觉模型: %s", chosen)
-    return chosen
-
-
-def invalidate_model_cache() -> None:
-    """清除视觉模型缓存（Key 变更后调用）"""
-    global _resolved_model
-    with _model_lock:
-        _resolved_model = None
+    raise CaptureError(
+        "当前 API Key 下没有可用的视觉模型，无法识别截图。"
+        "纯文本模型不支持图片输入，请改用支持图片的模型"
+        "（可在界面的模型选择器中查看带「🖼」标记的模型）。"
+    )
 
 
 async def ask_vision(
@@ -498,25 +523,38 @@ async def ask_vision(
     model: Optional[str] = None,
     max_tokens: Optional[int] = None,
     thinking: Optional[bool] = None,
-) -> tuple[str, str]:
-    """把截图交给 DeepSeek 视觉模型，返回 (回答文本, 实际使用的模型名)。
+    reasoning_effort: Optional[str] = None,
+) -> tuple[str, str, bool]:
+    """把截图交给 DeepSeek 视觉模型，返回 (回答文本, 实际模型名, 是否开启思考)。
 
-    为什么默认关闭思考模式：
-        DeepSeek 的思考模式**默认是开启的**（effort 默认 high），思维链
-        与正文共享 max_tokens 预算。截图答题是「照抄题干 + 给答案」，
-        不需要长链推理，开着思考会让推理占掉大量预算、正文被截断
-        （实测表现：回答写到一半突然中断）。因此这里显式传
-        {"thinking": {"type": "disabled"}}。
-
-        注意：思考模式下 temperature / presence_penalty / frequency_penalty
-        **不生效**（传了不报错但被忽略），所以本函数不再传 temperature。
+    模型与思考模式均以界面选择为准：
+        - model 为界面选中的模型；为空时才由后端挑选账号下的视觉模型。
+        - thinking / reasoning_effort 透传界面的思考开关与推理强度。
+          思考模式下 temperature / presence_penalty / frequency_penalty
+          不生效（传了不报错但被忽略），所以这里不传 temperature。
     """
     from services.llm_client import get_client
 
-    _model = model or await resolve_vision_model(api_key=api_key)
+    _model, _vision_ok = await resolve_capture_model(api_key=api_key, model=model)
+
+    # 无法确认视觉能力（远端列表不可用且未显式选模型）时给出提示，
+    # 但不阻断：用户可能配置了文档未登记的视觉模型。
+    _notice = ""
+    if not _vision_ok:
+        _notice = (
+            f"\n\n---\n\n> ⚠️ 未能确认模型 `{_model}` 是否支持图片输入"
+            "（模型列表接口不可用）。若下方内容与截图无关，"
+            "说明该模型不具备视觉能力，请改用支持图片的模型。"
+        )
+
     client = get_client(api_key=api_key)
     _max_tokens = int(max_tokens or settings.SCREENSHOT_MAX_TOKENS)
-    _thinking = settings.SCREENSHOT_THINKING_ENABLED if thinking is None else thinking
+
+    if thinking is None:
+        _thinking = settings.SCREENSHOT_THINKING_ENABLED
+    else:
+        _thinking = bool(thinking)
+    _effort = normalize_effort(reasoning_effort or settings.DEEPSEEK_REASONING_EFFORT)
 
     messages: list[dict] = []
     if system_prompt.strip():
@@ -535,7 +573,7 @@ async def ask_vision(
     extra_body: dict = {}
     if _thinking:
         extra_body["thinking"] = {"type": "enabled"}
-        extra_body["reasoning_effort"] = settings.DEEPSEEK_REASONING_EFFORT
+        extra_body["reasoning_effort"] = _effort
     else:
         extra_body["thinking"] = {"type": "disabled"}
 
@@ -556,7 +594,7 @@ async def ask_vision(
         if "404" in text or ("model" in text.lower() and "not" in text.lower()):
             raise CaptureError(
                 f"模型 {_model} 调用失败：{text}。"
-                "请在 .env 中把 SCREENSHOT_VISION_MODEL 设为账号下可用的视觉模型。"
+                "请在模型选择器中改用当前 API Key 下可用的模型。"
             ) from exc
         raise CaptureError(f"视觉模型调用失败：{text}") from exc
 
@@ -583,14 +621,18 @@ async def ask_vision(
     if usage:
         reasoning = getattr(choice.message, "reasoning_content", None) or ""
         logger.info(
-            "视觉问答完成 | model=%s | thinking=%s | prompt_tokens=%s | "
+            "视觉问答完成 | model=%s | thinking=%s(%s) | prompt_tokens=%s | "
             "completion_tokens=%s | reasoning_chars=%d | content_chars=%d | finish=%s",
             _model,
             _thinking,
+            _effort if _thinking else "-",
             getattr(usage, "prompt_tokens", "?"),
             getattr(usage, "completion_tokens", "?"),
             len(reasoning),
             len(content),
             finish_reason,
         )
-    return content, _model
+
+    if _notice:
+        content += _notice
+    return content, _model, _thinking

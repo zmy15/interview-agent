@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from starlette.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -12,7 +12,7 @@ from sqlalchemy import select
 from config import settings
 from models.schemas import ChatRequest, ModelsResponse
 from services.llm_client import stream_chat
-from services.model_registry import get_available_models, validate_model
+from services.model_registry import get_available_models, invalidate_cache, validate_model
 from services.agent_tools import search_web
 from services.coding_problem import select_problems, format_problems_for_prompt
 from services.rag_pipeline import build_rag_context
@@ -26,10 +26,55 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
+def _effective_api_key(
+    request: Request,
+    explicit: Optional[str] = None,
+    fallback: Optional[str] = None,
+) -> Optional[str]:
+    """统一 API Key 来源：显式参数 > X-DEEPSEEK-API-KEY 请求头 > 请求体自带值
+
+    前端在 localStorage 里保存了 Key，client.ts 会自动带上请求头；
+    把它取出来才能按该 Key 的账号拉取模型列表。
+    返回 None 时，下游会退回 .env 中的 DEEPSEEK_API_KEY。
+    """
+    for candidate in (
+        explicit,
+        request.headers.get("X-DEEPSEEK-API-KEY"),
+        request.headers.get("X-DeepSeek-Key"),
+        fallback,
+    ):
+        if candidate and candidate.strip():
+            return candidate.strip()
+    return None
+
+
 @router.get("/models", response_model=ModelsResponse)
-async def list_models():
-    """返回可用模型列表"""
-    return ModelsResponse(models=get_available_models())
+async def list_models(
+    request: Request,
+    refresh: bool = False,
+    user: Optional[CurrentUser] = Depends(get_optional_user),
+):
+    """返回可用模型列表。
+
+    模型列表来自官方 `GET /models` 接口
+    （https://api-docs.deepseek.com/zh-cn/api/list-models），
+    因此新增 / 改名模型无需改代码。
+
+    - refresh=true 强制绕过缓存重新拉取
+    - API Key 取 `X-DEEPSEEK-API-KEY` 请求头（前端自动带上），
+      省略时回退到 .env 中的 DEEPSEEK_API_KEY
+    - 远端不可用时回退到 .env 的 AVAILABLE_MODELS，并在 source 字段说明
+    """
+    if refresh:
+        invalidate_cache()
+
+    models = await get_available_models(api_key=_effective_api_key(request))
+    source = (
+        "fallback"
+        if models and all("本地配置" in m.description for m in models)
+        else "remote"
+    )
+    return ModelsResponse(models=models, source=source)
 
 
 # ============ 辅助函数 ============
@@ -266,7 +311,7 @@ async def chat_stream(
 
         # ====== Phase 3: 验证 & 流式输出 ======
         model = req.model
-        if model and not validate_model(model):
+        if model and not await validate_model(model, api_key=req.api_key):
             yield f"data: {json.dumps({'type': 'error', 'content': f'模型 {model} 不可用'}, ensure_ascii=False)}\n\n"
             yield f"data: [DONE]\n\n"
             return

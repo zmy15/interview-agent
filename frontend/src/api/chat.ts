@@ -1,8 +1,17 @@
 import { request } from './client'
 import type { ModelsResponse } from '@/types'
 
-export async function getModels(): Promise<ModelsResponse> {
-  return request<ModelsResponse>('/chat/models')
+/**
+ * 获取可用模型列表。
+ *
+ * 后端调用官方 GET /models 动态获取（模型名不再写死）。
+ * API Key 由 client.ts 自动通过 X-DEEPSEEK-API-KEY 请求头带上，
+ * 后端据此返回该账号下的模型。
+ */
+export async function getModels(refresh = false): Promise<ModelsResponse> {
+  return request<ModelsResponse>('/chat/models', {
+    params: refresh ? { refresh: 'true' } : undefined,
+  })
 }
 
 export async function streamChat(

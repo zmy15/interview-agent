@@ -9,6 +9,13 @@ export interface Message {
 export type CandidateLevel = 'intern' | 'new_grad' | 'experienced'
 export type InterviewRound = 'first' | 'second' | 'hr'
 export type AnswerLength = 'short' | 'medium' | 'long'
+/**
+ * 思考强度（reasoning_effort）。
+ *
+ * 官方接受 low / high / max 三档；minimal→low、medium→high、
+ * xhigh→high、ultra→max 会被服务端映射，这里只暴露三个规范档位。
+ */
+export type ReasoningEffort = 'low' | 'high' | 'max'
 
 export interface ChatRequest {
   messages: Message[]
@@ -19,7 +26,7 @@ export interface ChatRequest {
   coding_enabled?: boolean
   model?: string
   thinking_enabled?: boolean
-  reasoning_effort?: 'high' | 'max'
+  reasoning_effort?: ReasoningEffort
   prompt_override?: string
   api_key?: string
   resume_text?: string
@@ -67,10 +74,14 @@ export interface ModelInfo {
   name: string
   description: string
   supports_thinking: boolean
+  /** 是否支持图片输入（来自官方 /models 的 input_modalities），截图识别依赖它 */
+  supports_vision?: boolean
 }
 
 export interface ModelsResponse {
   models: ModelInfo[]
+  /** 模型列表来源：remote（官方 /models 接口）/ fallback（本地 AVAILABLE_MODELS 配置） */
+  source?: 'remote' | 'fallback'
 }
 
 // ============ 面试相关 ============

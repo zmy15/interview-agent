@@ -32,6 +32,24 @@ def _make_image(width: int = 800, height: int = 600) -> Image.Image:
     return img
 
 
+class _FakeCompletions:
+    """假的 chat.completions，只回一条固定答案"""
+
+    async def create(self, **kwargs):
+        msg = types.SimpleNamespace(content="## 答案\n测试答案", reasoning_content="")
+        return types.SimpleNamespace(
+            choices=[types.SimpleNamespace(message=msg, finish_reason="stop")],
+            usage=types.SimpleNamespace(prompt_tokens=10, completion_tokens=5),
+        )
+
+
+def _reset_registry() -> None:
+    """清空模型列表缓存，让下一次请求重新走（被 monkeypatch 的）远端接口"""
+    from services import model_registry as registry
+
+    registry.invalidate_cache()
+
+
 @pytest.fixture
 def fake_capture(monkeypatch):
     """把捕获替换成合成图，避免依赖真实屏幕"""
@@ -47,7 +65,12 @@ def fake_capture(monkeypatch):
 
 @pytest.fixture
 def fake_vision(monkeypatch):
-    """替换 DeepSeek 客户端，记录请求体以便校验"""
+    """替换 DeepSeek 客户端，记录请求体以便校验。
+
+    模型列表走官方 /models 的形态：deepseek-flash 支持图片（input_modalities
+    含 image），deepseek-v4-flash 是纯文本模型 —— 后者用来验证「不支持图片
+    输入时必须明确拒绝，而不是把图片发出去」。
+    """
     captured: dict = {}
 
     class _Completions:
@@ -65,7 +88,20 @@ def fake_vision(monkeypatch):
     class _Models:
         async def list(self):
             return types.SimpleNamespace(
-                data=[types.SimpleNamespace(id="deepseek-flash")]
+                data=[
+                    types.SimpleNamespace(
+                        id="deepseek-flash",
+                        name="DeepSeek Flash",
+                        input_modalities=["text", "image"],
+                        output_modalities=["text"],
+                    ),
+                    types.SimpleNamespace(
+                        id="deepseek-v4-flash",
+                        name="DeepSeek V4 Flash",
+                        input_modalities=["text"],
+                        output_modalities=["text"],
+                    ),
+                ]
             )
 
     class _Client:
@@ -76,9 +112,10 @@ def fake_vision(monkeypatch):
     client = _Client()
 
     import services.llm_client as llm
+    import services.model_registry as registry
 
     monkeypatch.setattr(llm, "get_client", lambda api_key=None: client)
-    sc.invalidate_model_cache()
+    registry.invalidate_cache()
 
     return captured
 
@@ -253,12 +290,13 @@ def test_info_returns_monitors(client, monkeypatch):
 
 
 def test_capture_uses_primary_monitor(client, fake_capture, fake_vision):
-    """截图固定使用主显示器"""
+    """截图固定使用主显示器；未选模型时自动挑账号下支持图片的模型"""
     resp = client.post("/screenshot/capture", json={"save": False})
     assert resp.status_code == 200, resp.text
 
     body = resp.json()
     assert body["monitor"] == "primary"
+    # 模型来自 /models 接口，而不是写死的常量
     assert body["model"] == "deepseek-flash"
     assert body["answer"]
     assert body["width"] == 800 and body["height"] == 600
@@ -431,7 +469,7 @@ def test_vision_max_tokens_is_generous(client, fake_capture, fake_vision):
 def test_truncated_answer_is_flagged(client, fake_capture, monkeypatch):
     """finish_reason=length 时应明确提示被截断，而不是假装回答完整"""
     import services.llm_client as llm
-    from services import screen_capture as sc_mod
+    from services import model_registry as registry
 
     class _TruncatedCompletions:
         async def create(self, **kwargs):
@@ -443,7 +481,15 @@ def test_truncated_answer_is_flagged(client, fake_capture, monkeypatch):
 
     class _Models:
         async def list(self):
-            return types.SimpleNamespace(data=[types.SimpleNamespace(id="deepseek-flash")])
+            return types.SimpleNamespace(
+                data=[
+                    types.SimpleNamespace(
+                        id="deepseek-flash",
+                        name="DeepSeek Flash",
+                        input_modalities=["text", "image"],
+                    )
+                ]
+            )
 
     class _Client:
         def __init__(self):
@@ -451,7 +497,7 @@ def test_truncated_answer_is_flagged(client, fake_capture, monkeypatch):
             self.models = _Models()
 
     monkeypatch.setattr(llm, "get_client", lambda api_key=None: _Client())
-    sc_mod.invalidate_model_cache()
+    registry.invalidate_cache()
 
     resp = client.post("/screenshot/capture", json={"save": False})
     assert resp.status_code == 200, resp.text
@@ -459,3 +505,310 @@ def test_truncated_answer_is_flagged(client, fake_capture, monkeypatch):
     answer = resp.json()["answer"]
     assert "截断" in answer
     assert "SCREENSHOT_MAX_TOKENS" in answer
+
+
+# ══════════════════════════════════════════════════════════════
+# 模型不写死：跟随界面选择的模型 / 思考配置
+# ══════════════════════════════════════════════════════════════
+
+
+def test_capture_uses_model_selected_in_ui(client, fake_capture, fake_vision, monkeypatch):
+    """截图必须使用界面选中的模型，而不是写死的默认模型"""
+    import services.llm_client as llm
+
+    class _Models:
+        async def list(self):
+            return types.SimpleNamespace(
+                data=[
+                    types.SimpleNamespace(
+                        id="deepseek-v4-pro",
+                        name="DeepSeek V4 Pro",
+                        input_modalities=["text", "image"],
+                    ),
+                    types.SimpleNamespace(
+                        id="deepseek-flash",
+                        name="DeepSeek Flash",
+                        input_modalities=["text", "image"],
+                    ),
+                ]
+            )
+
+    class _Client:
+        def __init__(self):
+            self.chat = types.SimpleNamespace(completions=_FakeCompletions())
+            self.models = _Models()
+
+    monkeypatch.setattr(llm, "get_client", lambda api_key=None: _Client())
+    _reset_registry()
+
+    resp = client.post(
+        "/screenshot/capture",
+        json={"save": False, "model": "deepseek-v4-pro"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["model"] == "deepseek-v4-pro"
+
+
+def test_capture_rejects_model_without_vision(client, fake_capture, fake_vision):
+    """选中的模型不支持图片输入时，必须明确返回「不支持」，不能发出去让它编答案"""
+    resp = client.post(
+        "/screenshot/capture",
+        json={"save": False, "model": "deepseek-v4-flash"},
+    )
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "不支持图片输入" in detail
+    # 必须给出可用的替代模型，方便用户直接切换
+    assert "deepseek-flash" in detail
+    # 关键：不能真的把图片发出去
+    assert "messages" not in fake_vision
+
+
+def test_capture_rejects_unknown_model(client, fake_capture, fake_vision):
+    """账号下不存在的模型名应被拒绝，并列出可用模型"""
+    resp = client.post(
+        "/screenshot/capture",
+        json={"save": False, "model": "no-such-model"},
+    )
+    assert resp.status_code == 400
+    assert "no-such-model" in resp.json()["detail"]
+    assert "messages" not in fake_vision
+
+
+def test_capture_thinking_config_follows_ui(client, fake_capture, fake_vision):
+    """思考模式与推理强度跟随界面传参（而不是 .env 默认值）"""
+    resp = client.post(
+        "/screenshot/capture",
+        json={
+            "save": False,
+            "thinking_enabled": True,
+            "reasoning_effort": "max",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    extra = fake_vision["extra_body"]
+    assert extra.get("thinking") == {"type": "enabled"}
+    assert extra.get("reasoning_effort") == "max"
+    assert resp.json()["thinking_enabled"] is True
+
+
+def test_capture_thinking_disabled_when_ui_says_so(client, fake_capture, fake_vision):
+    """界面关闭思考时，无论 .env 怎么配都要传 disabled"""
+    resp = client.post(
+        "/screenshot/capture",
+        json={"save": False, "thinking_enabled": False},
+    )
+    assert resp.status_code == 200, resp.text
+    assert fake_vision["extra_body"]["thinking"] == {"type": "disabled"}
+    assert resp.json()["thinking_enabled"] is False
+
+
+# ══════════════════════════════════════════════════════════════
+# 思考强度：low / high / max
+# ══════════════════════════════════════════════════════════════
+
+
+@pytest.mark.parametrize("effort", ["low", "high", "max"])
+def test_capture_accepts_all_three_effort_levels(client, fake_capture, fake_vision, effort):
+    """三档思考强度都要能原样透传给 API"""
+    resp = client.post(
+        "/screenshot/capture",
+        json={"save": False, "thinking_enabled": True, "reasoning_effort": effort},
+    )
+    assert resp.status_code == 200, resp.text
+    assert fake_vision["extra_body"]["reasoning_effort"] == effort
+
+
+@pytest.mark.parametrize(
+    "given,expected",
+    [
+        ("low", "low"),
+        ("high", "high"),
+        ("max", "max"),
+        ("LOW", "low"),
+        ("  high  ", "high"),
+        # 官方映射表里的别名收敛到规范档位
+        ("minimal", "low"),
+        ("medium", "high"),
+        ("xhigh", "high"),
+        ("ultra", "max"),
+        # 未知值回落官方默认档
+        ("bogus", "high"),
+        ("", "high"),
+        (None, "high"),
+    ],
+)
+def test_normalize_effort(given, expected):
+    """思考强度归一化：别名收敛 + 未知值回落 high"""
+    assert sc.normalize_effort(given) == expected
+
+
+def test_capture_normalizes_alias_effort(client, fake_capture, fake_vision):
+    """界面若传来别名（如 minimal），发出去的必须是规范档位 low"""
+    resp = client.post(
+        "/screenshot/capture",
+        json={"save": False, "thinking_enabled": True, "reasoning_effort": "minimal"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert fake_vision["extra_body"]["reasoning_effort"] == "low"
+
+
+def test_capture_low_effort_omitted_when_thinking_off(client, fake_capture, fake_vision):
+    """关闭思考时不应带 reasoning_effort（该参数只在思考模式下有意义）"""
+    resp = client.post(
+        "/screenshot/capture",
+        json={"save": False, "thinking_enabled": False, "reasoning_effort": "low"},
+    )
+    assert resp.status_code == 200, resp.text
+    extra = fake_vision["extra_body"]
+    assert extra["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in extra
+
+
+def test_info_reports_vision_support_for_selected_model(client, monkeypatch):
+    """/screenshot/info 应告知所选模型能否看图"""
+    import services.llm_client as llm
+
+    class _Models:
+        async def list(self):
+            return types.SimpleNamespace(
+                data=[
+                    types.SimpleNamespace(
+                        id="deepseek-flash",
+                        name="DeepSeek Flash",
+                        input_modalities=["text", "image"],
+                    ),
+                    types.SimpleNamespace(
+                        id="deepseek-v4-flash",
+                        name="DeepSeek V4 Flash",
+                        input_modalities=["text"],
+                    ),
+                ]
+            )
+
+    class _Client:
+        def __init__(self):
+            self.chat = types.SimpleNamespace(completions=_FakeCompletions())
+            self.models = _Models()
+
+    monkeypatch.setattr(llm, "get_client", lambda api_key=None: _Client())
+    monkeypatch.setattr(sc, "is_available", lambda: True)
+    _reset_registry()
+
+    resp = client.get("/screenshot/info", params={"model": "deepseek-v4-flash"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["vision_supported"] is False
+    assert "deepseek-flash" in body["vision_models"]
+
+    resp = client.get("/screenshot/info", params={"model": "deepseek-flash"})
+    assert resp.json()["vision_supported"] is True
+
+
+# ══════════════════════════════════════════════════════════════
+# 模型列表：动态获取 + 视觉能力识别
+# ══════════════════════════════════════════════════════════════
+
+
+def test_model_registry_reads_vision_from_api(monkeypatch):
+    """视觉能力来自官方 /models 的 input_modalities，而不是写死的模型名"""
+    import services.llm_client as llm
+    import services.model_registry as registry
+
+    class _Models:
+        async def list(self):
+            return types.SimpleNamespace(
+                data=[
+                    types.SimpleNamespace(
+                        id="brand-new-model",
+                        name="全新模型",
+                        context_window=1_000_000,
+                        max_output_tokens=65_536,
+                        input_modalities=["text", "image"],
+                        effort=types.SimpleNamespace(
+                            supported_levels=["high", "max"], default_level="high"
+                        ),
+                    ),
+                    types.SimpleNamespace(
+                        id="text-only-model",
+                        name="纯文本模型",
+                        input_modalities=["text"],
+                    ),
+                ]
+            )
+
+    class _Client:
+        models = _Models()
+
+    monkeypatch.setattr(llm, "get_client", lambda api_key=None: _Client())
+    registry.invalidate_cache()
+
+    import asyncio
+
+    models = asyncio.run(registry.get_available_models())
+    by_id = {m.id: m for m in models}
+
+    assert set(by_id) == {"brand-new-model", "text-only-model"}
+    assert by_id["brand-new-model"].supports_vision is True
+    assert by_id["brand-new-model"].supports_thinking is True
+    assert by_id["brand-new-model"].name == "全新模型"
+    assert by_id["text-only-model"].supports_vision is False
+    assert "图片" in by_id["brand-new-model"].description
+
+
+def test_model_registry_falls_back_to_env(monkeypatch):
+    """远端不可用时回退到 AVAILABLE_MODELS 配置，不能直接报错"""
+    import services.llm_client as llm
+    import services.model_registry as registry
+
+    class _Models:
+        async def list(self):
+            raise RuntimeError("network unreachable")
+
+    class _Client:
+        models = _Models()
+
+    monkeypatch.setattr(llm, "get_client", lambda api_key=None: _Client())
+    registry.invalidate_cache()
+
+    import asyncio
+
+    models = asyncio.run(registry.get_available_models())
+    assert models, "远端失败时应回退到本地配置"
+    assert all(not m.supports_vision for m in models)
+    assert any("本地配置" in m.description for m in models)
+
+
+def test_models_endpoint_exposes_vision_flag(client, monkeypatch):
+    """GET /chat/models 需带 supports_vision，前端据此标记 🖼"""
+    import services.llm_client as llm
+
+    class _Models:
+        async def list(self):
+            return types.SimpleNamespace(
+                data=[
+                    types.SimpleNamespace(
+                        id="deepseek-flash",
+                        name="DeepSeek Flash",
+                        input_modalities=["text", "image"],
+                    ),
+                    types.SimpleNamespace(
+                        id="deepseek-v4-pro",
+                        name="DeepSeek V4 Pro",
+                        input_modalities=["text"],
+                    ),
+                ]
+            )
+
+    class _Client:
+        models = _Models()
+
+    monkeypatch.setattr(llm, "get_client", lambda api_key=None: _Client())
+    _reset_registry()
+
+    resp = client.get("/chat/models")
+    assert resp.status_code == 200, resp.text
+    by_id = {m["id"]: m for m in resp.json()["models"]}
+    assert by_id["deepseek-flash"]["supports_vision"] is True
+    assert by_id["deepseek-v4-pro"]["supports_vision"] is False

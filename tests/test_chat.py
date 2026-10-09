@@ -6,16 +6,71 @@ import pytest
 
 
 class TestModelsEndpoint:
-    """GET /models — 模型列表"""
+    """GET /models — 模型列表（由后端调用官方 /models 动态获取）"""
 
-    def test_list_models(self, client):
+    def test_list_models(self, client, monkeypatch):
         response = client.get("/chat/models")
         assert response.status_code == 200
         data = response.json()
         assert "models" in data
         assert len(data["models"]) > 0
-        model_ids = [m["id"] for m in data["models"]]
-        assert "deepseek-v4-pro" in model_ids
+
+        # 每个模型都要带视觉能力标记，前端据此决定能否截图答题
+        for m in data["models"]:
+            assert "supports_thinking" in m
+            assert "supports_vision" in m
+
+    def test_list_models_reflects_remote_api(self, client, monkeypatch):
+        """模型列表来自官方接口，而不是代码里写死的清单"""
+        import types
+
+        import services.llm_client as llm
+        from services import model_registry as registry
+
+        class _Models:
+            async def list(self):
+                return types.SimpleNamespace(
+                    data=[
+                        types.SimpleNamespace(
+                            id="some-future-model",
+                            name="未来模型",
+                            input_modalities=["text", "image"],
+                        )
+                    ]
+                )
+
+        class _Client:
+            models = _Models()
+
+        monkeypatch.setattr(llm, "get_client", lambda api_key=None: _Client())
+        registry.invalidate_cache()
+
+        response = client.get("/chat/models?refresh=true")
+        assert response.status_code == 200
+        models = response.json()["models"]
+        assert [m["id"] for m in models] == ["some-future-model"]
+        assert models[0]["supports_vision"] is True
+
+    def test_list_models_falls_back_when_api_unavailable(self, client, monkeypatch):
+        """远端不可用时回退到 AVAILABLE_MODELS，保证界面仍能选模型"""
+        import services.llm_client as llm
+        from services import model_registry as registry
+
+        class _Models:
+            async def list(self):
+                raise RuntimeError("network unreachable")
+
+        class _Client:
+            models = _Models()
+
+        monkeypatch.setattr(llm, "get_client", lambda api_key=None: _Client())
+        registry.invalidate_cache()
+
+        response = client.get("/chat/models?refresh=true")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["models"], "回退列表不能为空"
+        assert body["source"] == "fallback"
 
 
 class TestChatStream:
