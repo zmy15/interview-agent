@@ -72,3 +72,6 @@ hf_cache/
 
 # 截图答题产生的画面（可能含题目/隐私内容，不入库）
 screenshots/
+# ����ʱ��־��STT ����ȣ�
+_stt*.log
+_stt*.err
