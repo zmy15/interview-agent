@@ -66,13 +66,29 @@ def _get_shared_silero():
 
 
 class VADProcessor:
-    """Silero VAD 流式处理器
+    """Silero VAD 流式处理器 —— **只做语音活动检测，不做分块决策**
+
+    职责边界（方案 C 的核心）：
+        本类只回答「此刻有没有人在说话」，并给出**语音区间**的边界事件；
+        「什么时候把音频切一块送去 Whisper」由上层 chunker 决定
+        （见 streaming_transcriber._ChunkBuffer）。
+
+    为什么要把这件事拆出来：
+        早期实现里 VAD 自己带一个 max_speech_duration=30s，到点就
+        **强制 speech_end 并把音频交出去**。这带来两个问题：
+          1. 切点落在任意位置（一段连续语流每 30 秒被剁一刀），
+             很可能把一个词劈成两半；
+          2. 强制切分只挪动计时器、不保留跨切点的音频，
+             切点附近的字直接丢掉。
+        一段 150 秒、中途无长停顿的自我介绍因此被切成 6 段碎片，
+        语义接不上且缺字。VAD 不该有「切多长」的意见。
 
     参数（均可通过环境变量覆盖）：
     - speech_threshold: 语音概率 > 此值判定为语音（默认 0.5）
     - silence_timeout: 连续静默多少秒触发 speech_end（默认 1.0s）
     - min_speech_duration: 最短语音段（默认 0.3s，短于此忽略）
-    - max_speech_duration: 最长语音段（默认 30s，超过强制切分）
+    - pause_hint: 静默到什么程度就发 speech_pause 软事件（默认 0.4s）。
+      它只是**建议**：上层可据此在自然停顿处收块，但缓冲不动、音频不丢。
     """
 
     def __init__(
@@ -83,12 +99,17 @@ class VADProcessor:
         min_speech_duration: float = 0.3,
         max_speech_duration: float = 30.0,
         preroll_seconds: float = 0.3,
+        pause_hint: float = 0.4,
     ):
         self.sample_rate = sample_rate
         self.speech_threshold = speech_threshold
         self.silence_timeout = silence_timeout
         self.min_speech_duration = min_speech_duration
+        # 仅保留为兼容字段：真正的分块上限已交给上层 chunker。
+        # 留在这里是为了让调用方传参不会报错，且便于日志对比。
         self.max_speech_duration = max_speech_duration
+        # 软停顿提示阈值：严格小于 silence_timeout，否则会与断句同时触发。
+        self.pause_hint = min(max(0.0, pause_hint), max(0.0, silence_timeout))
         # 语音起点前保留的音频长度：VAD 需要几帧才能确认「开始说话」，
         # 不留前置缓冲会把第一个字吃掉（听感上就是「断头」）。
         self.preroll_seconds = max(0.0, preroll_seconds)
@@ -102,6 +123,8 @@ class VADProcessor:
         self._speech_start_time: Optional[float] = None
         self._silence_start_time: Optional[float] = None
         self._current_time: float = 0.0
+        # 本次静默是否已发过 speech_pause 软提示（避免每帧重复通知）
+        self._pause_notified: bool = False
 
         # 正在累积的语音段音频
         self._buffer: list[np.ndarray] = []
@@ -222,6 +245,7 @@ class VADProcessor:
                 self._state = VADState.SPEECH
                 self._speech_start_time = ts
                 self._silence_start_time = None
+                self._pause_notified = False
                 self._promote_preroll()
         else:  # SPEECH
             # 注意：不能写 `self._speech_start_time or ts` —— 语音从第 0 秒
@@ -239,10 +263,29 @@ class VADProcessor:
                 if self._silence_start_time is None:
                     self._silence_start_time = ts
                 silence_duration = ts - self._silence_start_time
+
+                # ── 软停顿提示（方案 C）──
+                # 停顿达到 pause_hint 就先告诉上层「这里是个自然停顿」，
+                # 让它有机会在语义完整处收块，而不必等到整句结束。
+                #
+                # 关键：这里**不动 buffer、不改状态**，纯通知。
+                # 早期实现在这一步就把音频切走（强制 speech_end），
+                # 于是 30 秒一到就把连续语流剁成碎片并丢掉切点附近的字。
+                if (
+                    not self._pause_notified
+                    and self.pause_hint > 0
+                    and silence_duration >= self.pause_hint
+                    and speech_duration >= self.min_speech_duration
+                ):
+                    self._pause_notified = True
+                    events.append({"type": "speech_pause", "ts": ts,
+                                   "pending": speech_duration})
+
                 # 静默超时 → 触发 speech_end
                 if silence_duration >= self.silence_timeout:
                     if speech_duration >= self.min_speech_duration:
-                        events.append({"type": "speech_end", "ts": ts})
+                        events.append({"type": "speech_end", "ts": ts,
+                                       "duration": speech_duration})
                         # 关键：保留 buffer，调用方要取走这段音频去转录
                         self._reset(keep_buffer=True)
                     else:
@@ -253,14 +296,16 @@ class VADProcessor:
                         self._reset()
             else:
                 # 仍在说话，清除静默计时
+                # 停顿后重新开口：告知上层「语音继续」，便于 chunker
+                # 决定是接在同一块里还是另起一块。
+                if self._silence_start_time is not None:
+                    self._pause_notified = False
+                    events.append({"type": "speech_resume", "ts": ts})
                 self._silence_start_time = None
 
-                # 强制切分：超过最大语音段长度
-                if speech_duration >= self.max_speech_duration:
-                    events.append({"type": "speech_end", "ts": ts, "forced": True})
-                    # 立即开始新段
-                    self._speech_start_time = ts + 0.1
-                    events.append({"type": "speech_start", "ts": ts + 0.1})
+                # 注意：这里**不再**做 max_speech_duration 强制切分。
+                # 到什么长度该切块是上层 chunker 的事（它会带 overlap
+                # 与跨块上下文），VAD 只负责报告语音仍在持续。
 
         self._current_time += frame_duration
         return events
@@ -334,8 +379,48 @@ class VADProcessor:
         self._state = VADState.SILENCE
         self._speech_start_time = None
         self._silence_start_time = None
+        self._pause_notified = False
         # 前置窗口每次都清：新的一段语音应有自己的起头缓冲，
         # 留着上一段的尾巴会把两句话粘在一起。
         self._preroll = []
         if not keep_buffer:
             self._buffer = []
+
+    # ── 供上层 chunker 使用的区间信息 ──
+
+    def buffered_duration(self) -> float:
+        """当前缓冲里累积的音频秒数（未取走的）"""
+        if not self._buffer:
+            return 0.0
+        return sum(len(f) for f in self._buffer) / self.sample_rate
+
+    def peek_buffer(self) -> np.ndarray:
+        """查看当前缓冲（**不取走、不清空**）。
+
+        chunker 需要在硬上限处「先看后切」：既要取出该出块的音频，
+        又要保留一段 overlap 在缓冲里给下一块用。
+        get_buffer_and_reset 是一次性取走语义，做不到这件事。
+        """
+        if not self._buffer:
+            return np.array([], dtype=np.float32)
+        return np.concatenate(self._buffer)
+
+    def drop_consumed_prefix(self, n_samples: int) -> None:
+        """从缓冲头部丢弃已消费的 n_samples（用于只取走一部分）。"""
+        if n_samples <= 0 or not self._buffer:
+            return
+        remaining = n_samples
+        while self._buffer and remaining > 0:
+            head = self._buffer[0]
+            if len(head) <= remaining:
+                remaining -= len(head)
+                self._buffer.pop(0)
+            else:
+                self._buffer[0] = head[remaining:]
+                remaining = 0
+
+    def seed_buffer(self, audio: np.ndarray) -> None:
+        """把一段音频放回缓冲头部（用于硬切后保留 overlap）"""
+        if audio is None or len(audio) == 0:
+            return
+        self._buffer.insert(0, np.asarray(audio, dtype=np.float32))

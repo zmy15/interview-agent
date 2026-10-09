@@ -75,6 +75,17 @@ STT_MODEL = _cfg.model
 STT_DEVICE = _cfg.device
 STT_COMPUTE_TYPE = _cfg.compute_type
 VAD_SILENCE_TIMEOUT = _cfg.vad_silence_timeout
+CHUNK_MAX_SECONDS = _cfg.chunk_max_seconds
+CHUNK_OVERLAP_SECONDS = _cfg.chunk_overlap_seconds
+CHUNK_CONTEXT_CHARS = _cfg.chunk_context_chars
+
+# 分块参数的单一来源：两处构造 StreamingTranscriber（WebSocket 每连接一个）
+# 都必须传同一套值，否则「单例预热」与「实际会话」行为不一致。
+_CHUNK_KWARGS = dict(
+    chunk_max_seconds=CHUNK_MAX_SECONDS,
+    chunk_overlap_seconds=CHUNK_OVERLAP_SECONDS,
+    chunk_context_chars=CHUNK_CONTEXT_CHARS,
+)
 
 # ── 应用 ──
 app = FastAPI(title="STT Service", version="1.0.0")
@@ -129,6 +140,7 @@ def get_transcriber() -> StreamingTranscriber:
                 device=STT_DEVICE,
                 compute_type=STT_COMPUTE_TYPE,
                 silence_timeout=VAD_SILENCE_TIMEOUT,
+                **_CHUNK_KWARGS,
             )
             _transcriber._ensure_model()
             _model_loaded = True
@@ -283,6 +295,7 @@ async def websocket_stream(ws: WebSocket):
             device=STT_DEVICE,
             compute_type=STT_COMPUTE_TYPE,
             silence_timeout=VAD_SILENCE_TIMEOUT,
+            **_CHUNK_KWARGS,
             on_partial=lambda text: asyncio.create_task(
                 ws.send_json({"type": "partial", "text": text})
             ),

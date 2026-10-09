@@ -45,9 +45,32 @@ class STTConfig:
     device: str
     compute_type: str
     vad_silence_timeout: float
+    # ── 分块参数（方案 C：VAD 断句与 Whisper 分块解耦）──
+    chunk_max_seconds: float
+    chunk_overlap_seconds: float
+    chunk_context_chars: int
 
     def describe(self) -> str:
-        return f"model={self.model} device={self.device} compute={self.compute_type}"
+        return (
+            f"model={self.model} device={self.device} compute={self.compute_type} "
+            f"chunk<= {self.chunk_max_seconds}s overlap={self.chunk_overlap_seconds}s"
+        )
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        logger.warning("%s 不是合法数字，回退默认值 %s", name, default)
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        logger.warning("%s 不是合法整数，回退默认值 %s", name, default)
+        return default
 
 
 def load_config() -> STTConfig:
@@ -56,16 +79,25 @@ def load_config() -> STTConfig:
     model = os.getenv("STT_MODEL", "base").strip() or "base"
     compute = resolve_compute_type(device, os.getenv("STT_COMPUTE_TYPE", ""))
 
-    try:
-        silence = float(os.getenv("VAD_SILENCE_TIMEOUT", "1.0"))
-    except ValueError:
-        silence = 1.0
+    silence = _env_float("VAD_SILENCE_TIMEOUT", 1.0)
+
+    # 分块上限（兜底）：语音连续不停时最多攒这么久。
+    # 默认 25s：一段正常的中文长回答（自我介绍 2~3 分钟）中途总有换气，
+    # 因此绝大多数块会在自然停顿处收，这个上限只在极连续语流时兜底。
+    chunk_max = _env_float("STT_CHUNK_MAX_SECONDS", 25.0)
+    # 硬切时的重叠：保证切点附近的字不被劈掉（配合文本层去重）
+    chunk_overlap = _env_float("STT_CHUNK_OVERLAP_SECONDS", 0.5)
+    # 跨块上下文长度（字符）：注入上一块尾部文本作为 prompt 补充
+    chunk_ctx = _env_int("STT_CHUNK_CONTEXT_CHARS", 120)
 
     cfg = STTConfig(
         model=model,
         device=device,
         compute_type=compute,
         vad_silence_timeout=silence,
+        chunk_max_seconds=chunk_max,
+        chunk_overlap_seconds=chunk_overlap,
+        chunk_context_chars=chunk_ctx,
     )
     logger.info("STT 配置: %s", cfg.describe())
 
