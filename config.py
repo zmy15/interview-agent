@@ -11,6 +11,12 @@ load_dotenv()
 _hf_endpoint = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 os.environ["HF_ENDPOINT"] = _hf_endpoint
 
+# 禁用 Xet 存储后端（新版 huggingface_hub 默认启用）。
+# Xet 的权重下载走 cas-bridge.xethub.hf.co，该域名不受 HF_ENDPOINT 影响，
+# 在国内会卡死：元数据请求全部 200，但权重文件停在 0 字节。
+# 实测同一条 1.5GB 模型：启用 Xet 时 30 秒 0 MB；禁用后 146 秒完成。
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
 _hf_home = os.getenv("HF_HOME", os.path.join(os.path.dirname(__file__), "hf_cache"))
 os.environ["HF_HOME"] = _hf_home
 os.makedirs(_hf_home, exist_ok=True)

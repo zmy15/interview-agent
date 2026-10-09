@@ -13,9 +13,45 @@ import sys
 import tempfile
 from typing import Optional
 
-# ── HuggingFace 镜像（必须在任何 HF 导入之前设置） ──
+# ── 加载项目根目录的 .env ──
+#
+# 为什么必须显式加载：
+#   本服务是**独立进程**，主进程的 load_dotenv() 管不到它。
+#   此前它只读环境变量，导致 .env 里的 STT_MODEL 等设置
+#   完全无效 —— 实际总在用代码里的默认值 base，
+#   而 start.bat 只传递 STT_DEVICE，用户改 .env 看不出任何效果。
+#
+#   环境变量优先于 .env（load_dotenv 默认不覆盖已有变量），
+#   这样 start.bat / Docker 传入的值仍然说了算。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_HERE)
+try:
+    from dotenv import load_dotenv
+
+    # 同时尝试项目根与当前工作目录，覆盖两种启动方式
+    for _candidate in (
+        os.path.join(_PROJECT_ROOT, ".env"),
+        os.path.join(os.getcwd(), ".env"),
+    ):
+        if os.path.isfile(_candidate):
+            load_dotenv(_candidate, override=False)
+            break
+except ImportError:  # pragma: no cover
+    pass
+
+# ── HuggingFace 镜像与下载通道（必须在任何 HF 导入之前设置） ──
+#
+# HF_ENDPOINT：国内直连 huggingface.co 会超时，用镜像站。
+#
+# HF_HUB_DISABLE_XET：**必须**禁用，否则模型下载会卡死。
+#   huggingface_hub 新版默认走 Xet 存储后端，权重文件从
+#   cas-bridge.xethub.hf.co 下载 —— 该域名**不受 HF_ENDPOINT 影响**，
+#   在国内表现为「元数据请求全部 200，但 model.bin 停在 0 字节」。
+#   实测：启用 Xet 时 30 秒下载 0 MB；禁用后同一条 1.5GB 的模型
+#   146 秒下载完成（约 10 MB/s，走 hf-mirror）。
 _hf_endpoint = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 os.environ["HF_ENDPOINT"] = _hf_endpoint
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 import numpy as np
 from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
@@ -24,6 +60,7 @@ from fastapi.responses import JSONResponse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from streaming_transcriber import StreamingTranscriber, preload_shared_models
 from zh_convert import to_simplified
+from stt_config import load_config
 
 # ── 日志 ──
 logging.basicConfig(
@@ -32,11 +69,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("stt_service")
 
-# ── 配置（环境变量） ──
-STT_MODEL = os.getenv("STT_MODEL", "base")
-STT_DEVICE = os.getenv("STT_DEVICE", "cpu")
-STT_COMPUTE_TYPE = os.getenv("STT_COMPUTE_TYPE", "auto")
-VAD_SILENCE_TIMEOUT = float(os.getenv("VAD_SILENCE_TIMEOUT", "1.0"))
+# ── 配置（环境变量 + .env，解析逻辑见 stt_config.py） ──
+_cfg = load_config()
+STT_MODEL = _cfg.model
+STT_DEVICE = _cfg.device
+STT_COMPUTE_TYPE = _cfg.compute_type
+VAD_SILENCE_TIMEOUT = _cfg.vad_silence_timeout
 
 # ── 应用 ──
 app = FastAPI(title="STT Service", version="1.0.0")
@@ -62,12 +100,19 @@ async def _preload_models():
     def _work():
         global _preload_done, _model_loaded, _model_error
         try:
-            preload_shared_models(STT_MODEL, STT_DEVICE, STT_COMPUTE_TYPE)
-            _model_loaded = True
-            logger.info("模型预热完成，连接将立即可用")
+            # preload 返回是否真的成功 —— 它内部会吞掉异常并逐个记录，
+            # 不能只看「有没有抛异常」就认定就绪。
+            ready = preload_shared_models(STT_MODEL, STT_DEVICE, STT_COMPUTE_TYPE)
+            _model_loaded = bool(ready)
+            if ready:
+                logger.info("模型预热完成，连接将立即可用")
+            else:
+                _model_error = "模型预热未完成（详见上方日志）"
+                logger.warning("模型预热未全部完成，首个连接时会重试")
         except Exception as exc:
+            _model_loaded = False
             _model_error = str(exc)
-            logger.error("模型预热失败（首个连接时会重试）: %s", exc)
+            logger.error("预热过程异常（首个连接时会重试）: %s", exc)
         finally:
             _preload_done = True
 

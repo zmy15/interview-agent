@@ -54,17 +54,29 @@ def get_shared_whisper(model_size: str, device: str, compute_type: str):
         return model
 
 
-def preload_shared_models(model_size: str, device: str, compute_type: str) -> None:
-    """预热共享模型（供启动时调用，让首个连接也无需等待）"""
+def preload_shared_models(model_size: str, device: str, compute_type: str) -> bool:
+    """预热共享模型（供启动时调用，让首个连接也无需等待）。
+
+    返回**是否全部成功**。调用方必须据此判断状态：
+    早期实现内部吞掉异常、调用方无条件认为成功，导致
+    Whisper 下载失败时 /health 仍报 ok，前端以为可用，
+    实际首个连接才去下载并可能再次失败。
+    """
+    ok = True
+
     try:
         get_shared_whisper(model_size, device, compute_type)
-    except Exception as exc:  # pragma: no cover
+    except Exception as exc:
+        ok = False
         logger.error("预热 Whisper 失败（首个连接时会重试）: %s", exc)
 
     try:
         VADProcessor(sample_rate=16000)._ensure_model()
-    except Exception as exc:  # pragma: no cover
+    except Exception as exc:
+        ok = False
         logger.error("预热 Silero VAD 失败（首个连接时会重试）: %s", exc)
+
+    return ok
 
 
 class StreamingTranscriber:
@@ -89,6 +101,39 @@ class StreamingTranscriber:
     # 低于此 RMS 的片段视为静音，直接跳过转录。
     # 0.002 ≈ -54dBFS：正常说话约 0.02 以上，这里只挡「接近纯静音」。
     SILENCE_RMS_FLOOR = 0.002
+
+    # Whisper 在静音/低信噪比片段上的**训练集幻觉**。
+    #
+    # 它的语料主要来自带字幕的视频，于是会复读那些字幕套话。
+    # 实测 large-v3-turbo 比 base 更容易触发，且内容与面试完全无关。
+    # 整段匹配用 HALLUCINATION_PATTERNS，句内剔除用 HALLUCINATION_SPANS。
+    HALLUCINATION_PATTERNS = (
+        "请不吝点赞 订阅 转发 打赏支持明镜与点点栏目",
+        "请不吝点赞订阅转发打赏支持明镜与点点栏目",
+        "字幕由 amara.org 社区提供",
+        "字幕志愿者 李宗盛",
+        "字幕志愿者",
+        "MING PAO CANADA",
+        "由 amara.org 社区提供",
+        "谢谢大家观看",
+        "感谢观看",
+    )
+
+    # 句内出现这些子串时，从该处截断（后面的内容都是幻觉）。
+    # 注意要包含完整的引导语：只写 "amara.org" 会留下前面的
+    # "字幕由" 三个字（实测），反而制造出半截垃圾文本。
+    HALLUCINATION_SPANS = (
+        "请不吝点赞",
+        "订阅 转发",
+        "打赏支持",
+        "明镜与点点",
+        "字幕由 amara.org",
+        "amara.org",
+        "字幕志愿者",
+        "MING PAO",
+        "谢谢大家观看",
+        "感谢观看",
+    )
 
     def __init__(
         self,
@@ -246,11 +291,15 @@ class StreamingTranscriber:
             for segment in segments:
                 # Whisper 中文默认输出繁体，这里先转简体。
                 segment_texts.append(to_simplified(segment.text))
-                # partial 输出「本段已识别的内容」（不跨段累积）：
-                # 累积会让前一句在后续每次推送里重复出现。
-                partial = "".join(segment_texts).strip()
-                if partial and self.on_partial:
-                    self.on_partial(partial)
+
+            # 先过滤（提示词泄漏 + 训练集幻觉），再推送 partial。
+            # 顺序很重要：早期实现先推 partial 后过滤，
+            # 幻觉与泄漏会抢先出现在前端，再也收不回来。
+            new_text = self._strip_prompt_leak(
+                self._strip_hallucination_spans("".join(segment_texts).strip())
+            )
+            if new_text and self.on_partial:
+                self.on_partial(new_text)
 
             # 本段最终文本。
             #
@@ -258,8 +307,6 @@ class StreamingTranscriber:
             # 早期实现把 _full_text（跨断句不断累积）当 final 推送，
             # 于是第二句话的 final = "第一句话 + 第二句话"，
             # 前端表现为「第二次的内容和第一次连在一起且重复」。
-            new_text = "".join(segment_texts).strip()
-            new_text = self._strip_prompt_leak(new_text)
             if new_text:
                 # _full_text 仅用于 flush 时取回整场文本，不参与推送
                 self._full_text += new_text
@@ -295,12 +342,22 @@ class StreamingTranscriber:
         return self._rms(audio) >= self.SILENCE_RMS_FLOOR
 
     def _strip_prompt_leak(self, text: str) -> str:
-        """去掉因 initial_prompt 泄漏而出现在结果里的提示词。
+        """过滤两类「非用户语音」的输出：提示词泄漏 + Whisper 幻觉。
 
-        静音/噪声片段上 Whisper 会把 initial_prompt 当内容输出
-        （实测得到 '。。。。。。。。' 或 '请使用简体中文并加上标'）。
-        能量门限已经挡掉大部分，这里对漏网的做一次文本层兜底：
-        若整段结果就是提示词本身（或其片段），直接丢弃。
+        一、提示词泄漏
+            静音片段上 Whisper 会把 initial_prompt 当内容输出
+            （实测 '。。。。。。。。' 或 '请使用简体中文并加上标'）。
+
+        二、训练集幻觉
+            Whisper 的语料主要来自带字幕的视频，在静音/低信噪比片段上
+            会吐出固定的套话。实测 large-v3-turbo 比 base **更容易**触发：
+                请不吝点赞 订阅 转发 打赏支持明镜与点点栏目
+                字幕由 amara.org 社区提供
+            这类内容与面试毫无关系，必须丢掉，否则会污染对话。
+
+        注意这里只做「整段匹配」判断：若幻觉混在正常句子中间
+        （如 '那天选者，请不吝点赞 订阅 转发...'），
+        整段不等于幻觉模板，需由 _strip_hallucination_spans 处理。
         """
         if not text:
             return text
@@ -311,13 +368,45 @@ class StreamingTranscriber:
                 logger.debug("丢弃纯标点结果（疑似提示词泄漏）: %r", text)
                 return ""
 
-        # 结果落在提示词的任意片段里 → 判定为泄漏
         compact = text.replace(" ", "")
+
+        # 结果落在提示词的任意片段里 → 判定为泄漏
         if len(compact) >= 4 and compact in self._prompt_compact:
             logger.debug("丢弃提示词泄漏: %r", text)
             return ""
 
+        # 整段就是某个幻觉模板
+        for pattern in self.HALLUCINATION_PATTERNS:
+            if compact == pattern.replace(" ", ""):
+                logger.debug("丢弃幻觉文本: %r", text)
+                return ""
+
         return text
+
+    def _strip_hallucination_spans(self, text: str) -> str:
+        """从句子中间剔除幻觉片段。
+
+        实测 large-v3-turbo 会把它接在正常内容后面：
+            '那天选者，请不吝点赞 订阅 转发 打赏支持明镜与点点栏目'
+        整段不等于模板，但其中有明确的幻觉子串，截掉即可。
+
+        注意结尾处理：截断后常留下一个悬空的逗号（'那天选者，'），
+        要把**连接性标点**去掉；但句号/问号是正常的句末标点
+        （'鼠标的天选我们。'），不能一起 strip 掉，否则会把
+        正常的句号吃掉。
+        """
+        if not text:
+            return text
+
+        cleaned = text
+        for pattern in self.HALLUCINATION_SPANS:
+            idx = cleaned.find(pattern)
+            if idx >= 0:
+                logger.debug("剔除句内幻觉片段 %r（原文 %r）", pattern, cleaned)
+                cleaned = cleaned[:idx]
+
+        # 只去连接性标点，保留句末标点
+        return cleaned.strip().rstrip("，,、；;：: ")
 
     def reset(self):
         """重置会话（新录音开始前调用）"""
