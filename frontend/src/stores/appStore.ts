@@ -4,6 +4,14 @@ import type { UploadRecord, VoiceMode } from '@/types'
 
 export type UploadType = 'resume' | 'code' | 'project'
 
+/**
+ * 侧边栏显示模式：
+ *   expanded  —— 完整显示（图标 + 文字）
+ *   collapsed —— 收成窄条，只留图标（antd Sider 的默认折叠行为，hover 有提示）
+ *   hidden    —— 完全隐藏，内容区占满整屏（适合做题/演示时腾出横向空间）
+ */
+export type SiderMode = 'expanded' | 'collapsed' | 'hidden'
+
 interface AppState {
   highlightCode: boolean
   apiKey: string
@@ -31,6 +39,9 @@ interface AppState {
   systemAudioListening: boolean
   systemAudioSttConnected: boolean
   systemAudioError: string | null
+
+  /** 侧边栏是否收起（只看图标）/ 完全隐藏 —— 由 MainLayout 读取 */
+  siderMode: SiderMode
 
   toggleHighlightCode: () => void
   setApiKey: (key: string) => void
@@ -60,6 +71,12 @@ interface AppState {
     sttConnected: boolean
     error: string | null
   }) => void
+
+  // 侧边栏 actions
+  setSiderMode: (mode: SiderMode) => void
+  /** 在 expanded ↔ collapsed 之间切换；hidden 时切回 expanded */
+  toggleSiderCollapsed: () => void
+  toggleSiderHidden: () => void
 }
 
 export const useAppStore = create<AppState>()(
@@ -80,12 +97,14 @@ export const useAppStore = create<AppState>()(
       autoPlayTTS: false,
       ttsSpeed: 1.0,
 
-      systemAudioEnabled: false,
+      systemAudioEnabled: true,
       systemAudioDevice: '',
       systemAudioAutoAsk: true,
       systemAudioListening: false,
       systemAudioSttConnected: false,
       systemAudioError: null,
+
+      siderMode: 'expanded',
 
       toggleHighlightCode: () =>
         set((state) => ({ highlightCode: !state.highlightCode })),
@@ -218,9 +237,35 @@ export const useAppStore = create<AppState>()(
           systemAudioSttConnected: sttConnected,
           systemAudioError: error,
         }),
+
+      setSiderMode: (mode) => set({ siderMode: mode }),
+      toggleSiderCollapsed: () =>
+        set((state) => ({
+          // 隐藏状态下按折叠键，语义上更接近「先出来，且是完整显示」
+          siderMode: state.siderMode === 'expanded' ? 'collapsed' : 'expanded',
+        })),
+      toggleSiderHidden: () =>
+        set((state) => ({
+          siderMode: state.siderMode === 'hidden' ? 'expanded' : 'hidden',
+        })),
     }),
     {
       name: 'interview-agent-app-prefs',
+      // 存储版本号。改动默认值时**必须**递增，并写对应的 migrate：
+      // zustand persist 会用 localStorage 里的旧值覆盖新默认值，
+      // 因此不升版本的话，老用户永远看不到「默认开启」的效果
+      // （他们的存储里写着 systemAudioEnabled: false）。
+      version: 2,
+      migrate: (persisted: unknown, from: number) => {
+        const state = (persisted ?? {}) as Record<string, unknown>
+        if (from < 2) {
+          // v1 → v2：系统音频监听改为默认开启。
+          // 这里刻意覆盖为 true，而不是保留旧值 —— 这正是本次升级的目的；
+          // 若用户不想要，在设置里关掉即可（之后会正常持久化）。
+          state.systemAudioEnabled = true
+        }
+        return state
+      },
       partialize: (state) => ({
         highlightCode: state.highlightCode,
         apiKey: state.apiKey,
@@ -238,6 +283,7 @@ export const useAppStore = create<AppState>()(
         systemAudioEnabled: state.systemAudioEnabled,
         systemAudioDevice: state.systemAudioDevice,
         systemAudioAutoAsk: state.systemAudioAutoAsk,
+        siderMode: state.siderMode,
       }),
     },
   ),
