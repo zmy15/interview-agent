@@ -45,7 +45,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from config import settings
-from routers import chat, upload, interview, position, knowledge, auth, sessions, analytics, question_bank
+from routers import chat, upload, interview, position, knowledge, auth, sessions, analytics, question_bank, screenshot
 
 # ============ 日志配置 ============
 
@@ -182,6 +182,13 @@ app.include_router(sessions.router)      # 会话历史
 app.include_router(analytics.router)     # 分析仪表盘
 app.include_router(question_bank.router) # 题库管理
 
+# ── 条件注册截图识别路由（Windows 专用；默认开启，可用 .env 关闭） ──
+if settings.SCREENSHOT_ENABLED:
+    app.include_router(screenshot.router)
+    logger.info("📷 截图识别路由已注册")
+else:
+    logger.info("📷 截图识别路由已关闭（SCREENSHOT_ENABLED=false）")
+
 # ── 条件注册语音路由（默认关闭，需 .env 中启用） ──
 if settings.VOICE_ENABLED or settings.STT_ENABLED:
     try:
@@ -254,6 +261,9 @@ if _HAS_FRONTEND:
     app.include_router(sessions.router, prefix="/api")
     app.include_router(analytics.router, prefix="/api")
     app.include_router(question_bank.router, prefix="/api")
+
+    if settings.SCREENSHOT_ENABLED:
+        app.include_router(screenshot.router, prefix="/api")
 
     # 挂载静态资源（JS/CSS/图片等）
     if os.path.isdir(os.path.join(FRONTEND_DIST, "assets")):

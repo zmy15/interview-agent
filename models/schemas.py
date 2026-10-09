@@ -215,3 +215,45 @@ class KnowledgeSearchResponse(BaseModel):
 
 class KnowledgeDeleteRequest(BaseModel):
     position_name: str
+
+
+# ============ 截图识别 ============
+
+class MonitorItem(BaseModel):
+    """截图目标显示器（本项目固定为主显示器）"""
+    id: str            # "primary"
+    name: str          # 展示名，如「主显示器（2560×1440）」
+    x: int
+    y: int
+    width: int
+    height: int
+
+
+class ScreenshotInfoResponse(BaseModel):
+    """截图能力与显示器信息"""
+    available: bool                  # 截图功能是否可用
+    error: Optional[str] = None      # 不可用时的原因
+    monitors: list[MonitorItem] = []
+    vision_model: Optional[str] = None  # 当前配置/解析到的视觉模型
+
+
+class CaptureRequest(BaseModel):
+    """主显示器截图并识别"""
+    include_cursor: bool = False     # 是否把鼠标光标画进截图
+    prompt: Optional[str] = None     # 自定义提问，为空则用 prompts/screenshot.txt
+    model: Optional[str] = None      # 覆盖视觉模型
+    api_key: Optional[str] = None    # 前端传入的 Key，覆盖 .env
+    save: Optional[bool] = None      # 是否保存到磁盘，覆盖 settings.SCREENSHOT_SAVE
+
+
+class CaptureResponse(BaseModel):
+    """截图识别结果"""
+    answer: str                      # 模型回答（Markdown）
+    model: str                       # 实际使用的模型
+    monitor: str = "primary"         # 截取目标（固定主显示器）
+    width: int                       # 捕获到的原始尺寸
+    height: int
+    image_bytes: int                 # 编码后大小（PNG 字节数）
+    image_path: Optional[str] = None # 保存路径（未保存则为空）
+    elapsed_ms: int                  # 端到端耗时
+    captured_at: str                 # ISO 时间戳

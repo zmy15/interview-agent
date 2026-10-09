@@ -25,6 +25,8 @@ import {
   ClockCircleOutlined,
   PlayCircleOutlined,
   PauseCircleOutlined,
+  CameraOutlined,
+  LoadingOutlined,
 } from '@ant-design/icons'
 import { useChatStore } from '@/stores/chatStore'
 import { useAppStore } from '@/stores/appStore'
@@ -39,6 +41,12 @@ import { CodeOutlined, BookOutlined } from '@ant-design/icons'
 import { questionBankApi, type QuestionItem } from '@/api/questionBank'
 import VoiceInputPanel from '@/components/VoiceInputPanel'
 import { useVoiceAvailability } from '@/hooks/useVoiceAvailability'
+import { screenshotApi } from '@/api/screenshot'
+import {
+  isDesktopWindow,
+  getWindowState,
+  setCaptureExclude,
+} from '@/api/windowControl'
 
 const { TextArea } = Input
 const { Text } = Typography
@@ -91,6 +99,7 @@ const ChatPage: React.FC = () => {
     questionBankMode,
     setQuestionBankIds,
     setQuestionBankMode,
+    addMessage,
   } = useChatStore()
 
   const { message } = App.useApp()
@@ -103,6 +112,10 @@ const ChatPage: React.FC = () => {
   const [promptEditorOpen, setPromptEditorOpen] = useState(false)
   const [apiKeyModalOpen, setApiKeyModalOpen] = useState(false)
   const [apiKeyInput, setApiKeyInput] = useState(apiKey)
+
+  // 截图答题：截图期间禁用按钮，并显示已用秒数
+  const [capturing, setCapturing] = useState(false)
+  const [captureElapsed, setCaptureElapsed] = useState(0)
 
   // 用于追踪上一轮 AI 的提问内容（配对 QA 记录）
   const lastAIQuestionRef = useRef<string>('')
@@ -192,6 +205,77 @@ const ChatPage: React.FC = () => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
+    }
+  }
+
+  /**
+   * 截图答题：抓取整个屏幕，交给视觉模型识别题目并作答，
+   * 结果作为一条普通 assistant 消息插入当前对话（与 AI 回复同样渲染）。
+   */
+  const handleScreenshot = async () => {
+    if (capturing || isStreaming) return
+
+    setCapturing(true)
+    setCaptureElapsed(0)
+    const startedAt = Date.now()
+    const timer = setInterval(() => {
+      setCaptureElapsed(Math.floor((Date.now() - startedAt) / 1000))
+    }, 200)
+
+    // 记录用户触发的动作，让对话上下文更清晰
+    addMessage({
+      role: 'user',
+      content: `📷 截图答题${inputValue.trim() ? `：${inputValue.trim()}` : ''}`,
+    })
+
+    try {
+      // 截图前把自己从屏幕捕获中排除：本应用也是屏幕上的一个窗口，
+      // 否则整屏截图会把自己拍进去（画面里只有本应用，毫无意义）。
+      //
+      // 独立窗口模式（desktop.py）下窗口由本进程创建，
+      // SetWindowDisplayAffinity 能真正生效；浏览器里则退化为无操作。
+      const state = isDesktopWindow() ? await getWindowState() : null
+      const wasExcluded = state?.capture_exclude ?? true
+      if (state?.ok && !wasExcluded) {
+        await setCaptureExclude(true)
+      }
+      // 等一帧，让窗口管理器完成重绘后再抓屏
+      await new Promise((r) => setTimeout(r, 260))
+
+      let res
+      try {
+        res = await screenshotApi.capture({
+          // 把输入框内容作为附加要求；为空则用后端内置提示词
+          prompt: inputValue.trim() || undefined,
+          api_key: apiKey || undefined,
+        })
+      } finally {
+        // 恢复用户原本的捕获排除设置，不改变他的窗口行为
+        if (state?.ok && !wasExcluded) {
+          await setCaptureExclude(false)
+        }
+      }
+
+      const meta =
+        `> 📷 屏幕截图 · ${res.width}×${res.height} · ` +
+        `${(res.elapsed_ms / 1000).toFixed(1)}s · 模型 \`${res.model}\``
+
+      addMessage({ role: 'assistant', content: `${meta}\n\n${res.answer}` })
+      setInputValue('')
+      setAutoScroll(true)
+      message.success(`识别完成（${(res.elapsed_ms / 1000).toFixed(1)}s）`)
+    } catch (err) {
+      const detail = (err as Error).message || '截图识别失败'
+      // 失败也写进对话，避免用户以为按钮没反应
+      addMessage({
+        role: 'assistant',
+        content: `> ⚠️ 截图识别失败\n\n${detail}`,
+      })
+      message.error(detail)
+    } finally {
+      clearInterval(timer)
+      setCapturing(false)
+      setCaptureElapsed(0)
     }
   }
 
@@ -797,8 +881,8 @@ const ChatPage: React.FC = () => {
           onKeyDown={handleKeyDown}
           placeholder={
             selectedMode === 'interviewer'
-              ? '你是面试官，输入你的提问... (Enter 发送, Shift+Enter 换行)'
-              : '你是求职者，输入你的回答... (Enter 发送, Shift+Enter 换行)'
+              ? '你是面试官，输入你的提问... (Enter 发送, Shift+Enter 换行)｜点「截图」可识别屏幕上的题目'
+              : '你是求职者，输入你的回答... (Enter 发送, Shift+Enter 换行)｜点「截图」可识别屏幕上的题目'
           }
           autoSize={{ minRows: 1, maxRows: 5 }}
           disabled={isStreaming}
@@ -824,6 +908,24 @@ const ChatPage: React.FC = () => {
             发送
           </Button>
         )}
+
+        {/* 截图答题：抓取整个屏幕，交给视觉模型识别题目并作答 */}
+        <Tooltip
+          title={
+            capturing
+              ? '正在截图并识别…'
+              : '截取主显示器画面，AI 提取题目并作答（结果直接显示在对话中）'
+          }
+        >
+          <Button
+            icon={capturing ? <LoadingOutlined /> : <CameraOutlined />}
+            onClick={handleScreenshot}
+            disabled={capturing || isStreaming}
+            style={{ height: 40 }}
+          >
+            {capturing ? `${captureElapsed}s` : '截图'}
+          </Button>
+        </Tooltip>
       </div>
 
       {/* Prompt 编辑器弹窗 */}

@@ -27,3 +27,10 @@ bcrypt==4.0.1
 # 独立窗口模式（desktop.py）所需的原生窗口（Edge WebView2 内核）
 # 未安装时会自动回退到系统浏览器 --app 窗口模式
 pywebview>=5.0
+
+# 截图答题（services/screen_capture.py + AI 对话页的「截图」按钮）
+# windows-capture：Rust 实现，基于 Windows Graphics Capture，
+# 按显示器捕获，是整屏截图的捕获后端。仅支持 Windows。
+# 安装时会一并带上 numpy 与 opencv-python。
+windows-capture>=2.0.1
+pillow>=10.0.0

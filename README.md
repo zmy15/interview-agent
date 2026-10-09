@@ -54,6 +54,7 @@ Interview Agent 是一个基于大语言模型的 AI 模拟面试平台，支持
 - 🔊 **语音朗读 (TTS)** — AI 回复一键朗读，Piper TTS 中文语音合成
 - 🎛️ **灵活语音开关** — 启动时可选择 CPU/GPU，Docker Profile 按需启用，默认关闭零影响
 - 🖥️ **现代化 UI** — React + Ant Design 6，响应式布局
+- 📷 **截图答题** — AI 对话页一键截取**主显示器**画面，DeepSeek 视觉模型提取题目并在对话中直接作答（基于 windows-capture）
 - 🐳 **一键部署** — 支持本地脚本 / Docker Compose / 单容器三种启动方式
 
 ---
@@ -376,10 +377,12 @@ interview-agent/
 │   ├── interview.py         #   面试控制（开始/停止/报告/计划）
 │   ├── position.py          #   岗位管理
 │   ├── upload.py            #   文件上传
-│   └── knowledge.py         #   知识库管理
+│   ├── knowledge.py         #   知识库管理
+│   └── screenshot.py        #   截图识别（WGC 抓屏 + 视觉答题）
 │
 ├── services/                # 业务逻辑
 │   ├── llm_client.py        #   DeepSeek 客户端
+│   ├── screen_capture.py    #   WGC 窗口捕获 + 图像编码 + 视觉调用
 │   ├── vector_store.py      #   LangChain FAISS 向量存储
 │   ├── rag_pipeline.py      #   LCEL RAG 检索管线
 │   ├── chunker.py           #   文档分块
@@ -510,8 +513,59 @@ interview-agent/
 | 知识库 | `GET` | `/knowledge/collections` | 列出知识库 |
 | 知识库 | `DELETE` | `/knowledge/{name}` | 删除知识库 |
 | 知识库 | `POST` | `/knowledge/search` | 向量检索 |
+| 截图 | `GET` | `/screenshot/windows` | 列出可捕获的窗口 |
+| 截图 | `POST` | `/screenshot/capture` | 截取窗口画面并交给视觉模型识别作答 |
 
 > 完整 API 文档：启动后访问 **http://localhost:8000/docs** (Swagger) 或 **/redoc**
+
+---
+
+## 📷 截图答题
+
+在 **AI 对话页**底部输入框右侧有一个 **「截图」** 按钮：点击后自动截取**主显示器**画面，交给 DeepSeek 视觉模型提取题目并作答，**回答直接显示在对话里**（与普通 AI 回复一样渲染 Markdown 与代码高亮）。
+
+### 实现说明
+
+截图基于 **[windows-capture](https://pypi.org/project/windows-capture/)**（Rust 实现，底层为 Windows Graphics Capture）：
+
+- 该库是**显示器维度**的捕获接口，`monitor_index` **从 1 开始**（`1` = 主显示器；传 `0` 会被库拒绝）；
+- 本项目**固定截取主显示器**，不做多屏拼接 —— 拼接需要每块屏的精确位置与尺寸，而该库只提供按显示器捕获，拿不到布局信息（早前按坐标估算拼接的实现，在副屏比主屏高时会裁掉副屏底部）；
+- 鼠标光标由库的 `cursor_capture` 原生支持。
+
+> 说明：项目早期版本曾用 `wgc-python`（只能**按窗口**捕获，无法整屏），也试过 GDI `BitBlt`，现统一使用 `windows-capture`。
+
+### 前置条件
+
+| 项目 | 要求 |
+|------|------|
+| 操作系统 | Windows 10 2004 (build 19041) 及以上 |
+| Python 依赖 | `pip install windows-capture` |
+| 模型 | 需支持图片输入，默认 `deepseek-flash` |
+
+> ⚠️ **务必使用支持视觉的模型。** 纯文本模型（如 `deepseek-v4-flash`）不具备视觉能力，把图片发给它**不会报错**，而是忽略图片并编造一个看似合理的答案。可通过 `SCREENSHOT_VISION_MODEL` 指定；若该模型不可用，接口会明确报错而不是返回幻觉答案。
+
+### 使用步骤
+
+1. 打开 **AI 对话** 页面
+2. 点击输入框右侧的 **截图** 按钮
+
+> 输入框里可以先写一句要求（例如「只给答案，不要解释」），截图时会一并作为提问发给模型。
+>
+> 独立窗口模式（`desktop.py`）下，截图前会自动把本应用从屏幕捕获中排除，因此不会把自己拍进去；用完会恢复你原本的设置。
+
+### 相关配置
+
+```bash
+SCREENSHOT_ENABLED=true                 # 总开关
+SCREENSHOT_VISION_MODEL=deepseek-flash  # 视觉模型（必须支持图片输入）
+SCREENSHOT_DIR=screenshots              # 截图保存目录
+SCREENSHOT_MAX_IMAGE_EDGE=1280          # 上传前图片最长边
+SCREENSHOT_MAX_TOKENS=8192              # 单次输出上限
+SCREENSHOT_THINKING_ENABLED=false       # 截图问答是否启用思考模式
+SCREENSHOT_SAVE=true                    # 是否把截图留档
+```
+
+> ⚠️ **关于思考模式**：DeepSeek 的思考模式**默认是开启的**，且思维链与正文共享 `max_tokens` 预算。截图答题若开启思考，推理会占掉大量预算，导致正文被截断（表现为回答写到一半突然中断）。因此本功能默认关闭思考模式；若你把 `SCREENSHOT_MAX_TOKENS` 调得很小，回答仍可能被截断 —— 此时界面会明确标注「回答被截断」，而不是让你误以为模型只答了一半。
 
 ---
 

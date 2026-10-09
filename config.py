@@ -102,6 +102,30 @@ class Settings:
     # 免费用户每日面试次数限制
     FREE_DAILY_INTERVIEW_LIMIT: int = int(os.getenv("FREE_DAILY_INTERVIEW_LIMIT", "10"))
 
+    # ── 截图识别（services/screen_capture.py） ──
+    # 视觉模型名。注意：必须是支持图片输入的模型，
+    # 纯文本模型（deepseek-v4-flash 等）会忽略图片并编造答案。
+    # 官方现名 deepseek-flash；旧名 deepseek-v4-flash-vision-exp 已下线但仍可调用。
+    SCREENSHOT_VISION_MODEL: str = os.getenv("SCREENSHOT_VISION_MODEL", "deepseek-flash")
+    # 截图保存目录（相对于项目根目录）
+    SCREENSHOT_DIR: str = os.getenv("SCREENSHOT_DIR", "screenshots")
+    # 上传给模型前图片的最长边（官方会把图片缩放到约 1300×1300 再计费，
+    # 单图 token 上限 1024，因此本地先缩小可显著减少上传耗时）
+    SCREENSHOT_MAX_IMAGE_EDGE: int = int(os.getenv("SCREENSHOT_MAX_IMAGE_EDGE", "1280"))
+    # 单次回答的最大 token 数。注意：DeepSeek 思考模式默认开启，
+    # 思维链与正文共享该预算，2048 容易被推理吃光导致正文被截断。
+    SCREENSHOT_MAX_TOKENS: int = int(os.getenv("SCREENSHOT_MAX_TOKENS", "8192"))
+    # 截图问答是否启用思考模式。
+    # 截图答题是「照抄题干 + 给答案」，不需要长链推理；
+    # 开启只会占用输出预算并拖慢响应，故默认关闭。
+    SCREENSHOT_THINKING_ENABLED: bool = (
+        os.getenv("SCREENSHOT_THINKING_ENABLED", "false").lower() == "true"
+    )
+    # 是否保存每次截图到磁盘
+    SCREENSHOT_SAVE: bool = os.getenv("SCREENSHOT_SAVE", "true").lower() == "true"
+    # 截图接口总开关（关闭后前端页面提示功能未启用）
+    SCREENSHOT_ENABLED: bool = os.getenv("SCREENSHOT_ENABLED", "true").lower() == "true"
+
     # ── 语音功能开关（默认全部关闭，需主动启用） ──
     # 语音总开关
     VOICE_ENABLED: bool = os.getenv("VOICE_ENABLED", "false").lower() == "true"
