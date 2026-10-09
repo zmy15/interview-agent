@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 chcp 65001 >nul
 title Interview Agent 平台 — 一键启动
 
@@ -123,8 +123,8 @@ if "%STT_DEVICE_CHOICE%"=="2" (
     echo [语音] 已选择 CPU 模式
 )
 
-REM 模型由 .env 的 STT_MODEL 决定（微服务会自行加载该文件）。
-REM 这里只做提示，不覆盖 —— 想换模型请改 .env 后重启。
+REM Model is decided by STT_MODEL in .env (the STT service loads it).
+REM Shown here for reference only; this does not override it.
 for /f "tokens=1,* delims==" %%A in ('findstr /B /C:"STT_MODEL=" ".env" 2^>nul') do set _STT_MODEL_SHOW=%%B
 if not defined _STT_MODEL_SHOW set _STT_MODEL_SHOW=base (default)
 echo [语音] Whisper 模型: %_STT_MODEL_SHOW%  ^(改 .env 的 STT_MODEL 可切换^)

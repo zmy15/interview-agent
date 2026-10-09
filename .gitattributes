@@ -1,0 +1,13 @@
+# 批处理脚本按「二进制」处理，禁止 git 做换行/编码转换。
+#
+# 原因：start.bat 含中文，且**必须带 UTF-8 BOM** 才能被 cmd 正确解析。
+# 本机默认代码页是 936(GBK)，而 .bat 中的 chcp 65001 要等脚本开始
+# 执行后才生效 —— cmd 在此之前已按 GBK 读取了文件头部，中文会被
+# 误解析，把命令行劈开，报出类似：
+#     '风说话' is not recognized as an internal or external command
+# 加上 BOM 后 cmd 能识别出这是 UTF-8，问题消失。
+#
+# 但 git 默认会对文本文件做转换，可能把 BOM 丢掉；同时 CRLF 转换
+# 在 .bat 上也没有意义（cmd 两种都认）。因此声明为 binary。
+*.bat binary
+*.cmd binary
