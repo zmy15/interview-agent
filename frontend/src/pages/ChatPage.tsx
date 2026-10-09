@@ -42,6 +42,7 @@ import { CodeOutlined, BookOutlined } from '@ant-design/icons'
 import { questionBankApi, type QuestionItem } from '@/api/questionBank'
 import VoiceInputPanel from '@/components/VoiceInputPanel'
 import { useVoiceAvailability } from '@/hooks/useVoiceAvailability'
+import { useSystemAudioListener } from '@/hooks/useSystemAudioListener'
 import { screenshotApi } from '@/api/screenshot'
 import {
   isDesktopWindow,
@@ -107,7 +108,15 @@ const ChatPage: React.FC = () => {
 
   const { message } = App.useApp()
   const { token } = theme.useToken()
-  const { highlightCode, toggleHighlightCode, apiKey, setApiKey, interviewDuration, setInterviewDuration } = useAppStore()
+  const {
+    highlightCode,
+    toggleHighlightCode,
+    apiKey,
+    setApiKey,
+    interviewDuration,
+    setInterviewDuration,
+    setSystemAudioStatus,
+  } = useAppStore()
   const { sendMessage, abort } = useSSE()
   const { sttAvailable, ttsAvailable } = useVoiceAvailability()
   // 模型列表来自后端调用的官方 /models 接口，用于判断选中模型能否看图
@@ -212,6 +221,100 @@ const ChatPage: React.FC = () => {
       handleSend()
     }
   }
+
+  /**
+   * 系统音频转写出的问题 → 自动发给 AI 回答。
+   *
+   * 与截图答题的区别：截图是一次性动作，而音频转写是**持续**的，
+   * 可能在 AI 还在回答上一题时就断句出新问题。因此这里不直接丢弃，
+   * 而是排队，等当前流式输出结束后再依次发送。
+   */
+  const askQueueRef = useRef<string[]>([])
+  const askingRef = useRef(false)
+  // 用 ref 持有最新的 drain 函数：handleTranscriptQuestion 会作为 prop
+  // 传给面板并被其闭包捕获，直接依赖函数标识容易拿到过期版本。
+  const drainRef = useRef<() => Promise<void>>(async () => {})
+
+  const handleTranscriptQuestion = useCallback((text: string) => {
+    const question = text.trim()
+    if (!question) return
+    askQueueRef.current.push(question)
+    void drainRef.current()
+  }, [])
+
+  /** 依次把排队的转写问题发给 AI，保证同一时刻只有一路流式输出 */
+  const drainAskQueue = useCallback(async () => {
+    if (askingRef.current) return
+    askingRef.current = true
+    try {
+      while (askQueueRef.current.length > 0) {
+        // 等上一轮流式输出结束：sendMessage 在流式进行中会直接 return，
+        // 不等待就会把问题悄悄丢掉
+        while (useChatStore.getState().isStreaming) {
+          await new Promise((r) => setTimeout(r, 400))
+        }
+        const next = askQueueRef.current.shift()
+        if (!next) break
+
+        setAutoScroll(true)
+        try {
+          // 用 displayLabel 标注来源，避免用户分不清是手打还是听来的
+          await sendMessage(next, { displayLabel: '🎧 系统音频' })
+        } catch {
+          message.error('发送失败')
+        }
+      }
+    } finally {
+      askingRef.current = false
+    }
+  }, [sendMessage, message])
+
+  // 每次渲染同步最新的 drain 实现
+  drainRef.current = drainAskQueue
+
+  /**
+   * 系统音频监听。
+   *
+   * 开关在「设置」里，打开后只要停留在本页面（AI 对话界面）就自动监听；
+   * 离开页面或关闭开关会自动停止（hook 内部负责清理，避免设备被长期占用）。
+   *
+   * 识别结果的处理取决于「自动让 AI 回答」：
+   *   开 → 直接作为提问发给当前模式（面试官 / 求职者）的对话
+   *   关 → 填进输入框，由用户确认后再发送
+   */
+  const { listening: systemAudioListening, sttConnected: systemAudioSttConnected, sttError: systemAudioSttError } =
+    useSystemAudioListener({
+      active: true, // ChatPage 挂载期间即为「处于 AI 对话界面」
+      onText: (text) => {
+        // 注意：sendMessage / addMessage 内部都通过 getState() 读取**当前**
+        // 的 selectedMode，因此识别结果会落到此刻正在使用的那个模式
+        // （🎯 面试官 或 🧑 求职者）的对话里，而不是固定的某一个。
+        if (useAppStore.getState().systemAudioAutoAsk) {
+          handleTranscriptQuestion(text)
+        } else {
+          // 不自动发送时，追加到输入框（保留用户已输入的内容）
+          setInputValue((prev) => (prev.trim() ? `${prev} ${text}` : text))
+          setAutoScroll(true)
+        }
+      },
+      onError: (err) => message.error(`系统音频：${err}`),
+    })
+
+  // 把监听状态同步到 store，供「设置」面板展示
+  useEffect(() => {
+    setSystemAudioStatus({
+      listening: systemAudioListening,
+      sttConnected: systemAudioSttConnected,
+      error: systemAudioSttError,
+    })
+  }, [systemAudioListening, systemAudioSttConnected, systemAudioSttError, setSystemAudioStatus])
+
+  // 卸载时清空队列，避免页面切走后还在发请求
+  useEffect(() => {
+    return () => {
+      askQueueRef.current = []
+    }
+  }, [])
 
   /**
    * 截图答题：抓取整个屏幕，交给视觉模型识别题目并作答，

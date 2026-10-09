@@ -6,6 +6,14 @@ import { streamChat } from '@/api/chat'
 /** 单次发送最大消息数（含 system 消息发送约 30 轮对话，DeepSeek 1M 窗口绰绰有余） */
 const MAX_SEND_MESSAGES = 80
 
+export interface SendMessageOptions {
+  /**
+   * 消息在界面上的展示前缀（如「🎧 系统音频」）。
+   * 只影响本地渲染，发给模型的仍是原始文本 —— 前缀不该污染上下文。
+   */
+  displayLabel?: string
+}
+
 export function useSSE() {
   const abortRef = useRef<AbortController | null>(null)
   const {
@@ -30,18 +38,23 @@ export function useSSE() {
   } = useChatStore()
 
   const sendMessage = useCallback(
-    async (content: string) => {
+    async (content: string, options: SendMessageOptions = {}) => {
       if (isStreaming) return
 
       const store = useChatStore.getState()
       const appStore = useAppStore.getState()
 
-      // 添加用户消息
-      const userMsg = { role: 'user' as const, content }
+      // 添加用户消息。展示前缀只影响本地渲染，
+      // 真正发给模型的 content 保持干净（见下方 trimmedMessages）。
+      const userMsg = {
+        role: 'user' as const,
+        content: options.displayLabel ? `${options.displayLabel}：${content}` : content,
+      }
       addMessage(userMsg)
 
       // 构建请求 messages（裁剪到最近 N 条，保留 system 消息由后端自动注入）
-      const allMessages = [...store.messages, userMsg]
+      // 展示前缀不能进入模型上下文，因此最后一条用干净的 content 覆盖
+      const allMessages = [...store.messages, { role: 'user' as const, content }]
       const trimmedMessages = allMessages.length > MAX_SEND_MESSAGES
         ? allMessages.slice(-MAX_SEND_MESSAGES)
         : allMessages

@@ -102,8 +102,11 @@ class StreamingTranscriber:
                 # 取该段音频 → 异步转录
                 audio_segment = self.vad.get_buffer_and_reset()
                 if len(audio_segment) > 0:
+                    # final=True：断句完成即视为一个完整句子，要立刻推给客户端。
+                    # 早期实现用默认的 final=False，导致 on_final 从不触发，
+                    # 转写结果只进不出，客户端永远收不到 final。
                     task = asyncio.create_task(
-                        self._transcribe_segment(audio_segment, ts)
+                        self._transcribe_segment(audio_segment, ts, final=True)
                     )
                     self._pending_tasks.append(task)
 
@@ -138,7 +141,11 @@ class StreamingTranscriber:
             # faster-whisper 需要 float32 输入
             audio_float32 = audio.astype(np.float32)
 
-            segments, info = self._model.transcribe(
+            # Whisper 推理是**同步阻塞**的（CPU 上 base 模型一段几秒音频要
+            # 几百毫秒到数秒）。直接在事件循环里跑会卡住整个 WebSocket，
+            # 后续音频帧全部堆积。丢到线程池执行。
+            segments, info = await asyncio.to_thread(
+                self._model.transcribe,
                 audio_float32,
                 language="zh",
                 beam_size=5,
@@ -161,8 +168,8 @@ class StreamingTranscriber:
                     if self.on_final:
                         self.on_final(self._full_text.strip())
 
-            logger.debug(
-                "Transcribed segment: %.1fs audio → '%s' (lang=%s)",
+            logger.info(
+                "转写片段: %.1fs 音频 → '%s' (lang=%s)",
                 len(audio) / self.sample_rate,
                 new_text[:80],
                 info.language,

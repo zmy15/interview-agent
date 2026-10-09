@@ -21,6 +21,17 @@ interface AppState {
   autoPlayTTS: boolean
   ttsSpeed: number
 
+  // 系统音频监听（捕获电脑播放的声音 → 转文字 → 发到当前对话）
+  systemAudioEnabled: boolean
+  /** 捕获设备 id，空 = 系统默认播放设备 */
+  systemAudioDevice: string
+  /** 是否把识别出的问题自动发给 AI 回答 */
+  systemAudioAutoAsk: boolean
+  /** 运行时状态（由 ChatPage 的监听逻辑写入，供设置面板展示） */
+  systemAudioListening: boolean
+  systemAudioSttConnected: boolean
+  systemAudioError: string | null
+
   toggleHighlightCode: () => void
   setApiKey: (key: string) => void
   setInterviewDuration: (duration: number) => void
@@ -39,6 +50,16 @@ interface AppState {
   setVoiceMode: (mode: VoiceMode) => void
   setAutoPlayTTS: (auto: boolean) => void
   setTTSSpeed: (speed: number) => void
+
+  // 系统音频 actions
+  setSystemAudioEnabled: (enabled: boolean) => void
+  setSystemAudioDevice: (deviceId: string) => void
+  setSystemAudioAutoAsk: (auto: boolean) => void
+  setSystemAudioStatus: (status: {
+    listening: boolean
+    sttConnected: boolean
+    error: string | null
+  }) => void
 }
 
 export const useAppStore = create<AppState>()(
@@ -58,6 +79,13 @@ export const useAppStore = create<AppState>()(
       voiceMode: 'manual',
       autoPlayTTS: false,
       ttsSpeed: 1.0,
+
+      systemAudioEnabled: false,
+      systemAudioDevice: '',
+      systemAudioAutoAsk: true,
+      systemAudioListening: false,
+      systemAudioSttConnected: false,
+      systemAudioError: null,
 
       toggleHighlightCode: () =>
         set((state) => ({ highlightCode: !state.highlightCode })),
@@ -180,6 +208,16 @@ export const useAppStore = create<AppState>()(
       setVoiceMode: (mode) => set({ voiceMode: mode }),
       setAutoPlayTTS: (auto) => set({ autoPlayTTS: auto }),
       setTTSSpeed: (speed) => set({ ttsSpeed: speed }),
+
+      setSystemAudioEnabled: (enabled) => set({ systemAudioEnabled: enabled }),
+      setSystemAudioDevice: (deviceId) => set({ systemAudioDevice: deviceId }),
+      setSystemAudioAutoAsk: (auto) => set({ systemAudioAutoAsk: auto }),
+      setSystemAudioStatus: ({ listening, sttConnected, error }) =>
+        set({
+          systemAudioListening: listening,
+          systemAudioSttConnected: sttConnected,
+          systemAudioError: error,
+        }),
     }),
     {
       name: 'interview-agent-app-prefs',
@@ -197,6 +235,9 @@ export const useAppStore = create<AppState>()(
         voiceMode: state.voiceMode,
         autoPlayTTS: state.autoPlayTTS,
         ttsSpeed: state.ttsSpeed,
+        systemAudioEnabled: state.systemAudioEnabled,
+        systemAudioDevice: state.systemAudioDevice,
+        systemAudioAutoAsk: state.systemAudioAutoAsk,
       }),
     },
   ),

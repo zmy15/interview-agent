@@ -17,6 +17,22 @@ class VADState(Enum):
     SPEECH = "speech"
 
 
+# ══════════════════════════════════════════════════════════════
+# Silero VAD 的输入约束
+# ══════════════════════════════════════════════════════════════
+#
+# Silero 的 ONNX 模型对单次调用的样本数有**硬性要求**：
+#   8kHz  → 256 样本
+#   16kHz → 512 样本
+# 而本模块的帧长是 100ms（16kHz 下 1600 样本），直接喂进去会抛
+# ValueError: Provided number of samples is 1600 (Supported values: ...)。
+#
+# 早期实现把这次异常吞掉并当成 speech_prob=0，结果**永远检测不到语音**，
+# speech_end 一次都不会触发，转写自然永远是空的。
+# 正确做法是把一帧切成 512 样本的小块，逐块推理后取最大概率。
+VAD_WINDOW_SAMPLES = {8000: 256, 16000: 512}
+
+
 class VADProcessor:
     """Silero VAD 流式处理器
 
@@ -77,6 +93,50 @@ class VADProcessor:
 
     # ── 核心：逐帧处理 ──
 
+    def _speech_probability(self, audio_frame: np.ndarray) -> float:
+        """算一帧的语音概率。
+
+        Silero 只接受固定长度的输入（16kHz → 512 样本），因此把整帧切成
+        若干 512 样本的窗口逐块推理，取**最大**概率：
+        只要帧内有任意一段像语音，就认为这一帧在说话（宁可多检测，
+        也不要漏掉说话，漏检会导致整句不转录）。
+
+        尾部不足一个窗口的样本直接丢弃：它们会在下一帧里重新出现，
+        不会造成信息丢失。
+        """
+        window = VAD_WINDOW_SAMPLES.get(self.sample_rate)
+        if window is None:
+            # 非常规采样率：不猜，直接按「非语音」处理并提示
+            logger.warning("Silero VAD 不支持 %d Hz，语音检测已跳过", self.sample_rate)
+            return 0.0
+
+        try:
+            import torch
+        except ImportError:  # pragma: no cover
+            return 0.0
+
+        audio = np.asarray(audio_frame, dtype=np.float32).reshape(-1)
+        if audio.size < window:
+            return 0.0
+
+        best = 0.0
+        for start in range(0, audio.size - window + 1, window):
+            chunk = audio[start:start + window]
+            try:
+                prob = float(
+                    self._model(torch.from_numpy(chunk.copy()), self.sample_rate).item()
+                )
+            except Exception as exc:
+                # 这里不再静默吞掉：早期版本把 ValueError 当成 prob=0，
+                # 导致语音永远检测不到，且完全没有日志可查。
+                logger.warning("Silero VAD 推理失败: %s", exc)
+                return 0.0
+            if prob > best:
+                best = prob
+                if best >= 0.99:
+                    break
+        return best
+
     def process_frame(
         self,
         audio_frame: np.ndarray,
@@ -106,12 +166,7 @@ class VADProcessor:
         self._buffer.append(audio_frame)
 
         # VAD 检测：使用 Silero 模型判断当前帧是否为语音
-        try:
-            import torch
-            audio_tensor = torch.from_numpy(audio_frame).float()
-            speech_prob = self._model(audio_tensor, self.sample_rate).item()
-        except Exception:
-            speech_prob = 0.0
+        speech_prob = self._speech_probability(audio_frame)
 
         is_speech = speech_prob > self.speech_threshold
         events = []
@@ -124,7 +179,16 @@ class VADProcessor:
                 self._speech_start_time = ts
                 self._silence_start_time = None
         else:  # SPEECH
-            speech_duration = ts - (self._speech_start_time or ts)
+            # 注意：不能写 `self._speech_start_time or ts` —— 语音从第 0 秒
+            # 就开始时，_speech_start_time 是 0.0（falsy），会被错误地替换成
+            # ts，算出 speech_duration=0，从而走进「语音太短，忽略」分支，
+            # 整段语音被丢弃且不报错。
+            start = self._speech_start_time
+            # 时长只算到「静默开始」为止：ts 在静默期间仍在推进，
+            # 若用 ts 计算，一声 0.1 秒的咳嗽也会因为后面 1 秒静默
+            # 被算成 1.1 秒，min_speech_duration 形同失效。
+            end = self._silence_start_time if self._silence_start_time is not None else ts
+            speech_duration = end - (start if start is not None else end)
             if not is_speech:
                 # 可能开始静默
                 if self._silence_start_time is None:
@@ -134,12 +198,14 @@ class VADProcessor:
                 if silence_duration >= self.silence_timeout:
                     if speech_duration >= self.min_speech_duration:
                         events.append({"type": "speech_end", "ts": ts})
+                        # 关键：保留 buffer，调用方要取走这段音频去转录
+                        self._reset(keep_buffer=True)
                     else:
-                        # 语音太短，忽略
+                        # 语音太短，忽略（这段音频没有价值，直接丢弃）
                         logger.debug(
                             "Speech too short (%.2fs), ignored", speech_duration
                         )
-                    self._reset()
+                        self._reset()
             else:
                 # 仍在说话，清除静默计时
                 self._silence_start_time = None
@@ -179,9 +245,16 @@ class VADProcessor:
 
     # ── 内部 ──
 
-    def _reset(self):
-        """重置状态机"""
+    def _reset(self, *, keep_buffer: bool = False):
+        """重置状态机。
+
+        keep_buffer=True 时保留音频缓冲 —— 触发 speech_end 后必须保留，
+        调用方要拿这段音频去转录（get_buffer_and_reset 会取走并清空）。
+        早期实现无条件清空 buffer，导致 speech_end 之后取到的是空音频，
+        转录结果永远是空的。
+        """
         self._state = VADState.SILENCE
         self._speech_start_time = None
         self._silence_start_time = None
-        self._buffer = []
+        if not keep_buffer:
+            self._buffer = []

@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, Popover, Slider, Switch, Space, Typography, Tooltip, Divider, message } from 'antd'
 import { SettingOutlined } from '@ant-design/icons'
 import ThemeColorSettings from '@/components/ThemeColorSettings'
+import SystemAudioSettings from '@/components/SystemAudioSettings'
 import {
   isDesktopWindow,
   waitForBridge,
@@ -21,6 +22,13 @@ import {
 } from '@/api/windowControl'
 
 const { Text } = Typography
+
+interface WindowSettingsProps {
+  /** 系统音频监听状态（由 ChatPage 回传，仅用于显示） */
+  systemAudioListening?: boolean
+  systemAudioSttConnected?: boolean
+  systemAudioError?: string | null
+}
 
 // 透明度范围（滑块刻度为百分数 20-100；向后端提交时再换算成 0.2-1.0）
 const MIN_PERCENT = 20
@@ -38,7 +46,11 @@ const toPercent = (value: number | null | undefined): number => {
   return Math.max(MIN_PERCENT, Math.min(MAX_PERCENT, Math.round(percent)))
 }
 
-const WindowSettings: React.FC = () => {
+const WindowSettings: React.FC<WindowSettingsProps> = ({
+  systemAudioListening,
+  systemAudioSttConnected,
+  systemAudioError,
+}) => {
   const [available, setAvailable] = useState(false)
   // 统一以「百分数」作为内部状态单位，避免与后端小数混用
   const [opacityPercent, setOpacityPercent] = useState(DEFAULT_PERCENT)
@@ -156,9 +168,16 @@ const WindowSettings: React.FC = () => {
 
   // 配色在浏览器和独立窗口下都可用；透明度/置顶只在独立窗口模式下有意义
   const content = (
-    <div style={{ width: 250 }}>
+    <div style={{ width: 270 }}>
       <Space direction="vertical" size={4} style={{ width: '100%' }}>
         <ThemeColorSettings />
+
+        {/* 系统音频监听开关：浏览器与独立窗口下都可用 */}
+        <SystemAudioSettings
+          listening={systemAudioListening}
+          sttConnected={systemAudioSttConnected}
+          unavailableReason={systemAudioError}
+        />
 
         {available && (
           <>

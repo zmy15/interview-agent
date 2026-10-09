@@ -12,6 +12,7 @@ import {
 } from '@ant-design/icons'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
+import { useAppStore } from '@/stores/appStore'
 import WindowSettings from '@/components/WindowSettings'
 
 const { Sider, Content, Header } = Layout
@@ -29,6 +30,10 @@ const MainLayout: React.FC = () => {
   const navigate = useNavigate()
   const location = useLocation()
   const { user, logout } = useAuthStore()
+  // 系统音频监听状态由 ChatPage 写入，这里只负责展示
+  const systemAudioListening = useAppStore((s) => s.systemAudioListening)
+  const systemAudioSttConnected = useAppStore((s) => s.systemAudioSttConnected)
+  const systemAudioError = useAppStore((s) => s.systemAudioError)
   // 取当前主题 token，使写死的底色/边框跟随用户选择
   const { token } = theme.useToken()
 
@@ -106,8 +111,12 @@ const MainLayout: React.FC = () => {
             DeepSeek 驱动 · RAG 增强面试助手
           </span>
           <Space size={4}>
-            {/* 独立窗口模式下显示窗口设置（透明度/置顶）；浏览器中自动隐藏 */}
-            <WindowSettings />
+            {/* 设置（配色 / 窗口 / 系统音频监听）；窗口项在浏览器中自动隐藏 */}
+            <WindowSettings
+              systemAudioListening={systemAudioListening}
+              systemAudioSttConnected={systemAudioSttConnected}
+              systemAudioError={systemAudioError}
+            />
             <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
               <Button type="text" icon={<UserOutlined />}>
                 {user?.display_name || user?.email || '用户'}
