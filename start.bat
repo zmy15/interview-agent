@@ -137,6 +137,13 @@ echo [4/5] 启动后端服务 (端口 8000)...
 if /i "%ENABLE_VOICE%"=="y" (
     echo [语音] 后端将加载语音路由...
 )
+call :check_port 8000 backend
+if %errorlevel% neq 0 (
+    echo [ERROR] Backend not started. Free port 8000 and re-run this script.
+    echo         If an instance is already running, just use it.
+    pause
+    exit /b 1
+)
 start "InterviewAgent-Backend" cmd /c "%VENV_PYTHON% -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
 
 :: 等待后端启动（HuggingFace 模型加载需要时间）
@@ -157,29 +164,59 @@ if /i "%ENABLE_VOICE%"=="yes" goto :start_voice
 goto :skip_voice
 
 :start_voice
+set STT_STARTED=n
+set TTS_STARTED=n
+
+call :check_port 8001 STT
+if %errorlevel% neq 0 goto :voice_stt_skip
 echo [语音] 启动 STT 语音识别服务 (端口 8001)...
 start "InterviewAgent-STT" cmd /c "%VENV_PYTHON% -m uvicorn stt_service.main:app --host 0.0.0.0 --port 8001"
+set STT_STARTED=y
+:voice_stt_skip
+
+call :check_port 8002 TTS
+if %errorlevel% neq 0 goto :voice_tts_skip
 echo [语音] 启动 TTS 语音合成服务 (端口 8002)...
 start "InterviewAgent-TTS" cmd /c "%VENV_PYTHON% -m uvicorn tts_service.main:app --host 0.0.0.0 --port 8002"
+set TTS_STARTED=y
+:voice_tts_skip
+
+:: 用 goto 而非 if(...) 块：块内 set 的变量在块外读取时，
+:: cmd 已在解析阶段完成 %VAR% 展开，会读到旧值。
+if /i "%STT_STARTED%%TTS_STARTED%"=="yy" goto :voice_all_ok
+echo [语音] 部分服务未启动（端口被占用，详见上方警告）
+goto :skip_voice
+:voice_all_ok
 echo [语音] 已启动（首次需下载模型 ~200MB，稍等片刻）
 :skip_voice
 
 :: ========== 启动前端 ==========
 echo [5/5] 启动前端服务 (端口 5173)...
+set FRONTEND_STARTED=n
+call :check_port 5173 frontend
+if %errorlevel% neq 0 goto :frontend_skip
 cd frontend
 start "InterviewAgent-Frontend" cmd /c "npx vite --host 0.0.0.0"
 cd ..
+set FRONTEND_STARTED=y
+:frontend_skip
 
 echo.
 echo ========================================
+:: NOTE: keep the parenthesised if/else bodies ASCII-only.
+:: Non-ASCII inside ( ) blocks breaks cmd's parser under chcp 65001.
 if /i "%ENABLE_VOICE%"=="y" (
-    echo   🎤 语音模式已启用
-    echo   STT: http://localhost:8001
-    echo   TTS: http://localhost:8002
+    echo   [Voice] enabled
+    if /i "%STT_STARTED%"=="y" (echo   STT: http://localhost:8001) else (echo   STT: NOT started - port 8001 in use)
+    if /i "%TTS_STARTED%"=="y" (echo   TTS: http://localhost:8002) else (echo   TTS: NOT started - port 8002 in use)
 )
 echo   启动完成！
-echo   前端地址: http://localhost:5173
-echo   登录页面: http://localhost:5173/login
+if /i "%FRONTEND_STARTED%"=="y" (
+    echo   Frontend: http://localhost:5173
+    echo   Login:    http://localhost:5173/login
+) else (
+    echo   Frontend: NOT started - port 5173 in use; reuse the running one
+)
 echo   后端地址: http://localhost:8000
 echo   API 文档: http://localhost:8000/docs
 echo.
@@ -189,3 +226,53 @@ echo.
 echo 按任意键打开前端页面...
 pause >nul
 start http://localhost:5173
+goto :eof
+
+
+:: ============================================================
+::  端口预检查（子程序）
+::
+::  为什么需要：用 start 启动的服务若端口被占用，uvicorn 会立刻
+::  报「[Errno 10048] ... 只允许使用一次」然后退出。由于是在
+::  新窗口里跑的，那个窗口一闪而过，用户只会看到「少了一个弹窗」，
+::  完全不知道原因（曾因此误以为功能坏了）。
+::
+::  用法：call :check_port 8001 STT 语音识别
+::        返回 errorlevel=0 表示端口空闲，=1 表示被占用
+:: ============================================================
+:check_port
+:: Usage: call :check_port <port> <name> <desc>
+:: Returns errorlevel 0 = free, 1 = in use.
+::
+:: Why: a service started via `start` runs in its own window. If the
+:: port is taken, uvicorn exits immediately and that window flashes
+:: away -- the user only sees "one window is missing" and has no idea
+:: why. This pre-check reports the conflict and the owning PID instead.
+::
+:: NOTE: keep this block ASCII-only. Non-ASCII text inside for/f
+:: blocks breaks cmd's parser under chcp 65001.
+set "_CP_PORT=%~1"
+set "_CP_NAME=%~2"
+set "_CP_DESC=%~3"
+
+netstat -ano -p TCP 2>nul | findstr /R /C:":%_CP_PORT% .*LISTENING" >nul 2>&1
+if %errorlevel% neq 0 (
+    exit /b 0
+)
+
+set "_CP_PID="
+for /f "tokens=5" %%P in ('netstat -ano -p TCP 2^>nul ^| findstr /R /C:":%_CP_PORT% .*LISTENING"') do (
+    if not defined _CP_PID set "_CP_PID=%%P"
+)
+
+echo.
+echo [WARN] Port %_CP_PORT% is already in use - cannot start %_CP_NAME%.
+if defined _CP_PID (
+    echo        Owning PID = %_CP_PID%
+    echo        Inspect / stop it with:
+    echo            tasklist /FI "PID eq %_CP_PID%"
+    echo            taskkill /PID %_CP_PID% /F
+)
+echo        This service will be skipped. Free the port and re-run.
+echo.
+exit /b 1
