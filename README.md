@@ -98,8 +98,19 @@ Interview Agent 是一个基于大语言模型的 AI 模拟面试平台，支持
 <details>
 <summary><b>方式一：独立窗口模式（desktop.py）</b></summary>
 
-把整个应用（后端 + 已构建前端）装进**一个独立的应用窗口**里，不依赖浏览器标签页，
-适合面试 / 演示场景。
+把整个应用（后端 + 已构建前端 + 语音微服务）装进**一个独立的应用窗口**里，
+不依赖浏览器标签页，适合面试 / 演示场景。
+
+**与网页版（`start.bat`）的关系**：功能与流程完全一致 —— 同样会检查依赖、
+初始化数据库、按需启动 STT/TTS 语音微服务；区别只在**形态**：
+
+| | 网页版 `start.bat` | 桌面版 `start_app.bat` |
+|---|---|---|
+| 后端 | 独立 cmd 窗口 | 桌面进程内 |
+| 前端 | vite dev（5173，热更新） | 后端托管的 dist 构建产物 |
+| 语音微服务 | 各一个 cmd 窗口（8001 / 8002） | 桌面进程内，**不弹窗** |
+| 启动器控制台 | 保留 | 启动后自动隐藏 |
+| 可见窗口 | 4 个控制台 + 1 个浏览器 | **只有 1 个独立窗口** |
 
 **Windows** — 双击 `start_app.bat`，或：
 
@@ -114,6 +125,19 @@ python main.py --desktop
 python main.py --desktop --no-topmost --width 1366 --height 768
 ```
 
+> **语音是否启用由 `.env` 决定**（`VOICE_ENABLED` / `STT_ENABLED` / `TTS_ENABLED`），
+> 桌面版不做 y/n 交互询问，保持双击即用。
+>
+> **桌面版默认免登录。** 桌面版是「一个人的本机应用」，每次启动都要求登录
+> 没有意义，因此 `desktop.py` 默认以单用户模式运行（`AUTH_REQUIRED=false`）：
+> 不显示登录页，所有数据归属固定的本机账号 `desktop@local`。
+> 想恢复登录页：`.env` 里写 `AUTH_REQUIRED=true`，或 `start_app.bat --auth-required true`。
+> 网页版（`start.bat`）不受影响，仍按 `.env` 决定。
+>
+> **控制台会被自动隐藏**，日志写在 `logs/desktop.log`。
+> 排查问题时用 `start_app.bat --hide-console false` 保留黑窗口；
+> 从已有终端手动运行 `python desktop.py` 时不会隐藏（日志直接可见）。
+
 **常用参数**
 
 | 参数 | 默认值 | 说明 |
@@ -123,6 +147,8 @@ python main.py --desktop --no-topmost --width 1366 --height 768
 | `--opacity N` | `1.0` | 窗口透明度 `0.2`-`1.0`（也可写 `20`-`100` 百分数） |
 | `--capture-exclude [BOOL]` | `true` | 从屏幕捕获（截屏/录屏）中排除窗口 |
 | `--hide-taskbar [BOOL]` | `false` | 隐藏任务栏图标 |
+| `--hide-console [BOOL]` | `true` | 启动后隐藏启动器控制台（只留独立窗口） |
+| `--auth-required [BOOL]` | `false` | 是否要求登录；`true` 恢复登录页 |
 | `--fullscreen [BOOL]` | `false` | 全屏启动 |
 
 > 上表中的窗口项均可在界面「设置」面板中随时开关，启动参数只决定初始状态。
@@ -218,7 +244,7 @@ python main.py --desktop --no-topmost --width 1366 --height 768
 | `DESKTOP_BROWSER` | — | 指定浏览器路径（仅 browser 模式） |
 
 > 独立窗口模式要求先构建前端：`cd frontend && npm run build`
-> （`start_app.bat` 会在缺失时自动构建）
+> （`start_app.bat` 会在**缺失时**或**源码比产物新时**自动重新构建）
 </details>
 
 <details>
@@ -381,13 +407,15 @@ docker run -d \
 ```
 interview-agent/
 ├── main.py                  # FastAPI 入口
-├── desktop.py               # 独立窗口启动器（置顶 / 捕获排除 / 原生窗口）
+├── desktop.py               # 独立窗口启动器（置顶 / 捕获排除 / 语音微服务编排）
 ├── config.py                # 环境变量配置
 ├── requirements.txt         # Python 依赖
 ├── Dockerfile               # 多阶段构建（前端+后端）
 ├── docker-compose.yml       # Docker Compose 编排
-├── start.bat                # Windows 一键启动
-├── start_app.bat            # Windows 独立窗口启动
+├── start.bat                # Windows 一键启动（网页版）
+├── start_app.bat            # Windows 独立窗口启动（桌面版，只留一个窗口）
+├── scripts/
+│   └── frontend_stale.ps1   # 判断 dist 是否落后于 src（供 start_app.bat 调用）
 ├── start.sh                 # macOS/Linux 一键启动
 ├── .env.example             # 环境变量模板
 ├── positions.json           # 岗位数据
