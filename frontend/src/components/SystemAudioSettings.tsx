@@ -18,6 +18,26 @@ import { systemAudioApi, type SystemAudioDevice } from '@/api/systemAudio'
 
 const { Text } = Typography
 
+/**
+ * 把底层报错转成用户能看懂的话。
+ *
+ * 典型场景：功能开关没开（SYSTEM_AUDIO_ENABLED=false）时后端不注册路由，
+ * 请求会落到前端静态资源兜底逻辑上并返回 index.html，
+ * 前端解析 JSON 失败后抛出
+ *   Unexpected token '<', "<!doctype "... is not valid JSON
+ * 这个信息对用户毫无意义，这里翻译成「开关未开启」。
+ */
+function friendlyError(err: unknown): string {
+  const msg = (err as Error)?.message || String(err)
+  if (/is not valid JSON|Unexpected token/i.test(msg)) {
+    return '接口未启用（返回了网页而不是数据）。请在 .env 中设置 SYSTEM_AUDIO_ENABLED=true 后重启后端'
+  }
+  if (/HTTP 404|不存在/.test(msg)) {
+    return '接口不存在：通常是系统音频功能未启用，请在 .env 中设置 SYSTEM_AUDIO_ENABLED=true 后重启后端'
+  }
+  return msg
+}
+
 interface SystemAudioSettingsProps {
   /** 当前是否真的在监听（由 ChatPage 的监听逻辑回传） */
   listening?: boolean
@@ -59,7 +79,7 @@ const SystemAudioSettings: React.FC<SystemAudioSettingsProps> = ({
       .catch((err) => {
         if (cancelled) return
         setAvailable(false)
-        setError((err as Error).message)
+        setError(friendlyError(err))
       })
     return () => {
       cancelled = true
