@@ -165,6 +165,12 @@ class Settings:
     SYSTEM_AUDIO_STT_TIMEOUT: float = float(
         os.getenv("SYSTEM_AUDIO_STT_TIMEOUT", "30")
     )
+    # STT 的 WebSocket 心跳超时（秒）。首次转录时 STT 会同步阻塞事件循环
+    # 加载/运行模型，来不及回 pong，默认心跳会误判连接死亡
+    # （keepalive ping timeout）。给足余量。
+    SYSTEM_AUDIO_STT_PING_TIMEOUT: float = float(
+        os.getenv("SYSTEM_AUDIO_STT_PING_TIMEOUT", "120")
+    )
 
     # ── STT 语音识别配置 ──
     # whisper 模型大小: tiny / base / small / medium
