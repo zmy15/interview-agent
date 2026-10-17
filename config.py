@@ -4,6 +4,21 @@ import os
 
 from dotenv import load_dotenv
 
+from app_paths import bundle_dir, exe_dir, is_frozen, user_data_dir
+
+# ── .env 加载（兼容 PyInstaller 打包运行） ──
+# 源码运行时 load_dotenv() 从调用方目录向上寻找 .env，行为不变。
+# 冻结运行（打包后的 exe）时没有可依赖的源码目录，改为按优先级加载：
+#   1) exe 同目录（安装目录）的 .env —— 用户实际编辑的那份；
+#   2) 打包内置的默认 .env —— 由打包流程写入，保证不配 .env 也能启动。
+# load_dotenv 默认不覆盖已存在的环境变量，先加载者生效，顺序即优先级。
+if is_frozen():
+    for _env_path in (
+        os.path.join(exe_dir(), ".env"),
+        os.path.join(bundle_dir(), ".env"),
+    ):
+        if os.path.isfile(_env_path):
+            load_dotenv(_env_path)
 load_dotenv()
 
 # ── 关键：在导入任何 HF 相关库之前，将镜像端点注入 os.environ ──
@@ -18,7 +33,14 @@ os.environ["HF_ENDPOINT"] = _hf_endpoint
 # 实测同一条 1.5GB 模型：启用 Xet 时 30 秒 0 MB；禁用后 146 秒完成。
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
-_hf_home = os.getenv("HF_HOME", os.path.join(os.path.dirname(__file__), "hf_cache"))
+# 模型缓存目录。源码运行时默认在项目内 hf_cache（历史行为）；
+# 冻结运行（PyInstaller 打包）时默认落到用户数据目录，避免：
+#   * 写进安装目录（Program Files 下无权限，且体积可能上 GB）；
+#   * 卸载/升级时连同几百 MB 模型缓存一起丢失。
+_hf_home = os.getenv("HF_HOME") or (
+    os.path.join(user_data_dir(), "hf_cache") if is_frozen()
+    else os.path.join(os.path.dirname(__file__), "hf_cache")
+)
 os.environ["HF_HOME"] = _hf_home
 os.makedirs(_hf_home, exist_ok=True)
 

@@ -112,6 +112,20 @@ JWT_SECRET=请换成一串足够长的随机字符串
 | 📜 **本地脚本**（开发推荐） | `start.bat` / `./start.sh` | 全平台 | 后端 `:8000` + 前端 `:5173`（热更新） |
 | 🐳 **Docker Compose** | `docker-compose up -d` | 全平台 | Nginx `:80` → 后端 `:8000` |
 | 📦 **单容器** | `docker run` | 全平台 | 后端直接托管前端构建产物 |
+| 💾 **Windows 客户端安装包** | `.\packaging\build_windows.ps1` | Windows | 产出免安装 Python/Node 的 `setup.exe`，详见 [docs/WINDOWS_PACKAGING.md](docs/WINDOWS_PACKAGING.md) |
+
+#### Windows 客户端安装包（小白友好）
+
+不想配 Python / Node 环境？一条命令打出安装包：
+
+```powershell
+.\packaging\build_windows.ps1
+```
+
+产物 `dist\client\InterviewAgentSetup-<版本>.exe`（约 100MB），双击安装即用，
+数据存放在 `%LOCALAPPDATA%\InterviewAgent`，卸载不丢。语音（STT/TTS）与
+RAG 依赖按设计未打入包体（默认关闭），完整功能请用源码方式运行 ——
+详见 [docs/WINDOWS_PACKAGING.md](docs/WINDOWS_PACKAGING.md)。
 
 #### 方式一：本地脚本（开发推荐）
 

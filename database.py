@@ -9,6 +9,7 @@ from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
+from app_paths import user_data_dir
 from config import settings
 
 # ── 数据库 URL 构建 ──
@@ -21,8 +22,11 @@ if not _DATABASE_URL:
             f"@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}"
         )
     else:
-        # SQLite（开发环境）— 使用绝对路径确保不受工作目录影响
-        _DB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+        # SQLite（开发环境）— 使用绝对路径确保不受工作目录影响。
+        # user_data_dir() 在源码运行时是项目根目录（行为不变）；
+        # 在 PyInstaller 打包运行时是 %LOCALAPPDATA%\InterviewAgent，
+        # 数据库不会写进安装目录，卸载不丢数据。
+        _DB_DIR = os.path.join(user_data_dir(), "data")
         os.makedirs(_DB_DIR, exist_ok=True)
         _DATABASE_URL = f"sqlite+aiosqlite:///{_DB_DIR}/interview_platform.db"
 
