@@ -65,9 +65,11 @@ from routers import (
     question_bank,
     screenshot,
     sessions,
-    settings as settings_router,
     system_audio,
     upload,
+)
+from routers import (
+    settings as settings_router,
 )
 
 # ============ 日志配置 ============

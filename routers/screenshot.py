@@ -26,8 +26,8 @@ from models.schemas import (
     MonitorItem,
     ScreenshotInfoResponse,
 )
-from services.api_key_store import resolve_api_key
 from services import screen_capture as sc
+from services.api_key_store import resolve_api_key
 from services.model_registry import get_vision_models, resolve_vision_model
 from utils.auth import CurrentUser, get_optional_user
 from utils.prompt_loader import load_prompt
