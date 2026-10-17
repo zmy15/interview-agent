@@ -85,7 +85,8 @@ export function useSSE() {
           thinking_enabled: store.thinkingEnabled || undefined,
           reasoning_effort: store.thinkingEnabled ? store.reasoningEffort : undefined,
           prompt_notes: promptOverride,
-          api_key: appStore.apiKey || undefined,
+          // 不再传 api_key：后端会用该用户在数据库里加密保存的密钥，
+          // 没有则回退到 .env 的 DEEPSEEK_API_KEY
           resume_text: appStore.resumeText || undefined,
           code_context: appStore.codeText || undefined,
           candidate_level: latestCandidateLevel,

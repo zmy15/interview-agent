@@ -34,6 +34,8 @@ import { useChatStore } from '@/stores/chatStore'
 import { useAppStore } from '@/stores/appStore'
 import { useSSE } from '@/hooks/useSSE'
 import { useModels } from '@/hooks/useModels'
+import { useApiKeyStatus } from '@/hooks/useApiKeyStatus'
+import { settingsApi } from '@/api/settings'
 import ChatMessage from '@/components/ChatMessage'
 import ModelSelector from '@/components/ModelSelector'
 import PositionSelect from '@/components/PositionSelect'
@@ -57,18 +59,6 @@ import {
 
 const { TextArea } = Input
 const { Text } = Typography
-
-/**
- * 把 API Key 掩码成可安全展示的形式：sk-6680…d69d
- *
- * 只保留头 6 位与尾 4 位。过短的 Key 全部打码，避免把整个密钥又暴露出来。
- */
-function maskApiKey(key: string): string {
-  const k = (key || '').trim()
-  if (!k) return ''
-  if (k.length <= 12) return '•'.repeat(k.length)
-  return `${k.slice(0, 6)}…${k.slice(-4)}`
-}
 
 /** 中文语速：约250字/分钟（保留用于兼容旧逻辑，主要使用 wall-clock 时间） */
 const CHARS_PER_MINUTE = 250
@@ -128,8 +118,8 @@ const ChatPage: React.FC = () => {
   const {
     highlightCode,
     toggleHighlightCode,
-    apiKey,
-    setApiKey,
+    apiKeyHint,
+    setApiKeyHint,
     interviewDuration,
     setInterviewDuration,
     setSystemAudioStatus,
@@ -138,13 +128,20 @@ const ChatPage: React.FC = () => {
   } = useAppStore()
   const { sendMessage, abort } = useSSE()
   const { sttAvailable, ttsAvailable } = useVoiceAvailability()
+  // 启动时从服务端拉取 API Key 状态（顺便迁移旧版遗留在 localStorage 的明文密钥）。
+  // 必须排在 useModels 之前：模型列表是按 Key 所属账号返回的，
+  // apiKeyHint 变化会触发 useModels 重新拉取。
+  useApiKeyStatus()
   // 模型列表来自后端调用的官方 /models 接口，用于判断选中模型能否看图
   const { models } = useModels()
 
   const [inputValue, setInputValue] = useState('')
   const [promptEditorOpen, setPromptEditorOpen] = useState(false)
   const [apiKeyModalOpen, setApiKeyModalOpen] = useState(false)
-  const [apiKeyInput, setApiKeyInput] = useState(apiKey)
+  // 输入框里用户**新键入**的密钥。服务端只回传掩码、回不到明文，
+  // 因此打开弹窗时不预填内容，只在弹窗上方展示当前掩码。
+  const [apiKeyInput, setApiKeyInput] = useState('')
+  const [apiKeySaving, setApiKeySaving] = useState(false)
 
   // 截图答题：截图期间禁用按钮，并显示已用秒数
   const [capturing, setCapturing] = useState(false)
@@ -445,7 +442,7 @@ const ChatPage: React.FC = () => {
         res = await screenshotApi.capture({
           // 把输入框内容作为附加要求；为空则用后端内置提示词
           prompt: inputValue.trim() || undefined,
-          api_key: apiKey || undefined,
+          // 不传 api_key：后端会用该用户在数据库里加密保存的密钥
           // 模型与思考配置跟随界面选择：
           // 后端会用官方 /models 的 input_modalities 校验该模型能否看图，
           // 不支持时直接返回「不支持图片输入」，不会静默换成别的模型。
@@ -575,36 +572,50 @@ const ChatPage: React.FC = () => {
   }
 
   // API Key 配置
-  // 弹窗打开时把已保存的 Key 回填进输入框，让用户能看见 / 编辑当前值
+  //
+  // 密钥存在服务端数据库里（Fernet 加密），本地只有掩码提示。
+  // 打开弹窗时不预填输入框：服务端不会回传明文，用户若要更换只能重新键入。
   const openApiKeyModal = () => {
-    setApiKeyInput(apiKey)
+    setApiKeyInput('')
     setApiKeyModalOpen(true)
   }
 
-  const handleApiKeySave = () => {
+  const handleApiKeySave = async () => {
     const next = apiKeyInput.trim()
-    // 输入框为空且此前已配置 → 等同于清除，避免误以为「没改动」
-    if (!next && apiKey) {
-      setApiKey('')
+    if (!next) {
+      // 什么都没输入就点保存：不做任何改动（清除请走「清除」按钮，
+      // 因为这里已无从判断用户是想清空还是只是没填）
       setApiKeyModalOpen(false)
-      message.info('API Key 已清除，将使用服务端默认配置')
       return
     }
-    setApiKey(next)
-    setApiKeyModalOpen(false)
-    if (next) {
+    setApiKeySaving(true)
+    try {
+      const res = await settingsApi.saveApiKey(next)
+      setApiKeyHint(res.hint)
+      setApiKeyInput('')
+      setApiKeyModalOpen(false)
       message.success('API Key 已保存')
-    } else {
-      message.info('API Key 已清除，将使用服务端默认配置')
+    } catch (err) {
+      message.error((err as Error).message || 'API Key 保存失败')
+    } finally {
+      setApiKeySaving(false)
     }
   }
 
-  // 显式清除：一键清空已保存的 Key（含输入框），无需手动删空再保存
-  const handleApiKeyClear = () => {
-    setApiKey('')
-    setApiKeyInput('')
-    setApiKeyModalOpen(false)
-    message.info('API Key 已清除，将使用服务端默认配置')
+  // 显式清除：清掉服务端保存的 Key，之后回退到 .env 配置
+  const handleApiKeyClear = async () => {
+    setApiKeySaving(true)
+    try {
+      await settingsApi.clearApiKey()
+      setApiKeyHint('')
+      setApiKeyInput('')
+      setApiKeyModalOpen(false)
+      message.info('API Key 已清除，将使用服务端默认配置')
+    } catch (err) {
+      message.error((err as Error).message || 'API Key 清除失败')
+    } finally {
+      setApiKeySaving(false)
+    }
   }
 
   // 获取面试计划
@@ -990,19 +1001,19 @@ const ChatPage: React.FC = () => {
         {/* API Key 配置按钮 */}
         <Tooltip
           title={
-            apiKey
-              ? `DeepSeek API Key 已配置（${maskApiKey(apiKey)}）`
+            apiKeyHint
+              ? `DeepSeek API Key 已配置（${apiKeyHint}）`
               : '配置 DeepSeek API Key'
           }
         >
           <Button
             size="small"
             icon={<KeyOutlined />}
-            type={apiKey ? 'primary' : 'default'}
-            ghost={!!apiKey}
+            type={apiKeyHint ? 'primary' : 'default'}
+            ghost={!!apiKeyHint}
             onClick={openApiKeyModal}
           >
-            {apiKey ? '已配置' : 'API Key'}
+            {apiKeyHint ? '已配置' : 'API Key'}
           </Button>
         </Tooltip>
 
@@ -1314,7 +1325,7 @@ const ChatPage: React.FC = () => {
         width={480}
         footer={(_, { OkBtn, CancelBtn }) => (
           <Space>
-            {!!apiKey && (
+            {!!apiKeyHint && (
               <Popconfirm
                 title="确认清除 API Key？"
                 description="清除后将改用服务端 .env 中配置的默认密钥。"
@@ -1323,7 +1334,7 @@ const ChatPage: React.FC = () => {
                 okButtonProps={{ danger: true }}
                 onConfirm={handleApiKeyClear}
               >
-                <Button danger>清除</Button>
+                <Button danger loading={apiKeySaving}>清除</Button>
               </Popconfirm>
             )}
             <CancelBtn />
@@ -1332,13 +1343,13 @@ const ChatPage: React.FC = () => {
         )}
       >
         <div style={{ marginBottom: 16 }}>
-          {apiKey ? (
+          {apiKeyHint ? (
             <Space direction="vertical" size={4} style={{ width: '100%' }}>
               <Text>
-                当前已配置：<Text code>{maskApiKey(apiKey)}</Text>
+                当前已配置：<Text code>{apiKeyHint}</Text>
               </Text>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                输入新密钥可覆盖；清空输入框后点「保存」也可清除配置。
+                输入新密钥并保存可覆盖；要取消配置请点左下角「清除」。
               </Text>
             </Space>
           ) : (
@@ -1351,18 +1362,17 @@ const ChatPage: React.FC = () => {
         <Input.Password
           value={apiKeyInput}
           onChange={(e) => setApiKeyInput(e.target.value)}
-          placeholder={apiKey ? '留空并保存 = 清除当前密钥' : 'sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx'}
+          placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
           autoFocus
         />
         <div style={{ marginTop: 12 }}>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            密钥仅保存在本地浏览器中，不会上传到服务器。
+            密钥会加密保存在服务端数据库中，重启应用不会丢失，也不会写进浏览器。
             你可以从{' '}
             <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer">
               DeepSeek 开放平台
             </a>{' '}
             获取 API Key。
-            {apiKey && ' 注意：密钥按「协议+域名+端口」隔离存储，换地址访问会看不到。'}
           </Text>
         </div>
       </Modal>

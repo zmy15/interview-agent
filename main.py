@@ -65,6 +65,7 @@ from routers import (
     question_bank,
     screenshot,
     sessions,
+    settings as settings_router,
     system_audio,
     upload,
 )
@@ -238,6 +239,7 @@ app.include_router(auth.router)          # 认证路由
 app.include_router(sessions.router)      # 会话历史
 app.include_router(analytics.router)     # 分析仪表盘
 app.include_router(question_bank.router) # 题库管理
+app.include_router(settings_router.router)  # 用户设置（API Key 加密存储）
 
 # ── 条件注册截图识别路由（Windows 专用；默认开启，可用 .env 关闭） ──
 if settings.SCREENSHOT_ENABLED:
@@ -325,6 +327,7 @@ if _HAS_FRONTEND:
     app.include_router(sessions.router, prefix="/api")
     app.include_router(analytics.router, prefix="/api")
     app.include_router(question_bank.router, prefix="/api")
+    app.include_router(settings_router.router, prefix="/api")
 
     if settings.SCREENSHOT_ENABLED:
         app.include_router(screenshot.router, prefix="/api")

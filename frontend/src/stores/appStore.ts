@@ -14,7 +14,21 @@ export type SiderMode = 'expanded' | 'collapsed' | 'hidden'
 
 interface AppState {
   highlightCode: boolean
-  apiKey: string
+  /**
+   * 服务端保存的 API Key 的**掩码提示**（形如 sk-6680…d69d），空串表示未配置。
+   *
+   * ⚠ 这里存的不再是明文密钥：密钥已改为加密存进服务端数据库，
+   * 明文只在「保存」那一次请求里出现过。此前把明文放 localStorage 的做法
+   * 在桌面版会随 private_mode 一起被清空（重启就丢），且按 origin 隔离。
+   */
+  apiKeyHint: string
+  /**
+   * v2 → v3 迁移用的临时字段：旧版本遗留在 localStorage 里的**明文**密钥。
+   *
+   * 启动时由 useApiKeyStatus 上传到服务端加密保存，随后立即清空。
+   * 刻意不写进 partialize —— 它只在内存里活一小会儿，避免明文继续落盘。
+   */
+  legacyApiKey: string
   interviewDuration: number  // 面试时长（分钟）
   resumeText: string         // 当前激活的简历文本
   codeText: string           // 当前激活的代码/项目文本（多文件拼接）
@@ -50,7 +64,10 @@ interface AppState {
   focusMode: boolean
 
   toggleHighlightCode: () => void
-  setApiKey: (key: string) => void
+  /** 更新服务端 API Key 的掩码提示（保存 / 清除后由调用方设置） */
+  setApiKeyHint: (hint: string) => void
+  /** 清空迁移用的临时明文字段 */
+  clearLegacyApiKey: () => void
   setInterviewDuration: (duration: number) => void
   setResumeText: (text: string) => void
   setCodeText: (text: string) => void
@@ -93,7 +110,8 @@ export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
       highlightCode: true,
-      apiKey: '',
+      apiKeyHint: '',
+      legacyApiKey: '',
       interviewDuration: 30,
       resumeText: '',
       codeText: '',
@@ -119,7 +137,8 @@ export const useAppStore = create<AppState>()(
 
       toggleHighlightCode: () =>
         set((state) => ({ highlightCode: !state.highlightCode })),
-      setApiKey: (key: string) => set({ apiKey: key }),
+      setApiKeyHint: (hint: string) => set({ apiKeyHint: hint }),
+      clearLegacyApiKey: () => set({ legacyApiKey: '' }),
       setInterviewDuration: (duration: number) => set({ interviewDuration: duration }),
       setResumeText: (text: string) => set({ resumeText: text }),
       setCodeText: (text: string) => set({ codeText: text }),
@@ -269,7 +288,7 @@ export const useAppStore = create<AppState>()(
       // zustand persist 会用 localStorage 里的旧值覆盖新默认值，
       // 因此不升版本的话，老用户永远看不到「默认开启」的效果
       // （他们的存储里写着 systemAudioEnabled: false）。
-      version: 2,
+      version: 3,
       migrate: (persisted: unknown, from: number) => {
         const state = (persisted ?? {}) as Record<string, unknown>
         if (from < 2) {
@@ -278,11 +297,23 @@ export const useAppStore = create<AppState>()(
           // 若用户不想要，在设置里关掉即可（之后会正常持久化）。
           state.systemAudioEnabled = true
         }
+        if (from < 3) {
+          // v2 → v3：API Key 改为加密存服务端数据库。
+          // 把旧的明文搬到 legacyApiKey（**不持久化**），由 useApiKeyStatus
+          // 在启动时一次性上传到服务端，再从本地抹掉 —— 否则明文密钥会
+          // 一直留在浏览器配置目录里，白白泄露。
+          const old = state.apiKey
+          if (typeof old === 'string' && old.trim()) {
+            state.legacyApiKey = old.trim()
+          }
+          delete state.apiKey
+        }
         return state
       },
       partialize: (state) => ({
         highlightCode: state.highlightCode,
-        apiKey: state.apiKey,
+        // 注意：apiKey（明文）与 legacyApiKey 都**不**持久化。
+        // 密钥已改为加密存服务端，本地只保留运行时拉取的掩码 apiKeyHint。
         interviewDuration: state.interviewDuration,
         resumeText: state.resumeText,
         codeText: state.codeText,

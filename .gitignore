@@ -70,6 +70,11 @@ positions.json
 data/uploads.json
 hf_cache/
 
+# API Key 加密密钥（自动生成）—— 绝不入库：
+# 它是解密数据库中用户 API Key 的唯一钥匙，泄露等于泄露所有人的密钥。
+# 主副本写在 .env 的 APP_ENCRYPTION_KEY，这里是 .env 不可写时的兜底副本。
+data/.encryption_key
+
 # 截图答题产生的画面（可能含题目/隐私内容，不入库）
 screenshots/
 # 运行时日志（STT 服务等）

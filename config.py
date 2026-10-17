@@ -38,6 +38,16 @@ class Settings:
     # 可用模型
     AVAILABLE_MODELS: str = os.getenv("AVAILABLE_MODELS", "deepseek-v4-pro,deepseek-v4-flash")
 
+    # ── API Key 加密存储 ──
+    # 用户在前端填写的 DeepSeek API Key 会用它加密后存进数据库，
+    # 不再依赖浏览器 localStorage（桌面版 native 窗口重启会清空）。
+    #
+    # 留空时首次保存 API Key 会自动生成一个 Fernet 密钥，并写回 .env
+    # （若 .env 不可写则退回到 data/.encryption_key，详见 services/crypto.py）。
+    #
+    # ⚠ 轮换该密钥会导致已存储的 API Key 无法解密，需要重新录入。
+    APP_ENCRYPTION_KEY: str = os.getenv("APP_ENCRYPTION_KEY", "")
+
     # Embedding
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 

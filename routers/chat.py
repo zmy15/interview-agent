@@ -14,6 +14,8 @@ from database import get_db
 from models.schemas import ChatRequest, ModelsResponse
 from services.agent_tools import search_web
 from services.coding_problem import format_problems_for_prompt, select_problems
+from services import api_key_store
+from services.api_key_store import resolve_api_key
 from services.llm_client import stream_chat
 from services.model_registry import get_available_models, invalidate_cache, validate_model
 from services.rag_pipeline import build_rag_context
@@ -31,20 +33,16 @@ def _effective_api_key(
     explicit: Optional[str] = None,
     fallback: Optional[str] = None,
 ) -> Optional[str]:
-    """统一 API Key 来源：显式参数 > X-DEEPSEEK-API-KEY 请求头 > 请求体自带值
+    """[已废弃，保留以兼容旧调用] 统一 API Key 来源
 
-    前端在 localStorage 里保存了 Key，client.ts 会自动带上请求头；
-    把它取出来才能按该 Key 的账号拉取模型列表。
-    返回 None 时，下游会退回 .env 中的 DEEPSEEK_API_KEY。
+    新代码请用 ``services.api_key_store.resolve_api_key``：它在请求头之外
+    还会回落到数据库里加密保存的 Key。
     """
-    for candidate in (
-        explicit,
-        request.headers.get("X-DEEPSEEK-API-KEY"),
-        request.headers.get("X-DeepSeek-Key"),
-        fallback,
-    ):
-        if candidate and candidate.strip():
-            return candidate.strip()
+    key = api_key_store.effective_api_key_from_request(request, explicit=explicit)
+    if key:
+        return key
+    if fallback and fallback.strip():
+        return fallback.strip()
     return None
 
 
@@ -53,6 +51,7 @@ async def list_models(
     request: Request,
     refresh: bool = False,
     user: Optional[CurrentUser] = Depends(get_optional_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """返回可用模型列表。
 
@@ -62,13 +61,15 @@ async def list_models(
 
     - refresh=true 强制绕过缓存重新拉取
     - API Key 取 `X-DEEPSEEK-API-KEY` 请求头（前端自动带上），
-      省略时回退到 .env 中的 DEEPSEEK_API_KEY
+      没有则回落到数据库里加密保存的 Key，最后才回退 .env 的 DEEPSEEK_API_KEY
     - 远端不可用时回退到 .env 的 AVAILABLE_MODELS，并在 source 字段说明
     """
     if refresh:
         invalidate_cache()
 
-    models = await get_available_models(api_key=_effective_api_key(request))
+    models = await get_available_models(
+        api_key=await resolve_api_key(request, db, user)
+    )
     source = (
         "fallback"
         if models and all("本地配置" in m.description for m in models)
@@ -232,10 +233,16 @@ async def _build_prompt_kwargs(req: ChatRequest, db: AsyncSession, user: Optiona
 @router.post("/stream")
 async def chat_stream(
     req: ChatRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     user: Optional[CurrentUser] = Depends(get_optional_user),
 ):
     """SSE 流式对话接口（含上下文窗口管理）"""
+
+    # 在进入生成器之前先解出本次要用的 Key：
+    # resolve_api_key 需要读数据库，放在这里可以确保它在请求作用域内完成
+    # （生成器里 db 仍然可用，但提前取好更直观，也便于 validate_model 复用）。
+    effective_key = await resolve_api_key(request, db, user, explicit=req.api_key)
 
     async def event_generator():
         messages = [m.model_dump() for m in req.messages]
@@ -311,7 +318,7 @@ async def chat_stream(
 
         # ====== Phase 3: 验证 & 流式输出 ======
         model = req.model
-        if model and not await validate_model(model, api_key=req.api_key):
+        if model and not await validate_model(model, api_key=effective_key):
             yield f"data: {json.dumps({'type': 'error', 'content': f'模型 {model} 不可用'}, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
             return
@@ -321,7 +328,7 @@ async def chat_stream(
             model=req.model,
             thinking_enabled=req.thinking_enabled,
             reasoning_effort=req.reasoning_effort,
-            api_key=req.api_key,
+            api_key=effective_key,
         ):
             if chunk["type"] == "done":
                 yield "data: [DONE]\n\n"

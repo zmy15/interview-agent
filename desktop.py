@@ -1359,7 +1359,38 @@ class NativeWindow:
         threading.Thread(target=self._apply_effects_when_ready, daemon=True).start()
 
         # gui='edgechromium' 强制使用 WebView2，保证前端渲染与 Chrome 一致
-        webview.start(gui="edgechromium", debug=self.debug)
+        #
+        # private_mode=False 必须显式传：pywebview 默认是 True，WebView2 会用
+        # 临时配置目录，窗口一关 localStorage 就被清掉 —— 表现为「重启后
+        # 之前配的东西全没了」。
+        #
+        # storage_path 指定固定的用户数据目录，让配置目录跨重启复用。
+        # 与浏览器 --app 模式（self.user_data_dir）放在同一个父目录下，
+        # 便于用户统一清理。
+        #
+        # 注意：pywebview 不同版本对 storage_path 的支持不一致（部分平台上
+        # 会忽略或报错），因此这里做兜底 —— 失败时退回默认目录并继续启动，
+        # 至少 private_mode=False 已经能让数据在**默认**目录里留存。
+        storage_path = os.path.join(
+            os.path.expanduser("~"), ".interview-agent", "webview-data"
+        )
+        try:
+            os.makedirs(storage_path, exist_ok=True)
+        except OSError as exc:
+            logger.warning("无法创建 WebView2 数据目录 %s: %s", storage_path, exc)
+            storage_path = None
+
+        start_kwargs: dict = {"gui": "edgechromium", "debug": self.debug,
+                              "private_mode": False}
+        if storage_path:
+            start_kwargs["storage_path"] = storage_path
+        try:
+            webview.start(**start_kwargs)
+        except TypeError as exc:
+            # 老版本 pywebview 不认 storage_path：去掉它再试一次
+            logger.warning("webview.start 不接受 storage_path（%s），改用默认目录", exc)
+            start_kwargs.pop("storage_path", None)
+            webview.start(**start_kwargs)
         self._closed = True
 
     def _apply_effects_when_ready(self, timeout: float = 20.0) -> None:

@@ -43,18 +43,10 @@ export async function request<T>(url: string, options: RequestOptions = {}): Pro
   const headers: Record<string, string> = {}
   let requestBody: BodyInit | null = null
 
-  // 自动附加 API Key（从 localStorage 读取）
-  try {
-    const stored = localStorage.getItem('interview-agent-app-prefs')
-    if (stored) {
-      const parsed = JSON.parse(stored)
-      if (parsed?.state?.apiKey) {
-        headers['X-DEEPSEEK-API-KEY'] = parsed.state.apiKey
-      }
-    }
-  } catch {
-    // ignore
-  }
+  // API Key 不再由前端携带：密钥已加密存在服务端（见 api/settings.ts），
+  // 后端从数据库取用。此前从 localStorage 读明文并塞进
+  // X-DEEPSEEK-API-KEY 的做法已废弃 —— 桌面版 native 窗口的 localStorage
+  // 会随 private_mode 在重启时被清空，且按 origin 隔离。
 
   // 自动附加 JWT Bearer Token（从 authStore 读取）
   try {
