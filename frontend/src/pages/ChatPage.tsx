@@ -14,6 +14,8 @@ import {
   Tooltip,
   Progress,
   theme,
+  Divider,
+  Dropdown,
 } from 'antd'
 import {
   SendOutlined,
@@ -29,6 +31,11 @@ import {
   LoadingOutlined,
   FullscreenOutlined,
   FullscreenExitOutlined,
+  UserOutlined,
+  SyncOutlined,
+  CodeOutlined,
+  BookOutlined,
+  MoreOutlined,
 } from '@ant-design/icons'
 import { useChatStore } from '@/stores/chatStore'
 import { useAppStore } from '@/stores/appStore'
@@ -42,7 +49,6 @@ import PositionSelect from '@/components/PositionSelect'
 import PromptEditor from '@/components/PromptEditor'
 import { getInterviewPlan } from '@/api/interview'
 import type { ChatMode, InterviewPlanResponse, CandidateLevel, InterviewRound, AnswerLength } from '@/types'
-import { CodeOutlined, BookOutlined } from '@ant-design/icons'
 import { questionBankApi, type QuestionItem } from '@/api/questionBank'
 import VoiceInputPanel from '@/components/VoiceInputPanel'
 import { useVoiceAvailability } from '@/hooks/useVoiceAvailability'
@@ -113,7 +119,8 @@ const ChatPage: React.FC = () => {
     addMessage,
   } = useChatStore()
 
-  const { message } = App.useApp()
+  // modal 用于下拉菜单里的清空确认（Dropdown 菜单项不能再套 Popconfirm）
+  const { message, modal } = App.useApp()
   const { token } = theme.useToken()
   const {
     highlightCode,
@@ -837,7 +844,12 @@ const ChatPage: React.FC = () => {
           : { height: 'calc(100vh - 80px)' }),
       }}
     >
-      {/* 顶部工具栏：全屏会话模式整个隐藏，只留一个悬浮的退出按钮 */}
+      {/* 顶部工具栏：全屏会话模式整个隐藏，只留一个悬浮的退出按钮。
+          按职责分两行，避免一行塞十几个控件后 flex-wrap 在随机位置断行：
+            第一行「怎么面」—— 模式 / 模型 / 岗位，决定这次对话的基本形态
+            第二行「面试参数 + 操作」—— 级别 / 轮次 /（求职者参数）/ 开关 / 按钮
+          两行都用 Divider 分组，不再手写竖线 div：wrap 断行时手写竖线
+          会跑到行首或行尾变成悬空的一条，Divider 的行为是正确的。 */}
       {!focusMode && (
       <div
         style={{
@@ -845,228 +857,249 @@ const ChatPage: React.FC = () => {
           borderBottom: '1px solid #f0f0f0',
           marginBottom: 12,
           display: 'flex',
-          flexWrap: 'wrap',
+          flexDirection: 'column',
           gap: 8,
-          alignItems: 'center',
         }}
       >
-        <Segmented
-          value={selectedMode}
-          onChange={(val) => {
-            // 切换模式前先中止正在进行的流式输出，防止内容串到新模式界面
-            if (isStreaming) {
-              abort()
-            }
-            setMode(val as ChatMode)
-          }}
-          options={[
-            { value: 'interviewer', label: '🎯 你是面试官' },
-            { value: 'candidate', label: '🧑 你是求职者' },
-          ]}
-        />
-        <div style={{ width: 1, height: 24, background: '#d9d9d9' }} />
-        <ModelSelector />
-        <div style={{ width: 1, height: 24, background: '#d9d9d9' }} />
-        <PositionSelect />
-
-        {/* 共用：候选人经验级别（影响AI的答题/提问策略） */}
-        <div style={{ width: 1, height: 24, background: '#d9d9d9' }} />
-        <Space size={4}>
-          <Text type="secondary" style={{ fontSize: 12 }}>👤</Text>
-          <Select
-            size="small"
-            value={candidateLevel || undefined}
+        {/* ── 第一行：对话形态 ── */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          <Segmented
+            value={selectedMode}
             onChange={(val) => {
-              setCandidateLevel(val || null)
-              setInterviewPlan(null)
+              // 切换模式前先中止正在进行的流式输出，防止内容串到新模式界面
+              if (isStreaming) {
+                abort()
+              }
+              setMode(val as ChatMode)
             }}
-            placeholder="经验级别"
-            allowClear
-            style={{ width: 90 }}
             options={[
-              { value: 'intern', label: '🎓 实习' },
-              { value: 'new_grad', label: '🎯 校招' },
-              { value: 'experienced', label: '💼 社招' },
+              { value: 'interviewer', label: '面试官' },
+              { value: 'candidate', label: '求职者' },
             ]}
           />
-        </Space>
+          <Divider type="vertical" style={{ margin: 0, height: 18 }} />
+          <ModelSelector />
+          <Divider type="vertical" style={{ margin: 0, height: 18 }} />
+          <PositionSelect />
+        </div>
 
-        {/* 共用：面试轮次（决定一面广筛/二面深挖/HR综合素质） */}
-        <Space size={4}>
-          <Text type="secondary" style={{ fontSize: 12 }}>🔄</Text>
-          <Select
-            size="small"
-            value={interviewRound || undefined}
-            onChange={(val) => {
-              setInterviewRound(val || null)
-              setInterviewPlan(null)
-            }}
-            placeholder="面试轮次"
-            allowClear
-            style={{ width: 90 }}
-            options={[
-              { value: 'first', label: '📋 一面' },
-              { value: 'second', label: '🔍 二面' },
-              { value: 'hr', label: '🤝 HR面' },
-            ]}
-          />
-        </Space>
-
-        {/* 仅求职者模式：编程题 + 时长 + 回答风格 + 推算 */}
-        {selectedMode === 'candidate' && (
-          <>
-            <Tooltip title="让AI面试官从LeetCode Hot100/面试经典150中出编程题，难度根据岗位和你的回答表现自动调整">
-              <Space size={4}>
-                <Switch
-                  size="small"
-                  checked={codingEnabled}
-                  onChange={setCodingEnabled}
-                />
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  <CodeOutlined /> 编程题
-                </Text>
-              </Space>
-            </Tooltip>
-            <div style={{ width: 1, height: 24, background: '#d9d9d9' }} />
-            <Space size={4}>
-              <ClockCircleOutlined style={{ color: '#1677ff' }} />
-              <Select
-                size="small"
-                value={interviewDuration}
-                onChange={(val) => {
-                  setInterviewDuration(val)
-                  setInterviewPlan(null)
-                }}
-                style={{ width: 100 }}
-                options={[
-                  { value: 15, label: '15 分钟' },
-                  { value: 30, label: '30 分钟' },
-                  { value: 45, label: '45 分钟' },
-                  { value: 60, label: '60 分钟' },
-                ]}
-              />
-              {interviewPlan && (
-                <Tag color="blue">{interviewPlan.question_count} 题</Tag>
-              )}
-            </Space>
+        {/* ── 第二行：面试参数 + 操作 ── */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          {/* 候选人经验级别（影响 AI 的答题/提问策略） */}
+          <Space size={4}>
+            <UserOutlined style={{ color: '#8c8c8c' }} />
             <Select
               size="small"
-              value={answerLength}
+              value={candidateLevel || undefined}
               onChange={(val) => {
-                setAnswerLength(val)
+                setCandidateLevel(val || null)
                 setInterviewPlan(null)
               }}
-              style={{ width: 90 }}
+              placeholder="经验级别"
+              allowClear
+              style={{ width: 100 }}
               options={[
-                { value: 'short', label: '📝 简短' },
-                { value: 'medium', label: '📄 适中' },
-                { value: 'long', label: '📚 详细' },
+                { value: 'intern', label: '实习' },
+                { value: 'new_grad', label: '校招' },
+                { value: 'experienced', label: '社招' },
               ]}
             />
-            <Tooltip title="根据时长、级别、轮次和回答风格推算问题数量">
+          </Space>
+
+          {/* 面试轮次（决定一面广筛 / 二面深挖 / HR 综合素质） */}
+          <Space size={4}>
+            <SyncOutlined style={{ color: '#8c8c8c' }} />
+            <Select
+              size="small"
+              value={interviewRound || undefined}
+              onChange={(val) => {
+                setInterviewRound(val || null)
+                setInterviewPlan(null)
+              }}
+              placeholder="面试轮次"
+              allowClear
+              style={{ width: 100 }}
+              options={[
+                { value: 'first', label: '一面' },
+                { value: 'second', label: '二面' },
+                { value: 'hr', label: 'HR 面' },
+              ]}
+            />
+          </Space>
+
+          {/* 仅求职者模式：时长 + 回答风格 + 推算 + 编程题 */}
+          {selectedMode === 'candidate' && (
+            <>
+              <Space size={4}>
+                <ClockCircleOutlined style={{ color: '#8c8c8c' }} />
+                <Select
+                  size="small"
+                  value={interviewDuration}
+                  onChange={(val) => {
+                    setInterviewDuration(val)
+                    setInterviewPlan(null)
+                  }}
+                  style={{ width: 96 }}
+                  options={[
+                    { value: 15, label: '15 分钟' },
+                    { value: 30, label: '30 分钟' },
+                    { value: 45, label: '45 分钟' },
+                    { value: 60, label: '60 分钟' },
+                  ]}
+                />
+                {interviewPlan && <Tag color="blue">{interviewPlan.question_count} 题</Tag>}
+              </Space>
+              <Select
+                size="small"
+                value={answerLength}
+                onChange={(val) => {
+                  setAnswerLength(val)
+                  setInterviewPlan(null)
+                }}
+                style={{ width: 96 }}
+                options={[
+                  { value: 'short', label: '简短' },
+                  { value: 'medium', label: '适中' },
+                  { value: 'long', label: '详细' },
+                ]}
+              />
+              <Tooltip title="根据时长、级别、轮次和回答风格推算问题数量">
+                <Button size="small" type="link" onClick={handleGetPlan} style={{ padding: '0 4px' }}>
+                  推算
+                </Button>
+              </Tooltip>
+              <Tooltip title="让 AI 面试官从 LeetCode Hot100 / 面试经典 150 中出编程题，难度根据岗位和回答表现自动调整">
+                <Space size={4}>
+                  <Switch size="small" checked={codingEnabled} onChange={setCodingEnabled} />
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    <CodeOutlined /> 编程题
+                  </Text>
+                </Space>
+              </Tooltip>
+            </>
+          )}
+
+          <Divider type="vertical" style={{ margin: 0, height: 18 }} />
+
+          <Space size={4}>
+            <Switch size="small" checked={useSearch} onChange={setUseSearch} />
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              <SearchOutlined /> 联网搜索
+            </Text>
+          </Space>
+          <Space size={4}>
+            <Switch size="small" checked={highlightCode} onChange={toggleHighlightCode} />
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              代码高亮
+            </Text>
+          </Space>
+
+          {/* 右侧操作区：用独立的 flex 容器 + marginLeft:auto 贴右，
+              而不是在会换行的父容器里塞一个 flex:1 撑杆 —— 撑杆只占第一行，
+              一旦换行，操作按钮会被甩到第二行**左对齐**，正是原来「杂乱」的成因。
+              这样分组后，即使换行也是一整块右对齐地掉下去，视觉上仍然成组。 */}
+          <Space size={8} style={{ marginLeft: 'auto' }} wrap>
+            <Tooltip
+              title={
+                apiKeyHint
+                  ? `DeepSeek API Key 已配置（${apiKeyHint}）`
+                  : '配置 DeepSeek API Key'
+              }
+            >
               <Button
                 size="small"
-                type="link"
-                onClick={handleGetPlan}
-                style={{ padding: '0 4px', fontSize: 12 }}
+                icon={<KeyOutlined />}
+                type={apiKeyHint ? 'primary' : 'default'}
+                ghost={!!apiKeyHint}
+                onClick={openApiKeyModal}
               >
-                推算
+                {apiKeyHint ? '已配置' : 'API Key'}
               </Button>
             </Tooltip>
-          </>
-        )}
 
-        <Space size={4}>
-          <Switch
-            size="small"
-            checked={useSearch}
-            onChange={setUseSearch}
-          />
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            <SearchOutlined /> 联网搜索
-          </Text>
-        </Space>
-        <Space size={4}>
-          <Switch
-            size="small"
-            checked={highlightCode}
-            onChange={toggleHighlightCode}
-          />
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            代码高亮
-          </Text>
-        </Space>
-        <div style={{ flex: 1 }} />
+            <Button
+              size="small"
+              icon={<SettingOutlined />}
+              onClick={() => setPromptEditorOpen(true)}
+            >
+              Prompt
+            </Button>
 
-        {/* API Key 配置按钮 */}
-        <Tooltip
-          title={
-            apiKeyHint
-              ? `DeepSeek API Key 已配置（${apiKeyHint}）`
-              : '配置 DeepSeek API Key'
-          }
-        >
-          <Button
-            size="small"
-            icon={<KeyOutlined />}
-            type={apiKeyHint ? 'primary' : 'default'}
-            ghost={!!apiKeyHint}
-            onClick={openApiKeyModal}
-          >
-            {apiKeyHint ? '已配置' : 'API Key'}
-          </Button>
-        </Tooltip>
+            <Tooltip
+              title={
+                questionBankIds.length > 0
+                  ? `已选 ${questionBankIds.length} 题 · ${questionBankMode}`
+                  : '从题库选题'
+              }
+            >
+              <Button
+                size="small"
+                icon={<BookOutlined />}
+                type={questionBankIds.length > 0 ? 'primary' : 'default'}
+                ghost={questionBankIds.length > 0}
+                onClick={openQbModal}
+              >
+                选题{questionBankIds.length > 0 ? `(${questionBankIds.length})` : ''}
+              </Button>
+            </Tooltip>
 
-        <Button
-          size="small"
-          icon={<SettingOutlined />}
-          onClick={() => setPromptEditorOpen(true)}
-        >
-          Prompt
-        </Button>
-        <Tooltip title={questionBankIds.length > 0 ? `已选${questionBankIds.length}题 · ${questionBankMode}` : '从题库选题'}>
-          <Button
-            size="small"
-            icon={<BookOutlined />}
-            type={questionBankIds.length > 0 ? 'primary' : 'default'}
-            ghost={questionBankIds.length > 0}
-            onClick={openQbModal}
-          >
-            选题{questionBankIds.length > 0 ? `(${questionBankIds.length})` : ''}
-          </Button>
-        </Tooltip>
-        <Popconfirm
-          title="确定清空当前模式对话记录？"
-          onConfirm={handleClear}
-          okText="清空当前"
-          cancelText="取消"
-        >
-          <Button size="small" danger icon={<ClearOutlined />}>
-            清空
-          </Button>
-        </Popconfirm>
-        <Popconfirm
-          title="确定清空全部（面试官+求职者）对话记录？"
-          onConfirm={handleClearAll}
-          okText="全部清空"
-          cancelText="取消"
-        >
-          <Button size="small" danger type="text" style={{ fontSize: 12 }}>
-            全部
-          </Button>
-        </Popconfirm>
+            {/* 全屏会话：只留对话与输入，隐藏侧边栏 / 顶栏 / 本工具栏（Esc 也可退出） */}
+            <Tooltip title="全屏会话：只显示对话内容，隐藏其它界面元素（Esc 退出）">
+              <Button
+                size="small"
+                icon={<FullscreenOutlined />}
+                onClick={toggleFocusMode}
+                aria-label="进入全屏会话"
+              >
+                全屏
+              </Button>
+            </Tooltip>
 
-        {/* 全屏会话：只留对话与输入，隐藏侧边栏 / 顶栏 / 本工具栏（Esc 也可退出） */}
-        <Tooltip title="全屏会话：只显示对话内容，隐藏其它界面元素（Esc 退出）">
-          <Button
-            size="small"
-            icon={<FullscreenOutlined />}
-            onClick={toggleFocusMode}
-            aria-label="进入全屏会话"
-          >
-            全屏
-          </Button>
-        </Tooltip>
+            {/* 破坏性操作收进溢出菜单：不常用、且点了会丢数据，
+                不该和「选题」「Prompt」并排抢点击。 */}
+            <Dropdown
+              trigger={['click']}
+              menu={{
+                items: [
+                  {
+                    key: 'clear-current',
+                    danger: true,
+                    icon: <ClearOutlined />,
+                    label: `清空当前对话（${selectedMode === 'candidate' ? '求职者' : '面试官'}）`,
+                  },
+                  {
+                    key: 'clear-all',
+                    danger: true,
+                    icon: <ClearOutlined />,
+                    label: '清空全部对话（两种模式）',
+                  },
+                ],
+                onClick: ({ key }) => {
+                  // 用 modal.confirm 做二次确认：Dropdown 菜单项本身不能再套 Popconfirm
+                  if (key === 'clear-current') {
+                    modal.confirm({
+                      title: '确定清空当前模式对话记录？',
+                      okText: '清空当前',
+                      cancelText: '取消',
+                      okButtonProps: { danger: true },
+                      onOk: handleClear,
+                    })
+                  } else {
+                    modal.confirm({
+                      title: '确定清空全部（面试官 + 求职者）对话记录？',
+                      okText: '全部清空',
+                      cancelText: '取消',
+                      okButtonProps: { danger: true },
+                      onOk: handleClearAll,
+                    })
+                  }
+                },
+              }}
+            >
+              <Button size="small" icon={<MoreOutlined />} aria-label="更多操作" />
+            </Dropdown>
+          </Space>
+        </div>
       </div>
       )}
 

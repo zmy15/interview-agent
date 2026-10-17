@@ -62,6 +62,12 @@ chroma_data/
 *.db
 *.sqlite
 *.sqlite3
+# 备份文件同样含用户数据。注意上面的 *.db 只匹配以 .db **结尾**的名字，
+# 因此 interview_platform.db.bak-20261018-022349 这类带后缀的备份不在
+# 覆盖范围内，必须单独忽略，否则清理数据库时的备份会被误提交。
+*.db.bak*
+*.db-wal
+*.db-shm
 # Seed data — no user data, safe to commit
 !data/question_bank.db
 
