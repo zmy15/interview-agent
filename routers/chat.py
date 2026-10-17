@@ -12,10 +12,10 @@ from starlette.responses import StreamingResponse
 from config import settings
 from database import get_db
 from models.schemas import ChatRequest, ModelsResponse
-from services.agent_tools import search_web
-from services.coding_problem import format_problems_for_prompt, select_problems
 from services import api_key_store
+from services.agent_tools import search_web
 from services.api_key_store import resolve_api_key
+from services.coding_problem import format_problems_for_prompt, select_problems
 from services.llm_client import stream_chat
 from services.model_registry import get_available_models, invalidate_cache, validate_model
 from services.rag_pipeline import build_rag_context

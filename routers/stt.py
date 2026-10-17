@@ -26,6 +26,24 @@ def _get_client() -> httpx.AsyncClient:
     return _client
 
 
+async def aclose() -> None:
+    """关闭模块级客户端（由 main.py 的 lifespan 在应用退出时调用）。
+
+    必须在事件循环**还活着**的时候关闭：不然 httpx 的连接池会拖到 GC
+    阶段才去关底层 socket，那时 loop 已关闭，`loop.call_soon()` 会抛
+    `RuntimeError: Event loop is closed`。这类异常会被 anyio 归到当时
+    恰好正在运行的那条测试用例上，表现为「毫不相干的用例莫名失败」。
+    """
+    global _client
+    if _client is not None:
+        try:
+            await _client.aclose()
+        except Exception as exc:  # noqa: BLE001 - 清理失败不应影响退出
+            logger.warning("关闭 STT HTTP 客户端失败: %s", exc)
+        finally:
+            _client = None
+
+
 @router.get("/health")
 async def health():
     """探测 STT 微服务健康状态"""

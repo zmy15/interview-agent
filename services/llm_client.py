@@ -30,6 +30,24 @@ def get_client(api_key: Optional[str] = None) -> AsyncOpenAI:
     return _client
 
 
+async def aclose() -> None:
+    """关闭全局客户端（由 main.py 的 lifespan 在应用退出时调用）。
+
+    不关的话，底层 httpx 连接池会拖到 GC 阶段才回收，那时事件循环通常
+    已经关闭，`loop.call_soon()` 抛 `RuntimeError: Event loop is closed`。
+    在测试里这类异常会被 anyio 记到「当时正在跑的那条用例」上，导致
+    毫不相干的用例随机失败（CI 上曾表现为 test_delete_nonexistent 失败）。
+    """
+    global _client
+    if _client is not None:
+        try:
+            await _client.close()
+        except Exception as exc:  # noqa: BLE001 - 清理失败不应影响退出
+            logger.warning("关闭 DeepSeek 客户端失败: %s", exc)
+        finally:
+            _client = None
+
+
 async def stream_chat(
     messages: list[dict],
     model: Optional[str] = None,
