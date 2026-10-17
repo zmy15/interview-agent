@@ -58,6 +58,18 @@ import {
 const { TextArea } = Input
 const { Text } = Typography
 
+/**
+ * 把 API Key 掩码成可安全展示的形式：sk-6680…d69d
+ *
+ * 只保留头 6 位与尾 4 位。过短的 Key 全部打码，避免把整个密钥又暴露出来。
+ */
+function maskApiKey(key: string): string {
+  const k = (key || '').trim()
+  if (!k) return ''
+  if (k.length <= 12) return '•'.repeat(k.length)
+  return `${k.slice(0, 6)}…${k.slice(-4)}`
+}
+
 /** 中文语速：约250字/分钟（保留用于兼容旧逻辑，主要使用 wall-clock 时间） */
 const CHARS_PER_MINUTE = 250
 
@@ -563,14 +575,36 @@ const ChatPage: React.FC = () => {
   }
 
   // API Key 配置
+  // 弹窗打开时把已保存的 Key 回填进输入框，让用户能看见 / 编辑当前值
+  const openApiKeyModal = () => {
+    setApiKeyInput(apiKey)
+    setApiKeyModalOpen(true)
+  }
+
   const handleApiKeySave = () => {
-    setApiKey(apiKeyInput.trim())
+    const next = apiKeyInput.trim()
+    // 输入框为空且此前已配置 → 等同于清除，避免误以为「没改动」
+    if (!next && apiKey) {
+      setApiKey('')
+      setApiKeyModalOpen(false)
+      message.info('API Key 已清除，将使用服务端默认配置')
+      return
+    }
+    setApiKey(next)
     setApiKeyModalOpen(false)
-    if (apiKeyInput.trim()) {
+    if (next) {
       message.success('API Key 已保存')
     } else {
       message.info('API Key 已清除，将使用服务端默认配置')
     }
+  }
+
+  // 显式清除：一键清空已保存的 Key（含输入框），无需手动删空再保存
+  const handleApiKeyClear = () => {
+    setApiKey('')
+    setApiKeyInput('')
+    setApiKeyModalOpen(false)
+    message.info('API Key 已清除，将使用服务端默认配置')
   }
 
   // 获取面试计划
@@ -954,16 +988,19 @@ const ChatPage: React.FC = () => {
         <div style={{ flex: 1 }} />
 
         {/* API Key 配置按钮 */}
-        <Tooltip title={apiKey ? 'DeepSeek API Key 已配置' : '配置 DeepSeek API Key'}>
+        <Tooltip
+          title={
+            apiKey
+              ? `DeepSeek API Key 已配置（${maskApiKey(apiKey)}）`
+              : '配置 DeepSeek API Key'
+          }
+        >
           <Button
             size="small"
             icon={<KeyOutlined />}
             type={apiKey ? 'primary' : 'default'}
             ghost={!!apiKey}
-            onClick={() => {
-              setApiKeyInput(apiKey)
-              setApiKeyModalOpen(true)
-            }}
+            onClick={openApiKeyModal}
           >
             {apiKey ? '已配置' : 'API Key'}
           </Button>
@@ -1275,17 +1312,46 @@ const ChatPage: React.FC = () => {
         okText="保存"
         cancelText="取消"
         width={480}
+        footer={(_, { OkBtn, CancelBtn }) => (
+          <Space>
+            {!!apiKey && (
+              <Popconfirm
+                title="确认清除 API Key？"
+                description="清除后将改用服务端 .env 中配置的默认密钥。"
+                okText="清除"
+                cancelText="取消"
+                okButtonProps={{ danger: true }}
+                onConfirm={handleApiKeyClear}
+              >
+                <Button danger>清除</Button>
+              </Popconfirm>
+            )}
+            <CancelBtn />
+            <OkBtn />
+          </Space>
+        )}
       >
         <div style={{ marginBottom: 16 }}>
-          <Text type="secondary">
-            输入你的 DeepSeek API Key，将优先使用此密钥进行对话。
-            留空则使用服务端默认配置。
-          </Text>
+          {apiKey ? (
+            <Space direction="vertical" size={4} style={{ width: '100%' }}>
+              <Text>
+                当前已配置：<Text code>{maskApiKey(apiKey)}</Text>
+              </Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                输入新密钥可覆盖；清空输入框后点「保存」也可清除配置。
+              </Text>
+            </Space>
+          ) : (
+            <Text type="secondary">
+              输入你的 DeepSeek API Key，将优先使用此密钥进行对话。
+              留空则使用服务端默认配置。
+            </Text>
+          )}
         </div>
         <Input.Password
           value={apiKeyInput}
           onChange={(e) => setApiKeyInput(e.target.value)}
-          placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          placeholder={apiKey ? '留空并保存 = 清除当前密钥' : 'sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx'}
           autoFocus
         />
         <div style={{ marginTop: 12 }}>
@@ -1296,6 +1362,7 @@ const ChatPage: React.FC = () => {
               DeepSeek 开放平台
             </a>{' '}
             获取 API Key。
+            {apiKey && ' 注意：密钥按「协议+域名+端口」隔离存储，换地址访问会看不到。'}
           </Text>
         </div>
       </Modal>
