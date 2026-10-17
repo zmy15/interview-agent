@@ -73,7 +73,6 @@ from routers import (
 )
 
 # `settings` 既是模块名也是 config 里的常用变量名，显式取别名以免混淆
-from routers import settings as settings_router
 
 # ============ 日志配置 ============
 
