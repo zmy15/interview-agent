@@ -77,6 +77,11 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message, highlightCode, isStr
           borderRadius: 12,
           background: isUser ? token.colorPrimaryBg : token.colorBgContainer,
           border: `1px solid ${token.colorBorderSecondary}`,
+          // 气泡里全是文本节点，浏览器默认给它们套的是「文本编辑」的 I 型光标，
+          // 鼠标一移进气泡就像进了输入框。这里统一回退成普通箭头。
+          // 文字仍可正常选中复制，只是不再显示 I 型光标；
+          // 内部真正可点的元素（antd Button / Collapse 头部）各自覆盖为 pointer，不受影响。
+          cursor: 'default',
         }}
       >
         {isUser ? (
