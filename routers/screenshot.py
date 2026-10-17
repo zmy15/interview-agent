@@ -15,9 +15,11 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
+from database import get_db
 from models.schemas import (
     CaptureRequest,
     CaptureResponse,
@@ -25,6 +27,7 @@ from models.schemas import (
     ScreenshotInfoResponse,
 )
 from services import screen_capture as sc
+from services.api_key_store import resolve_api_key
 from services.model_registry import get_vision_models, resolve_vision_model
 from utils.auth import CurrentUser, get_optional_user
 from utils.prompt_loader import load_prompt
@@ -112,6 +115,8 @@ async def screenshot_info(
 @router.post("/capture", response_model=CaptureResponse)
 async def capture(
     req: CaptureRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
     user: Optional[CurrentUser] = Depends(get_optional_user),
 ):
     """截取整个屏幕，交给界面选中的模型识别题目并作答。
@@ -178,7 +183,7 @@ async def capture(
             data_url,
             prompt=question,
             system_prompt=system_prompt,
-            api_key=req.api_key,
+            api_key=await resolve_api_key(request, db, user, explicit=req.api_key),
             model=req.model,
             thinking=req.thinking_enabled,
             reasoning_effort=req.reasoning_effort,

@@ -68,6 +68,11 @@ from routers import (
     system_audio,
     upload,
 )
+from routers import (
+    settings as settings_router,
+)
+
+# `settings` 既是模块名也是 config 里的常用变量名，显式取别名以免混淆
 
 # ============ 日志配置 ============
 
@@ -199,6 +204,34 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass
 
+    # 关闭：释放模块级 HTTP 客户端（stt / tts / llm）
+    #
+    # 为什么必须在这里关：这些客户端是模块级、按需惰性创建的，之前从不关闭。
+    # 事件循环关闭后，httpx 连接池才在 GC 阶段去关底层 socket，
+    # `loop.call_soon()` 于是抛 `RuntimeError: Event loop is closed`。
+    # 在测试里这类**延迟发生的清理异常**会被 anyio 归到当时恰好正在运行的
+    # 那条用例（或 fixture）上 —— CI 上表现为 test_position_store 里一条纯
+    # 数据库用例莫名失败，本地则因为 httpx 版本不同而无法复现。
+    # 在循环还活着时显式关闭，既修掉资源泄漏，也让测试结果确定。
+    #
+    # 这里不判断 _client 是否为 None，一律调 aclose()：
+    # llm_client 除了全局客户端，还按 API Key 缓存了若干客户端
+    # （用户自带 Key 时走那条路径），只看 _client 会漏掉它们。
+    # aclose() 自身对「没有客户端」是幂等的。
+    import importlib
+
+    for _label, _modpath in (
+        ("STT", "routers.stt"),
+        ("TTS", "routers.tts"),
+        ("DeepSeek", "services.llm_client"),
+    ):
+        try:
+            _mod = importlib.import_module(_modpath)
+            await _mod.aclose()
+            logger.info("✅ %s 客户端已关闭", _label)
+        except Exception as exc:  # noqa: BLE001 - 清理失败不应阻断退出
+            logger.warning("⚠ 关闭 %s 客户端失败: %s", _label, exc)
+
     # 关闭：清理资源
     try:
         from database import engine
@@ -238,6 +271,7 @@ app.include_router(auth.router)          # 认证路由
 app.include_router(sessions.router)      # 会话历史
 app.include_router(analytics.router)     # 分析仪表盘
 app.include_router(question_bank.router) # 题库管理
+app.include_router(settings_router.router)  # 用户设置（API Key 加密存储）
 
 # ── 条件注册截图识别路由（Windows 专用；默认开启，可用 .env 关闭） ──
 if settings.SCREENSHOT_ENABLED:
@@ -325,6 +359,7 @@ if _HAS_FRONTEND:
     app.include_router(sessions.router, prefix="/api")
     app.include_router(analytics.router, prefix="/api")
     app.include_router(question_bank.router, prefix="/api")
+    app.include_router(settings_router.router, prefix="/api")
 
     if settings.SCREENSHOT_ENABLED:
         app.include_router(screenshot.router, prefix="/api")

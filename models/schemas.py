@@ -63,6 +63,25 @@ class ModelsResponse(BaseModel):
     source: str = "remote"
 
 
+# ============ 用户 API Key（加密存储） ============
+
+class ApiKeyStatusResponse(BaseModel):
+    """前端查询是否已配置 API Key —— 只含掩码，绝不返回明文"""
+
+    configured: bool
+    # 掩码提示，形如 sk-6680…d69d；未配置时为空串
+    hint: str = ""
+
+
+class ApiKeySaveRequest(BaseModel):
+    api_key: str = Field(min_length=1)
+
+
+class ApiKeySaveResponse(BaseModel):
+    configured: bool = True
+    hint: str = ""
+
+
 # ============ 面试相关 ============
 
 class InterviewStartRequest(BaseModel):

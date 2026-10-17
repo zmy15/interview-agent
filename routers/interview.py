@@ -3,7 +3,7 @@
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
@@ -16,6 +16,7 @@ from models.schemas import (
     ReportRequest,
     ReportResponse,
 )
+from services.api_key_store import resolve_api_key
 from services.llm_client import generate_report
 from services.position_store import PositionStore
 from utils.auth import CurrentUser, get_optional_user
@@ -83,7 +84,12 @@ async def stop_interview():
 
 
 @router.post("/report", response_model=ReportResponse)
-async def generate_interview_report(req: ReportRequest):
+async def generate_interview_report(
+    req: ReportRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: Optional[CurrentUser] = Depends(get_optional_user),
+):
     """
     基于完整对话历史生成面试评价报告。
     支持结构化 QA 记录以生成更精准的逐题评估。
@@ -122,7 +128,7 @@ async def generate_interview_report(req: ReportRequest):
 
     report = await generate_report(
         messages=[{"role": "user", "content": report_prompt}],
-        api_key=req.api_key,
+        api_key=await resolve_api_key(request, db, user, explicit=req.api_key),
     )
 
     return ReportResponse(report=report)

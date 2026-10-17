@@ -10,24 +10,69 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-# 全局客户端
+# 全局客户端（未传 api_key 时使用，走 .env 的 DEEPSEEK_API_KEY）
 _client: Optional[AsyncOpenAI] = None
+
+# 按 api_key 缓存的客户端。
+#
+# 为什么必须缓存而不是每次 new：每个 AsyncOpenAI 内部都持有一个 httpx 连接池，
+# 每次调用都新建就等于每次泄漏一个连接池（既浪费连接，也让 aclose() 无法回收 ——
+# 拿不到引用）。缓存后客户端的数量被「不同 key 的个数」限住，且都能在退出时关闭。
+#
+# 之所以需要按 key 区分：OpenAI SDK 的 key 是绑在 client 上的，没有「按请求传 key」
+# 的接口，所以要用不同的 key 就只能是不同的 client。
+_keyed_clients: dict[str, AsyncOpenAI] = {}
 
 
 def get_client(api_key: Optional[str] = None) -> AsyncOpenAI:
-    """获取 OpenAI 客户端。如果提供 api_key，则使用该 key 创建新客户端；否则复用全局客户端。"""
+    """获取 OpenAI 客户端。
+
+    - 传了 api_key：返回该 key 对应的客户端（按 key 缓存复用，不会每次新建）
+    - 没传：返回全局客户端（.env 的 DEEPSEEK_API_KEY）
+    """
     global _client
     if api_key:
-        return AsyncOpenAI(
-            api_key=api_key,
-            base_url=settings.DEEPSEEK_BASE_URL,
-        )
+        cached = _keyed_clients.get(api_key)
+        if cached is None:
+            cached = AsyncOpenAI(
+                api_key=api_key,
+                base_url=settings.DEEPSEEK_BASE_URL,
+            )
+            _keyed_clients[api_key] = cached
+        return cached
     if _client is None:
         _client = AsyncOpenAI(
             api_key=settings.DEEPSEEK_API_KEY,
             base_url=settings.DEEPSEEK_BASE_URL,
         )
     return _client
+
+
+async def aclose() -> None:
+    """关闭全部客户端（由 main.py 的 lifespan 在应用退出时调用）。
+
+    不关的话，底层 httpx 连接池会拖到 GC 阶段才回收，那时事件循环通常
+    已经关闭，`loop.call_soon()` 抛 `RuntimeError: Event loop is closed`。
+    在测试里这类异常会被 anyio 记到「当时正在跑的那条用例」上，导致
+    毫不相干的用例随机失败（CI 上曾表现为 test_position_store 的用例失败）。
+
+    注意要连**按 key 缓存**的那些一起关：用户配置了自己的 API Key 时，
+    get_client(api_key) 走的就是那条路径。
+    """
+    global _client
+    clients: list[AsyncOpenAI] = []
+    if _client is not None:
+        clients.append(_client)
+        _client = None
+    # 先取出再清空，保证即使 close 抛异常也不会把引用留在字典里
+    clients.extend(_keyed_clients.values())
+    _keyed_clients.clear()
+
+    for client in clients:
+        try:
+            await client.close()
+        except Exception as exc:  # noqa: BLE001 - 清理失败不应影响退出
+            logger.warning("关闭 DeepSeek 客户端失败: %s", exc)
 
 
 async def stream_chat(

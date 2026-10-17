@@ -354,3 +354,41 @@ class QuestionBankItem(Base):
         Index("idx_qb_category", "category"),
         Index("idx_qb_difficulty", "difficulty"),
     )
+
+
+# ========================================================================
+# 用户 API Key（加密存储）
+# ========================================================================
+
+class UserApiKey(Base):
+    """用户自己填写的 LLM API Key（加密存储）
+
+    为什么单独建表，而不是挂在 User.preferences 这个 JSON 列上：
+      1. preferences 会被整包读写，密钥容易随日志或调试输出泄露；
+      2. 密钥有独立的生命周期（保存 / 读取 / 清除），单独成表语义更清晰；
+      3. 加密字段单独存放，将来换算法或做轮换时影响面最小。
+
+    表中只存 Fernet 密文，明文仅在内存中出现；读取接口只返回掩码。
+    """
+
+    __tablename__ = "user_api_keys"
+
+    id = _uuid_pk()
+    user_id = Column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    # 服务商标识，目前只有 deepseek；预留以便将来接入其他厂商
+    provider = Column(String(32), nullable=False, default="deepseek")
+    # Fernet 密文（ASCII），绝不存明文
+    encrypted_key = Column(Text, nullable=False)
+    # 明文尾 4 位，用于界面提示「你配的是哪一把」，不含敏感信息
+    key_hint = Column(String(16), nullable=False, default="")
+    created_at = Column(DateTime, default=_utc_now, nullable=False)
+    updated_at = Column(DateTime, default=_utc_now, onupdate=_utc_now, nullable=False)
+
+    user = relationship("User")
+
+    __table_args__ = (
+        # 一个用户每个服务商只保留一条，保存时用 upsert 覆盖
+        Index("idx_user_api_key_unique", "user_id", "provider", unique=True),
+    )
