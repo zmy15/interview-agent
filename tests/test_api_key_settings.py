@@ -8,6 +8,31 @@ from models.db_models import UserApiKey
 from services import crypto
 
 
+@pytest.fixture(autouse=True)
+def _no_stored_keys_leak():
+    """每个用例结束后清空 user_api_keys 表，避免污染其它测试文件。
+
+    为什么需要：这些用例会把 API Key 存进数据库。而 routers 的
+    resolve_api_key() 在没有请求头时会回落到「库里存的 Key」，
+    于是后续 test_chat.py 里**没有** mock 掉 get_client 的用例
+    会真的拿到一把 key、进而真的去 new 一个 AsyncOpenAI 客户端。
+    那正是 CI 上 test_position_store 报「Event loop is closed」的来源
+    （未被跟踪的客户端拖到 GC 阶段才关闭）。
+
+    测试之间不该通过数据库产生这种隐式耦合，因此这里主动清理。
+    """
+    yield
+    import asyncio
+
+    async def _clear():
+        async with async_session_factory() as db:
+            for row in (await db.execute(select(UserApiKey))).scalars().all():
+                await db.delete(row)
+            await db.commit()
+
+    asyncio.run(_clear())
+
+
 class TestApiKeyEndpoints:
     """PUT / GET / DELETE /settings/api-key"""
 
