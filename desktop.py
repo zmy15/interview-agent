@@ -68,6 +68,8 @@ import threading
 import time
 from typing import Optional
 
+from app_paths import bundle_dir, exe_dir, is_frozen, logs_dir, user_data_dir
+
 logger = logging.getLogger("desktop")
 
 IS_WINDOWS = sys.platform == "win32"
@@ -1560,8 +1562,10 @@ def _setup_file_logging() -> Optional[str]:
     try:
         from logging.handlers import RotatingFileHandler
 
-        log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-        os.makedirs(log_dir, exist_ok=True)
+        # logs_dir() 在源码运行时是项目根下的 logs/（行为不变）；
+        # 在 PyInstaller 打包运行时是 %LOCALAPPDATA%\InterviewAgent\logs，
+        # 不会去写安装目录（可能无权限）也不会被卸载删除。
+        log_dir = logs_dir()
         log_path = os.path.join(log_dir, "desktop.log")
 
         handler = RotatingFileHandler(
@@ -1800,6 +1804,22 @@ class _MicroService:
 
     def start(self) -> bool:
         """启动隐藏 uvicorn 子进程；健康检查成功返回 True"""
+        # 打包运行（PyInstaller exe）时的明确降级：
+        #   1) 打包版按设计不含语音依赖（faster-whisper / piper-tts 及模型
+        #      体积大，且语音功能默认关闭），子进程即便拉起来也会 ImportError；
+        #   2) 子进程启动方式（sys.executable -m uvicorn）在冻结进程里
+        #      不成立 —— frozen exe 不接受 -m 参数。
+        # 因此直接跳过并说明原因，而不是留一个「连不上」的假故障。
+        if is_frozen():
+            logger.warning(
+                "ℹ %s 服务未包含在打包版中（语音功能默认关闭）。"
+                "如需语音识别 / 语音合成，请使用源码方式运行"
+                "（start.bat / start.sh），或确认 .env 中"
+                "VOICE_ENABLED=false。",
+                self.name,
+            )
+            return False
+
         # 端口被占用：多半是上次残留或用户已用 start.bat 起过一个。
         # 不抢占、不报错退出，直接复用已有服务。
         if not _port_available(self.host, self.port):
@@ -2014,9 +2034,29 @@ def build_parser() -> argparse.ArgumentParser:
 # 主入口
 # ══════════════════════════════════════════════════════════════
 
+def _teardown_app(window, voice, server, server_thread) -> None:
+    """统一收尾：关窗口 → 停语音微服务 → 停 uvicorn → 等待工作线程退出
+
+    只在**正常退出**（窗口关闭 / Ctrl+C）时调用。
+    「原生窗口失败回退到 browser 模式」那条路只关窗口、不停服务 ——
+    后端还要继续供浏览器窗口使用。
+    """
+    try:
+        window.close()
+    except Exception:  # pragma: no cover - 窗口可能从未成功创建
+        pass
+    voice.stop()
+    server.should_exit = True
+    server_thread.join(timeout=10)
+
+
 def run_desktop(args: argparse.Namespace) -> int:
     """以独立窗口模式启动应用（阻塞直到窗口关闭）"""
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    # 冻结运行（PyInstaller exe）时不能 chdir 进解包目录：onedir 下那是
+    # _internal/（只读资源），onefile 下更是随进程退出即销毁的临时目录。
+    # 相对路径写入（chroma_data/、screenshots/ 等）必须落到用户数据目录。
+    # 源码运行时 user_data_dir() 即项目根目录，行为与以前一致。
+    os.chdir(user_data_dir())
     _configure_console()
 
     if not args.no_console:
@@ -2179,21 +2219,24 @@ def run_desktop(args: argparse.Namespace) -> int:
             window.start()
         except KeyboardInterrupt:
             logger.info("收到中断信号，正在退出...")
+            _teardown_app(window, voice, server, server_thread)
+            logger.info("👋 已退出")
+            return 0
         except Exception as exc:
+            # 原生窗口运行时失败不能一退了之 —— 后端已经跑起来了，用户至少还能用。
+            # 典型场景：WebView2 运行时损坏；PyInstaller 冻结环境下 pythonnet
+            # 初始化失败（打包版正是靠这个回退保证可用性）。
             logger.error("❌ 原生窗口运行失败: %s", exc)
-            logger.info("   可改用浏览器窗口重试:  python desktop.py --shell browser")
-            window.close()
-            server.should_exit = True
-            server_thread.join(timeout=10)
-            voice.stop()
-            return 1
-        finally:
-            window.close()
-            voice.stop()
-            server.should_exit = True
-            server_thread.join(timeout=10)
-        logger.info("👋 已退出")
-        return 0
+            try:
+                window.close()
+            except Exception:  # pragma: no cover - 窗口可能从未成功创建
+                pass
+            logger.info("↩ 回退到浏览器窗口（功能一致，仅「捕获排除」受限）")
+            shell = "browser"  # 落到下方 browser 分支；服务保持运行，不 teardown
+        else:
+            _teardown_app(window, voice, server, server_thread)
+            logger.info("👋 已退出")
+            return 0
 
     # ── browser 模式 ──
     logger.info("🧩 窗口实现: browser（系统浏览器 --app）")
@@ -2260,12 +2303,24 @@ def _load_dotenv_early() -> None:
     config.py 也会调用 load_dotenv()，但那是后续导入时才发生；
     窗口参数的默认值需要在解析命令行时就能读到，因此这里提前加载一次。
     load_dotenv 默认不覆盖已存在的环境变量，重复调用是安全的。
+
+    冻结运行（PyInstaller exe）时没有源码目录可依赖，改为：
+        1) exe 同目录（安装目录）的 .env —— 用户编辑的那份，优先；
+        2) 打包内置的默认 .env —— 安装时写入，保证开箱即用。
     """
     try:
         from dotenv import load_dotenv
 
-        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-        load_dotenv(env_path)
+        if is_frozen():
+            for env_path in (
+                os.path.join(exe_dir(), ".env"),
+                os.path.join(bundle_dir(), ".env"),
+            ):
+                if os.path.isfile(env_path):
+                    load_dotenv(env_path)
+        else:
+            env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+            load_dotenv(env_path)
     except Exception as exc:  # pragma: no cover - .env 缺失或 dotenv 未安装
         logger.debug("加载 .env 失败（可忽略）: %s", exc)
 
