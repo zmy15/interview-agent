@@ -66,7 +66,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger("desktop")
 
@@ -342,6 +342,31 @@ def focus_window(hwnd: int) -> bool:
         return False
     _user32.ShowWindow(ctypes.c_void_p(hwnd), SW_RESTORE)
     return bool(_user32.SetForegroundWindow(ctypes.c_void_p(hwnd)))
+
+
+def show_window(hwnd: int) -> bool:
+    """显示并聚焦窗口（从托盘恢复时用）"""
+    if not IS_WINDOWS or not hwnd:
+        return False
+    _user32.ShowWindow(ctypes.c_void_p(hwnd), SW_RESTORE)
+    # SetForegroundWindow 有前台锁，刚由托盘线程调用时可能被拒；
+    # 失败也不影响「窗口已经显示」这一事实，所以只作为尽力而为。
+    _user32.SetForegroundWindow(ctypes.c_void_p(hwnd))
+    return True
+
+
+def hide_window(hwnd: int) -> bool:
+    """隐藏窗口（但不销毁 —— 应用与服务继续在后台运行）"""
+    if not IS_WINDOWS or not hwnd:
+        return False
+    return bool(_user32.ShowWindow(ctypes.c_void_p(hwnd), SW_HIDE))
+
+
+def is_window_visible(hwnd: int) -> bool:
+    """窗口当前是否可见"""
+    if not IS_WINDOWS or not hwnd:
+        return False
+    return bool(_user32.IsWindowVisible(ctypes.c_void_p(hwnd)))
 
 
 def set_window_title(hwnd: int, title: str) -> bool:
@@ -798,6 +823,22 @@ class DesktopWindow:
     def wait(self) -> None:
         if self.process is not None:
             self.process.wait()
+
+    def apply_taskbar_visibility(self, hidden: bool) -> bool:
+        """按需隐藏/恢复任务栏图标（与 NativeWindow 同名方法保持一致的语义）。
+
+        浏览器模式下窗口属于浏览器进程，样式修改是跨进程的，成功率取决于
+        权限与浏览器实现；失败时只记日志，不阻断托盘的显示/隐藏。
+        """
+        if not IS_WINDOWS or not self.hwnd:
+            return False
+        if hidden == _has_toolwindow_style(self.hwnd):
+            return True
+        if not set_taskbar_hidden(self.hwnd, hidden):
+            logger.debug("浏览器模式下切换任务栏图标失败（可忽略）")
+            return False
+        refresh_taskbar_button(self.hwnd)
+        return True
 
     def close(self) -> None:
         if self._closed:
@@ -1472,6 +1513,23 @@ class NativeWindow:
     def is_running(self) -> bool:
         return not self._closed
 
+    def apply_taskbar_visibility(self, hidden: bool) -> bool:
+        """按需隐藏/恢复任务栏图标（托盘隐藏窗口前后调用）。
+
+        与启动时的 --hide-taskbar 不同，这里是**运行中切换**：窗口藏起来时
+        不希望任务栏还留一个点不开的按钮；重新显示时应把按钮还回去（否则
+        窗口回来了却在任务栏找不到）。切换同样要走 set_taskbar_hidden 的
+        「隐藏→改样式→显示」流程，否则已注册的按钮不会重建。
+        """
+        if not IS_WINDOWS or not self.hwnd:
+            return False
+        if hidden == _has_toolwindow_style(self.hwnd):
+            return True  # 已是目标状态，避免无谓地闪烁窗口
+        if not set_taskbar_hidden(self.hwnd, hidden):
+            return False
+        refresh_taskbar_button(self.hwnd)
+        return True
+
     def close(self) -> None:
         if self._closed:
             return
@@ -1549,6 +1607,144 @@ def hide_console_window() -> bool:
     except Exception as exc:  # pragma: no cover
         logger.debug("隐藏控制台失败（可忽略）: %s", exc)
         return False
+
+
+# ══════════════════════════════════════════════════════════════
+# 系统托盘
+# ══════════════════════════════════════════════════════════════
+
+class TrayController:
+    """把托盘图标接到主窗口上：单击切换显示/隐藏，右键菜单可退出。
+
+    为什么隐藏窗口时要连任务栏图标一起处理：
+        WS_EX_TOOLWINDOW 在窗口可见时移除任务栏按钮，但窗口隐藏后任务栏可能
+        残留一个「点不开」的按钮。这里在隐藏前套上 TOOLWINDOW、在显示时摘掉，
+        让任务栏始终只反映「窗口是否真的在屏幕上」。
+
+    退出路径：
+        托盘菜单「退出」→ 交回主线程（webview 的 destroy 必须在 GUI 线程里调，
+        这里通过设置 self._quit_requested，由主线程的等待循环发现后处理）。
+    """
+
+    def __init__(self, window, icon_path: Optional[str] = None,
+                 log_path: Optional[str] = None,
+                 quit_callback: Optional[Callable[[], None]] = None):
+        self.window = window          # NativeWindow / DesktopWindow 实例
+        self.icon_path = icon_path
+        self.log_path = log_path
+        # native 模式下 webview.start() 会一直阻塞在 GUI 事件循环里，
+        # 没有「主循环」可以发现退出标志，因此直接给出关闭回调，
+        # 由托盘线程调用 window.close()（pywebview 的 destroy 允许跨线程，
+        # desktop.py 的 JS API close_window 就是同样的用法）。
+        self.quit_callback = quit_callback
+        self.tray = None
+        self.quit_requested = False
+
+    # ── 生命周期 ──
+
+    def start(self) -> bool:
+        """注册托盘图标。
+
+        图标本身可以立刻注册（Shell_NotifyIcon 不需要应用窗口），
+        但「单击显隐」要等窗口句柄就绪才有意义，因此这里起一个后台线程
+        等 hwnd 出现后再把初始可见状态同步给托盘 —— 这样调用方既可以在
+        进入 webview.start() 之前注册，也可以在窗口起来之后再注册。
+        """
+        from services import tray as tray_mod
+
+        if not tray_mod.available():
+            return False
+
+        self.tray = tray_mod.TrayIcon(
+            tooltip="Interview Agent — 单击显示/隐藏窗口",
+            icon_path=self.icon_path,
+            on_toggle=self._on_toggle,
+            on_open_log=self._open_log,
+            on_quit=self._request_quit,
+            balloon="已最小化到托盘：单击图标显示窗口，右键可退出",
+        )
+        ok = self.tray.start()
+        if not ok:
+            logger.warning("⚠ 托盘图标未能注册；窗口关闭后应用仍在后台运行，"
+                           "请从任务管理器结束进程")
+            return False
+
+        logger.info("🗂 托盘图标已就绪（单击显示/隐藏，右键退出）")
+        threading.Thread(target=self._sync_visibility_when_ready,
+                         name="tray-hwnd-sync", daemon=True).start()
+        return True
+
+    def _sync_visibility_when_ready(self, timeout: float = 30.0) -> None:
+        """等窗口句柄出现，把初始可见状态同步给托盘（供菜单文案与切换判断使用）"""
+        deadline = time.time() + timeout
+        while time.time() < deadline and not getattr(self.window, "hwnd", 0):
+            time.sleep(0.3)
+        hwnd = getattr(self.window, "hwnd", 0)
+        if not hwnd:
+            logger.warning("⚠ 未拿到窗口句柄，托盘的显隐切换可能不可用")
+            return
+        if self.tray is not None:
+            self.tray.update_visibility(is_window_visible(hwnd))
+        logger.info("🗂 托盘已绑定窗口 (hwnd=%s)", hwnd)
+
+    def stop(self) -> None:
+        if self.tray is not None:
+            try:
+                self.tray.stop()
+            except Exception:  # pragma: no cover
+                pass
+            self.tray = None
+
+    # ── 回调（运行在托盘线程上）──
+
+    def _on_toggle(self, force: Optional[bool] = None) -> bool:
+        """显示 / 隐藏主窗口。force=True 强制显示、False 强制隐藏、None 取反。"""
+        hwnd = getattr(self.window, "hwnd", 0)
+        if not hwnd:
+            logger.warning("托盘操作失败：尚未拿到窗口句柄")
+            return False
+
+        visible = is_window_visible(hwnd)
+        target = (not visible) if force is None else bool(force)
+
+        if target:
+            self.window.apply_taskbar_visibility(False)
+            show_window(hwnd)
+            logger.info("🗂 托盘：显示窗口")
+        else:
+            # 先摘任务栏按钮再隐藏，避免残留一个点不开的按钮
+            self.window.apply_taskbar_visibility(True)
+            hide_window(hwnd)
+            logger.info("🗂 托盘：隐藏窗口（应用仍在后台运行）")
+
+        if self.tray is not None:
+            self.tray.update_visibility(target)
+        return target
+
+    def _open_log(self) -> None:
+        """打开日志文件（控制台不可见时的主要排查入口）"""
+        if not self.log_path or not os.path.exists(self.log_path):
+            logger.warning("日志文件不存在: %s", self.log_path)
+            return
+        try:
+            os.startfile(self.log_path)  # noqa: S606 - Windows 专用，打开文本日志
+        except Exception as exc:  # pragma: no cover
+            logger.warning("打开日志失败: %s", exc)
+
+    def _request_quit(self) -> None:
+        """请求退出。
+
+        native 模式：直接回调（会 destroy 窗口，从而让 webview.start() 返回）；
+        其它模式：置标志，由主线程的等待循环处理。
+        两条路径都保证「销毁窗口」发生在正确的线程上 —— pywebview 的
+        destroy() 只是向 GUI 线程投递关闭消息，本身是线程安全的。
+        """
+        self.quit_requested = True
+        if self.quit_callback is not None:
+            try:
+                self.quit_callback()
+            except Exception as exc:  # pragma: no cover
+                logger.warning("退出回调失败: %s", exc)
 
 
 def _setup_file_logging() -> Optional[str]:
@@ -1983,6 +2179,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="[browser 模式] 浏览器用户数据目录（默认 ~/.interview-agent/desktop-profile）")
     window.add_argument("--hide-taskbar", type=_str2bool, nargs="?", const=True, default=False,
                         help="隐藏任务栏图标（默认关闭）")
+    window.add_argument("--tray", type=_str2bool, nargs="?", const=True, default=False,
+                        help="在系统托盘显示图标（默认关闭）。开启后：单击图标显示/隐藏窗口，"
+                             "右键菜单可退出。窗口隐藏时任务栏图标会一并移除，"
+                             "避免留下一个点不开的死按钮。")
     window.add_argument("--opacity", type=float, default=MAX_OPACITY,
                         help=f"窗口透明度 {MIN_OPACITY}-{MAX_OPACITY}（1.0=不透明，默认 1.0）；"
                              f"也可传 20-100 的百分数，运行中可在界面顶栏拖动滑块调整")
@@ -2174,6 +2374,21 @@ def run_desktop(args: argparse.Namespace) -> int:
             zoom=clamp_zoom(args.zoom),
         )
         logger.info("ℹ 关闭窗口或按 Ctrl+C 即可退出应用")
+
+        # 托盘图标：在窗口线程之外先注册。native 的 webview.start() 一旦进入
+        # 就会一直阻塞，所以这里趁窗口还没起来就启动托盘线程，
+        # 由它自己在 hwnd 就绪后再绑定显隐操作（见 TrayController 的说明）。
+        tray_ctrl: Optional[TrayController] = None
+        if args.tray:
+            tray_ctrl = TrayController(
+                window,
+                icon_path=os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                       "assets", "tray.ico"),
+                log_path=log_path,
+                quit_callback=window.close,
+            )
+            tray_ctrl.start()
+
         try:
             # 阻塞直到窗口关闭（webview.start 内部运行 GUI 事件循环）
             window.start()
@@ -2188,6 +2403,8 @@ def run_desktop(args: argparse.Namespace) -> int:
             voice.stop()
             return 1
         finally:
+            if tray_ctrl is not None:
+                tray_ctrl.stop()
             window.close()
             voice.stop()
             server.should_exit = True
@@ -2238,13 +2455,36 @@ def run_desktop(args: argparse.Namespace) -> int:
 
     logger.info("ℹ 关闭窗口或按 Ctrl+C 即可退出应用")
 
-    # ── 5. 阻塞直到窗口关闭 / 用户中断 ──
+    # ── 5.5 注册托盘图标 ──
+    # 放在窗口启动之后、并等 hwnd 就绪：浏览器模式下 hwnd 由特效线程写入，
+    # 未就绪时注册也能成功，只是「单击显隐」不可用。
+    tray_ctrl: Optional[TrayController] = None
+    if args.tray:
+        tray_ctrl = TrayController(
+            window,
+            icon_path=os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "assets", "tray.ico"),
+            log_path=log_path,
+        )
+        # 等 hwnd 就绪（特效线程负责写入），最多等 20 秒
+        deadline = time.time() + 20.0
+        while time.time() < deadline and not getattr(window, "hwnd", 0):
+            time.sleep(0.3)
+        tray_ctrl.start()
+        logger.info("ℹ 关闭窗口即退出；要最小化到托盘请单击托盘图标隐藏窗口")
+
+    # ── 6. 阻塞直到窗口关闭 / 用户中断 / 托盘请求退出 ──
     try:
         while window.is_running():
+            if tray_ctrl is not None and tray_ctrl.quit_requested:
+                logger.info("🖱 托盘请求退出，正在关闭窗口...")
+                break
             time.sleep(0.5)
     except KeyboardInterrupt:
         logger.info("收到中断信号，正在退出...")
     finally:
+        if tray_ctrl is not None:
+            tray_ctrl.stop()
         window.close()
         voice.stop()
         server.should_exit = True
@@ -2307,6 +2547,11 @@ def _apply_env_defaults(args: argparse.Namespace) -> None:
     if "capture_exclude" not in took_arg:
         args.capture_exclude = env_bool("DESKTOP_CAPTURE_EXCLUDE", args.capture_exclude)
     if "hide_taskbar" not in took_arg:
+        # 托盘模式下默认隐藏任务栏图标：窗口藏起来时任务栏还留着一个点不开的
+        # 按钮最招人烦，托盘图标才是那时候唯一的入口。
+        # 显式传的 --hide-taskbar 与 DESKTOP_HIDE_TASKBAR 优先级都高于这个默认值。
+        if args.tray:
+            args.hide_taskbar = True
         args.hide_taskbar = env_bool("DESKTOP_HIDE_TASKBAR", args.hide_taskbar)
     if "host" not in took_arg:
         args.host = os.getenv("HOST") or args.host

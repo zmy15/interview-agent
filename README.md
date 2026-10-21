@@ -132,7 +132,9 @@ chmod +x start.sh
 #### 方式二：独立窗口模式（Windows）
 
 ```bash
-python desktop.py
+# 推荐：双击 start_app.bat（它转调 start_app.ps1，全程无终端窗口）
+.\start_app.ps1              # 或直接跑 PowerShell 启动器
+python desktop.py            # 也可以绕过启动器，自己带参数跑
 # 或经由 main.py 启动（参数自动转发）
 python main.py --desktop
 python main.py --desktop --no-topmost --width 1366 --height 768
@@ -145,15 +147,24 @@ python main.py --desktop --no-topmost --width 1366 --height 768
 | 后端 | 独立 cmd 窗口 | 桌面进程内 |
 | 前端 | Vite dev（5173，热更新） | 后端托管的 `dist` 构建产物 |
 | 语音微服务 | 各自一个 cmd 窗口 | 桌面进程内，**不弹窗** |
-| 可见窗口 | 4 个控制台 + 1 个浏览器 | **只有 1 个独立窗口** |
+| 可见窗口 | 4 个控制台 + 1 个浏览器 | **只有 1 个独立窗口 + 托盘图标** |
+| 任务栏 | 多个按钮 | 默认不出现图标，由托盘图标代替 |
 
 > 桌面版**默认免登录**（单用户模式，数据归属本机账号 `desktop@local`）。想恢复登录页：`.env` 中设 `AUTH_REQUIRED=true`，或 `start_app.bat --auth-required true`。
 >
 > 桌面版**默认不询问语音开关**，是否启用完全由 `.env` 中的 `VOICE_ENABLED` / `STT_ENABLED` / `TTS_ENABLED` 决定，保持双击即用。
 >
-> **控制台启动后会自动隐藏**，日志写入 `logs/desktop.log`。排查问题用 `start_app.bat --hide-console false` 保留黑窗口。
+> **全程没有终端窗口**：启动器由 PowerShell 以 `-WindowStyle Hidden` 启动，应用用
+> `pythonw.exe` 运行，两者都不分配控制台。日志写入 `logs/start_app.log`（启动器）、
+> `logs/desktop.log`（应用）、`logs/app-stderr.log`（应用的标准错误，含未捕获异常的
+> traceback）。排查问题用 `.\start_app.ps1 -Foreground` 在当前终端里跑，日志直接可见。
 >
-> 独立窗口要求先构建前端：`cd frontend && npm run build`（`start_app.bat` 会在产物缺失或源码更新时自动重新构建）。
+> **托盘图标**（`--tray`，启动器默认开启）：单击图标显示/隐藏窗口，右键菜单提供
+> 显示/隐藏、打开日志、退出。窗口隐藏时应用与服务继续在后台运行。窗口隐藏时任务栏
+> 图标一并移除，避免留下点不开的死按钮；不想要托盘可用 `-NoTray`，想保留任务栏图标
+> 用 `-ShowTaskbar`。
+>
+> 独立窗口要求先构建前端：`cd frontend && npm run build`（`start_app.ps1` 会在产物缺失或源码更新时自动重新构建）。
 
 **常用启动参数**
 
@@ -169,13 +180,14 @@ python main.py --desktop --no-topmost --width 1366 --height 768
 | `--opacity N` | `1.0` | 窗口透明度 `0.2`–`1.0`（也可写 `20`–`100` 百分数） |
 | `--zoom N` | `1.0` | 界面缩放 `0.5`–`2.0`（也可写百分数） |
 | `--capture-exclude [BOOL]` | `true` | 从截屏 / 录屏中排除窗口（仅 native 真正生效） |
-| `--hide-taskbar [BOOL]` | `false` | 隐藏任务栏图标 |
+| `--hide-taskbar [BOOL]` | `false` | 隐藏任务栏图标（开 `--tray` 时默认变为 `true`） |
+| `--tray [BOOL]` | `false` | 显示系统托盘图标：单击显隐窗口，右键可退出 |
 | `--fullscreen [BOOL]` | `false` | 全屏启动 |
 | `--app PATH` | — | 启动后打开的页面，如 `--app /login` |
 | `--browser PATH` | — | 【browser 模式】指定浏览器可执行文件 |
 | `--user-data-dir PATH` | `~/.interview-agent/desktop-profile` | 【browser 模式】浏览器用户数据目录 |
 | `--debug` | `false` | 【native 模式】开启 WebView 开发者工具 |
-| `--hide-console [BOOL]` | `true` | 启动后隐藏启动器控制台 |
+| `--hide-console [BOOL]` | `true` | 启动后隐藏启动器控制台。**注意**：Windows 11 默认终端（Windows Terminal）下这个开关无效，见下方说明；用 `start_app.ps1` 启动不会有控制台 |
 | `--auth-required [BOOL]` | `false` | 是否要求登录；`true` 恢复登录页 |
 | `--no-console` | `false` | 不输出启动日志 |
 | `--open-timeout SEC` | `90` | 等待服务就绪的最长秒数 |
@@ -826,10 +838,33 @@ pre-commit install          # 安装 git hook，之后每次 commit 自动检查
 ### 启动脚本
 
 - `start.bat` / `start.sh` **每次启动都会重装 Python 依赖**，每次都会联网耗时。
-- `start.bat` / `start.sh` 会**交互询问**是否启用语音；`start_app.bat` 则完全从 `.env` 读取，不提问。
+- `start.bat` / `start.sh` 会**交互询问**是否启用语音；`start_app.bat` / `start_app.ps1` 则完全从 `.env` 读取，不提问。
 - 语音相关的安装与设备选择在 `start.bat` 中**只在当前窗口会话内生效，不会写回 `.env`**。想让配置长期生效，请手动写入 `.env`。
 - 脚本只检查「是否安装了 Node」，并未校验版本。由于前端使用 Vite 8，建议使用 **Node 20+**。
 - `start_app.bat` 接受并透传任意参数给 `desktop.py`，例如 `start_app.bat --width 1600 --height 900 --no-topmost`。
+- `start_app.ps1` 是实际干活的启动器，`start_app.bat` 只是转发（因为双击 .bat 一定会先出现一个终端窗口）。常用开关：
+  `-Foreground`（前台运行看日志）、`-SkipDeps`、`-NoBuild`、`-NoTray`、`-ShowTaskbar`。
+- **`start_app.ps1` 必须以 UTF-8 BOM 保存**：Windows PowerShell 5.1 在没有 BOM 时按系统
+  ANSI 代码页读取 `.ps1`，中文会变乱码并破坏引号配对，脚本直接语法报错。（PowerShell 7 不受影响。）
+
+### 为什么双击 .bat 的终端窗口藏不掉
+
+这不是没实现，而是 Windows 11 的终端架构决定的，实测结论：
+
+- 默认终端是 **Windows Terminal** 时，`cmd` 跑在 ConPTY 伪控制台里；
+- 子进程调用 `GetConsoleWindow()` 拿到的是 `conhost.exe` 名下的
+  `PseudoConsoleWindow`（真实类名，可用 `EnumWindows` 验证）；
+- 对它调用 `ShowWindow(SW_HIDE)` 会**返回成功**，`IsWindowVisible` 也变成 `False`，
+  但屏幕上那个真正的终端窗口纹丝不动。
+
+也就是说「应用自己去隐藏启动它的终端」这条路走不通。`start_app.ps1` 改用
+`Start-Process -WindowStyle Hidden`（经由 `STARTUPINFO.wShowWindow` 让系统从一开始就不
+显示窗口）+ `pythonw.exe`（GUI 子系统，不分配控制台），因此**根本不存在**需要隐藏的窗口。
+
+> 另一个相关坑：`pythonw.exe` 下 `sys.stdout` / `sys.stderr` 为空，未捕获异常的
+> traceback 会彻底消失。启动器因此显式把子进程的 stdout/stderr 重定向到
+> `logs/app-stdout.log` 与 `logs/app-stderr.log` —— 既拿到崩溃现场，也避免子进程
+> 继承启动器的句柄、在启动器退出后因句柄失效而静默死掉（这个坑实际踩过）。
 
 ### 排查技巧
 
