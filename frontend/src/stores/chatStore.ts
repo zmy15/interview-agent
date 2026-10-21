@@ -44,6 +44,18 @@ interface ChatState {
   questionBankIds: string[]
   questionBankMode: 'strict' | 'mixed' | 'adaptive'
 
+  // 稳定前缀（prompt + 简历 + JD），按模式分别保存。
+  //
+  // 后端在首轮通过 SSE 的 system_prefix 事件下发权威文本，这里存下来，
+  // 之后每轮作为 messages[0] 原样回传。这样「同一场面试的 system 逐字节不变」
+  // 由后端缓存 + 前端回传双重保证，服务端前缀缓存（prefix caching）稳定命中。
+  //
+  // 它与对话内容无关：不放进 messages（否则会出现在聊天记录和报告里），
+  // 也不参与持久化 —— 刷新页面后重新取一次即可，且后端本来就按请求字段
+  // 校验，前端存着旧值只会被覆盖，不会污染提示词。
+  interviewerSystemMessage: string | null
+  candidateSystemMessage: string | null
+
   // 持久化状态
   _hydrated: boolean
 
@@ -89,6 +101,10 @@ interface ChatState {
   setQuestionBankIds: (ids: string[]) => void
   setQuestionBankMode: (mode: 'strict' | 'mixed' | 'adaptive') => void
 
+  // Actions — 稳定前缀
+  setSystemMessage: (mode: ChatMode, content: string | null) => void
+  getSystemMessage: () => string | null
+
   // Actions — 持久化
   setHydrated: () => void
 }
@@ -100,6 +116,13 @@ function _saveCurrentToSlot(state: ChatState): Partial<ChatState> {
   } else {
     return { candidateMessages: state.messages }
   }
+}
+
+/** 辅助：读取当前模式的稳定前缀 */
+function _currentSystemMessage(state: ChatState): string | null {
+  return state.selectedMode === 'interviewer'
+    ? state.interviewerSystemMessage
+    : state.candidateSystemMessage
 }
 
 export const useChatStore = create<ChatState>()(
@@ -136,6 +159,9 @@ export const useChatStore = create<ChatState>()(
 
       questionBankIds: [],
       questionBankMode: 'mixed' as const,
+
+      interviewerSystemMessage: null,
+      candidateSystemMessage: null,
 
       _hydrated: false,
 
@@ -184,6 +210,11 @@ export const useChatStore = create<ChatState>()(
           currentReasoning: '',
           currentContent: '',
           isStreaming: false,
+          // 清空对话 = 换了一场面试，旧前缀必须一起丢弃
+          // （后端虽然会校验并覆盖，但没必要继续回传一大段注定作废的文本）
+          ...(state.selectedMode === 'interviewer'
+            ? { interviewerSystemMessage: null }
+            : { candidateSystemMessage: null }),
           ..._saveCurrentToSlot({ ...state, messages: [] }),
         })),
 
@@ -195,6 +226,8 @@ export const useChatStore = create<ChatState>()(
           currentReasoning: '',
           currentContent: '',
           isStreaming: false,
+          interviewerSystemMessage: null,
+          candidateSystemMessage: null,
         }),
 
       // 设置 actions
@@ -226,14 +259,42 @@ export const useChatStore = create<ChatState>()(
         })
       },
 
-      setPosition: (name) => set({ selectedPosition: name, selectedJdId: null }),
-      setJdId: (jdId) => set({ selectedJdId: jdId }),
+      setPosition: (name) =>
+        // 换岗位 = 换 JD，缓存的前缀必然失效，直接作废避免继续回传
+        set((state) => ({
+          selectedPosition: name,
+          selectedJdId: null,
+          ...(state.selectedMode === 'interviewer'
+            ? { interviewerSystemMessage: null }
+            : { candidateSystemMessage: null }),
+        })),
+      setJdId: (jdId) =>
+        // 换 JD 同理
+        set((state) => ({
+          selectedJdId: jdId,
+          ...(state.selectedMode === 'interviewer'
+            ? { interviewerSystemMessage: null }
+            : { candidateSystemMessage: null }),
+        })),
       setUseSearch: (use) => set({ useSearch: use }),
       setCodingEnabled: (enabled) => set({ codingEnabled: enabled }),
 
       // 面试配置 actions
-      setCandidateLevel: (level) => set({ candidateLevel: level }),
-      setInterviewRound: (round) => set({ interviewRound: round }),
+      // 级别/轮次都会改变系统提示词正文，因此同样要作废缓存的前缀
+      setCandidateLevel: (level) =>
+        set((state) => ({
+          candidateLevel: level,
+          ...(state.selectedMode === 'interviewer'
+            ? { interviewerSystemMessage: null }
+            : { candidateSystemMessage: null }),
+        })),
+      setInterviewRound: (round) =>
+        set((state) => ({
+          interviewRound: round,
+          ...(state.selectedMode === 'interviewer'
+            ? { interviewerSystemMessage: null }
+            : { candidateSystemMessage: null }),
+        })),
       setAnswerLength: (length) => set({ answerLength: length }),
 
       // 练习状态 actions
@@ -284,6 +345,14 @@ export const useChatStore = create<ChatState>()(
       // 题库选题 actions
       setQuestionBankIds: (ids) => set({ questionBankIds: ids }),
       setQuestionBankMode: (mode) => set({ questionBankMode: mode }),
+
+      // 稳定前缀由后端下发后写入；传 null 表示作废（换面试/换配置时用）
+      setSystemMessage: (mode, content) =>
+        set(mode === 'interviewer'
+          ? { interviewerSystemMessage: content }
+          : { candidateSystemMessage: content }),
+
+      getSystemMessage: () => _currentSystemMessage(get()),
 
       setHydrated: () => set({ _hydrated: true }),
     }),

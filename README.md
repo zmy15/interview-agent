@@ -68,6 +68,7 @@ Interview Agent 是一个基于大语言模型的 **AI 模拟面试平台**。�
 - 🎛️ 模型选择：模型列表从官方 `GET /models` 动态获取（不硬编码），支持思考开关与推理强度
 - 🔒 安全机制：CORS 白名单、bcrypt 密码哈希、FAISS 索引 SHA-256 完整性校验
 - 📐 上下文管理：tiktoken 精确计数 + 智能裁剪，适配超长上下文模型
+- ⚡ 前缀缓存友好：上下文固定为「prompt → 简历 → JD →（可选 RAG）→ 每轮问答」，同一场面试里前缀逐字节不变，服务端 prefix caching 稳定命中
 - 🖥️ 界面定制：7 套配色预设 + 自定义背景 / 文字色，WCAG 对比度提示
 - 🪟 独立窗口模式：置顶、透明度、捕获排除、全局 F8 热键，只留一个窗口
 - 🐳 多种部署：本地脚本 / Docker Compose / 单容器
@@ -283,6 +284,47 @@ docker run -d \
 | `AVAILABLE_MODELS` | `deepseek-v4-pro,deepseek-v4-flash` | **仅兜底**：正常由官方 `GET /models` 动态获取 |
 | `MAX_CONTEXT_TOKENS` | `1000000` | 上下文窗口总预算（token） |
 | `SYSTEM_RESERVED_TOKENS` | `16000` | 为 system 消息预留的 token 数 |
+| `PREFIX_CACHE_MAX_ENTRIES` | `64` | 最多缓存多少场面试的稳定前缀 |
+| `PREFIX_CACHE_MAX_TOKENS` | `200000` | 单条稳定前缀的 token 上限，超过则不缓存 |
+| `PREFIX_CACHE_TTL_SECONDS` | `1800` | 稳定前缀缓存存活时间（秒） |
+
+### 上下文结构（前缀缓存）
+
+每轮发给模型的 messages 顺序固定为：
+
+```
+system:  静态指令 → 经验级别 → 轮次 → 岗位类型 → 题库/补充说明 → 简历 → JD →（时间预算）
+user:    历史提问……（每轮只在尾部追加）
+user:    本轮提问 + 【参考上下文】RAG / 联网搜索 / 编程题   ← 唯一每轮变化的部分
+```
+
+这套顺序是为**服务端前缀缓存（prefix caching）**服务的：DeepSeek 按 token
+前缀匹配 KV，只要前缀逐字节一致就能复用，省下重复的 prefill。因此
+
+- 静态指令排在简历/JD **之前**，跨会话可复用的前缀最长；
+- `system` 在同一场面试里只构建一次并进程内缓存，绝不逐轮重建；
+- RAG 检索结果、联网搜索、编程题等**每轮变化**的内容，一律追加到
+  **最后一条 user 消息的末尾**，绝不放进 `system`（放进去会让它之后的 KV 全部失效）；
+- token 裁剪只作用于对话部分，`system` 原样透传（裁它会让前缀变短、缓存失效）。
+
+> **实测（deepseek-flash，2026-10）**：缓存确实是「从第 0 个 token 起的严格前缀匹配」。
+> 用同一段 nonce 前缀做对照实验——只改尾部时 `cache_hit=128`（命中前半段），
+> 而在前缀**中途**插入一句话则 `cache_hit=0`（整条前缀连同后面全部作废）。
+> 这就是「变化的内容只能放尾部」的实证依据。
+>
+> 真实面试场景下同前缀连发三轮的命中率约 82–85%，未命中的部分正好是本轮新增的问答。
+> 需要复现可跑 `scripts/verify_prefix_cache.py`（只读 `.env` 的 Key，不写业务数据）。
+
+日志里可直接观测命中情况：
+
+```
+Prefix cache HIT | fp=xxxx | 1537 chars / ~1500 tokens      # 进程内前缀复用
+Context: 22 messages, ~1843 tokens (... prefix=cache, fp=xxxx)
+LLM usage | prompt=1504 (cache_hit=1408, cache_miss=96) | cache_hit_rate=93.6%   # 服务端前缀缓存
+```
+
+配置开关见 `PREFIX_CACHE_*`；`prefix=client` 表示前端回传的 system 与后端
+权威前缀一致（这是最理想的情况）。
 
 ### RAG 知识库
 
@@ -505,7 +547,9 @@ docker run -d \
 | 面试 | `POST` | `/interview/report` | 生成报告（支持结构化 QA 逐题评估） |
 | 面试 | `POST` | `/interview/plan` | 面试时长推算（含阶段拆分与动态重规划） |
 
-**SSE 事件格式**：每帧为 `data: {"type": "...", "content": "..."}`，`type` 取值为 `reasoning`（思维链）/ `content`（正文）/ `error`；流结束发送 `data: [DONE]`。
+**SSE 事件格式**：每帧为 `data: {"type": "...", "content": "..."}`，`type` 取值为 `reasoning`（思维链）/ `content`（正文）/ `system_prefix`（稳定前缀，见下）/ `error`；流结束发送 `data: [DONE]`。
+
+`system_prefix` 帧带 `content`（整段 system 文本）与 `fingerprint`，**只在首轮、或后端发现前端手上那份已过期时下发**。前端把它按模式存起来（不进消息列表、不持久化），后续轮次作为 `messages[0]` 原样回传；后端逐字节比对通过就沿用，因而「prompt + 简历 + JD」在整场面试里完全不变。响应头另带 `X-Prefix-Fingerprint`，便于把日志里的 `fp=` 与某场面试对应起来。
 
 ### 岗位 / 题库 / 上传 / 知识库
 

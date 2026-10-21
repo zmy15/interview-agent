@@ -1,4 +1,18 @@
-"""对话流式路由 — SSE 流式输出 + 模型列表 + LCEL RAG 管线 + 上下文窗口管理"""
+"""对话流式路由 — SSE 流式输出 + 模型列表 + LCEL RAG 管线 + 上下文窗口管理
+
+上下文结构（**前缀缓存友好，改动前请先读 utils/prompt_loader.py 的模块说明**）：
+
+    稳定前缀（整场面试逐字节不变 → 服务端前缀缓存据此复用 KV）
+        system: 静态指令 → 经验级别 → 轮次 → 岗位类型 → 简历 → JD
+                → 题库/补充说明 →（求职者模式）时间预算
+    历史问答（每轮只在尾部追加，前缀不受影响）
+        user / assistant 交替……
+    本轮尾部动态内容（放这里只会让缓存 miss 这一小段）
+        RAG 检索 / 联网搜索 / 编程题，追加到最后一条 user 消息末尾
+
+system 只构建一次：优先复用请求里已有的 system 消息，其次命中进程内稳定前缀
+缓存，最后才现算并写入缓存。
+"""
 
 import json
 import logging
@@ -12,7 +26,7 @@ from starlette.responses import StreamingResponse
 from config import settings
 from database import get_db
 from models.schemas import ChatRequest, ModelsResponse
-from services import api_key_store
+from services import api_key_store, prefix_cache
 from services.agent_tools import search_web
 from services.api_key_store import resolve_api_key
 from services.coding_problem import format_problems_for_prompt, select_problems
@@ -21,7 +35,12 @@ from services.model_registry import get_available_models, invalidate_cache, vali
 from services.rag_pipeline import build_rag_context
 from utils.auth import CurrentUser, get_optional_user
 from utils.context_manager import estimate_tokens, trim_messages
-from utils.prompt_loader import load_prompt
+from utils.prompt_loader import (
+    build_prompt_notes_text,
+    build_question_bank_text,
+    is_stable_prefix_template,
+    load_prompt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,14 +99,63 @@ async def list_models(
 
 # ============ 辅助函数 ============
 
-def _build_dynamic_context(req: ChatRequest, prompt_kwargs: dict) -> str:
-    """构建每轮动态上下文（RAG + 搜索 + 编程题 + 题库），这些内容每轮都可能变化"""
-    parts = []
+def _fingerprint_parts(req: ChatRequest, user: Optional[CurrentUser]) -> dict:
+    """收集「整场面试期间不变」的字段，用于计算稳定前缀指纹。
 
-    # 题库注入（从 prompt_kwargs 中获取已加载的题库内容）
-    if prompt_kwargs.get("_question_bank_text"):
-        parts.append(prompt_kwargs["_question_bank_text"])
-        logger.info("Question bank injected | %d questions", len(req.question_bank_ids or []))
+    这里刻意**不含** RAG / 编程题 / 联网搜索 —— 它们每轮都可能变化，
+    已经被移到尾部，不该影响 system 的复用判断。
+    """
+    return {
+        "v": 1,  # 结构版本号：模板布局或字段含义变更时递增，避免旧指纹误命中
+        "mode": req.mode,
+        "position_name": req.position_name,
+        "jd_id": req.jd_id,
+        "resume_text": req.resume_text or "",
+        "code_context": req.code_context or "",
+        "candidate_level": req.candidate_level or "",
+        "interview_round": req.interview_round or "",
+        "prompt_notes": req.prompt_notes or "",
+        "duration_minutes": req.interview_duration_minutes,
+        "question_count": req.interview_question_count,
+        "coding_min": req.interview_coding_min,
+        "coding_enabled": req.coding_enabled,
+        "question_bank_ids": sorted(req.question_bank_ids or []),
+        "question_bank_mode": req.question_bank_mode or "mixed",
+        "user_id": user.id if user else None,
+    }
+
+
+async def _resolve_position_type(
+    req: ChatRequest,
+    db: AsyncSession,
+    user: Optional[CurrentUser],
+) -> str:
+    """查岗位类型（只在需要出编程题时调用，命中缓存时不必付这次查询）"""
+    if not req.position_name:
+        return "未知"
+    try:
+        from services.position_store import PositionStore
+        pos = await PositionStore(db).get(
+            req.position_name, user_id=user.id if user else None
+        )
+        return pos.position_type if pos else "未知"
+    except Exception as e:  # noqa: BLE001 - 仅用于出题选型，失败不该影响对话
+        logger.warning("Resolve position type failed (non-blocking): %s", e)
+        return "未知"
+
+
+async def _build_dynamic_context(
+    req: ChatRequest,
+    db: AsyncSession,
+    user: Optional[CurrentUser],
+) -> str:
+    """构建每轮动态上下文（RAG + 搜索 + 编程题）。
+
+    这些内容**必须**追加到最后一条 user 消息的尾部，不能放进 system：
+    它们每轮都变，一旦落在前缀里，服务端缓存的 KV 会从该位置起全部失效。
+    题库不在此列 —— 它在整场面试里不变，已随 system 一起构建并缓存。
+    """
+    parts = []
 
     # RAG 检索
     if req.position_name and req.messages:
@@ -99,10 +167,15 @@ def _build_dynamic_context(req: ChatRequest, prompt_kwargs: dict) -> str:
         )
         if rag_context:
             parts.append(rag_context.strip())
-            context_len = len(rag_context)
-            logger.info("RAG context injected | position=%s | length=%d chars", req.position_name, context_len)
+            logger.info(
+                "RAG context injected | position=%s | length=%d chars",
+                req.position_name, len(rag_context),
+            )
         else:
-            logger.info("RAG context empty | position=%s — no knowledge base data", req.position_name)
+            logger.info(
+                "RAG context empty | position=%s — no knowledge base data",
+                req.position_name,
+            )
 
     # 联网搜索
     if req.use_search and req.messages:
@@ -114,16 +187,15 @@ def _build_dynamic_context(req: ChatRequest, prompt_kwargs: dict) -> str:
         except Exception as e:
             logger.warning(f"Web search failed (non-blocking): {e}")
 
-    # 编程题（仅求职者模式 + 技术岗）
+    # 编程题（仅求职者模式 + 技术岗）。
+    # 选题依赖当前对话，因此结果每轮都可能不同 —— 属于尾部内容。
     if req.coding_enabled and req.mode == "candidate":
         try:
-            pos_type = prompt_kwargs.get("position_type", "未知")
-            pos_name = req.position_name or ""
-            conv_history = [m.content for m in req.messages[-10:]]
+            pos_type = await _resolve_position_type(req, db, user)
             problems = select_problems(
                 position_type=pos_type,
-                position_name=pos_name,
-                conversation_history=conv_history,
+                position_name=req.position_name or "",
+                conversation_history=[m.content for m in req.messages[-10:]],
                 count=3,
             )
             if problems:
@@ -135,12 +207,18 @@ def _build_dynamic_context(req: ChatRequest, prompt_kwargs: dict) -> str:
 
 
 async def _build_prompt_kwargs(req: ChatRequest, db: AsyncSession, user: Optional[CurrentUser] = None) -> dict:
-    """构建静态 prompt 参数（JD / 简历 / 岗位类型 / 代码 / 时间预算）"""
+    """构建静态 prompt 参数（JD / 简历 / 岗位类型 / 代码 / 时间预算 / 题库）
+
+    这里的所有输入在整场面试里都不变，因此产出的文本可以安全地作为
+    稳定前缀的一部分长期复用。
+    """
     kwargs: dict = {
         "jd": "暂无岗位描述",
         "resume": req.resume_text or "",
         "code": "",
         "position_type": "未知",
+        "question_bank_text": "",
+        "prompt_notes": build_prompt_notes_text(req.prompt_notes),
         # 时间预算默认值（会被前端传入覆盖）
         "duration_minutes": "30",
         "intro_min": "3",
@@ -166,48 +244,36 @@ async def _build_prompt_kwargs(req: ChatRequest, db: AsyncSession, user: Optiona
                 else:
                     kwargs["jd"] = "\n\n".join(jd.content for jd in pos.jds)
 
-    # 题库注入：根据 question_bank_ids 从数据库加载题目
+    # 题库注入：根据 question_bank_ids 从数据库加载题目。
+    # 题目在整场面试里固定不变，所以随 system 一起进稳定前缀（第二次请求起命中缓存）。
     if req.question_bank_ids:
         try:
             from models.db_models import QuestionBankItem
             qb_result = await db.execute(
                 select(QuestionBankItem).where(QuestionBankItem.id.in_(req.question_bank_ids))
             )
-            items = qb_result.scalars().all()
+            # 按请求里的顺序排好：SQL 不保证 IN 的顺序，不排的话
+            # 同一场面试两次构建可能得到不同文本 → 前缀缓存直接失效。
+            order = {qid: i for i, qid in enumerate(req.question_bank_ids)}
+            items = sorted(
+                qb_result.scalars().all(),
+                key=lambda it: order.get(it.id, 1 << 30),
+            )
             if items:
-                mode = req.question_bank_mode or "mixed"
-
-                mode_instructions = {
-                    "strict": (
-                        "【题库模式：严格】你必须且只能从以下题目中逐题提问，每题原文照读，不可修改、不可跳过、不可自编。"
-                        "全部题目问完后方可结束问答环节。"
-                    ),
-                    "mixed": (
-                        "【题库模式：混合】以下题目为必考题，你必须全部问到。此外你还可以根据对话情况，"
-                        "自行补充少量相关追问或扩展题。必考题优先，自补题不超过2道。"
-                    ),
-                    "adaptive": (
-                        "【题库模式：灵活改编】以下题目作为出题参考。你可以根据候选人背景、回答水平和对话节奏，"
-                        "灵活调整题目措辞、难度和顺序，也可基于题目主题自行延伸。但核心考察点不要偏离。"
-                    ),
-                }
-                instruction = mode_instructions.get(mode, mode_instructions["mixed"])
-
-                qb_parts = [instruction]
-                for i, item in enumerate(items, 1):
-                    qb_parts.append(
-                        f"\n题目{i}（{item.difficulty or 'medium'} | {item.category or 'general'}）：{item.title}\n"
-                        f"{item.content[:500]}"
-                    )
-                kwargs["_question_bank_text"] = "\n".join(qb_parts)
-                logger.info(f"Question bank loaded: {len(items)} questions, mode={mode}")
+                kwargs["question_bank_text"] = build_question_bank_text(
+                    items, req.question_bank_mode or "mixed"
+                )
+                logger.info(
+                    "Question bank loaded | %d questions | mode=%s",
+                    len(items), req.question_bank_mode or "mixed",
+                )
         except Exception as e:
             logger.warning(f"Failed to load question bank: {e}")
 
     # 代码/项目上下文：不再直接注入 prompt（已通过 RAG 向量检索获取）
     # 仅保留简历作为直接上下文
 
-    # 面试时间预算（从请求参数中获取）
+    # 面试时间预算（从请求参数中获取）。它同样整场不变，属于稳定前缀。
     if req.interview_duration_minutes > 0:
         kwargs["duration_minutes"] = str(req.interview_duration_minutes)
         # 计算各环节时间分配
@@ -228,6 +294,22 @@ async def _build_prompt_kwargs(req: ChatRequest, db: AsyncSession, user: Optiona
     return kwargs
 
 
+async def _build_stable_system(
+    req: ChatRequest,
+    db: AsyncSession,
+    user: Optional[CurrentUser],
+    fingerprint: str,
+) -> str:
+    """构建权威的稳定前缀 system 消息（不查缓存，调用方负责读写缓存）"""
+    prompt_kwargs = await _build_prompt_kwargs(req, db, user)
+    return load_prompt(
+        req.mode,
+        candidate_level=req.candidate_level or "",
+        interview_round=req.interview_round or "",
+        **prompt_kwargs,
+    )
+
+
 # ============ 路由 ============
 
 @router.post("/stream")
@@ -244,79 +326,109 @@ async def chat_stream(
     # （生成器里 db 仍然可用，但提前取好更直观，也便于 validate_model 复用）。
     effective_key = await resolve_api_key(request, db, user, explicit=req.api_key)
 
+    # 稳定前缀指纹：只由「整场面试期间不变」的请求字段决定，**不接受前端传入**。
+    # 前端若能左右它，就等于把提示词一致性的判断交给了外部输入；
+    # 而后端自己算出来的值与请求字段一一对应，永远等价于「同一场面试」。
+    fingerprint = prefix_cache.signature(_fingerprint_parts(req, user))
+
     async def event_generator():
         messages = [m.model_dump() for m in req.messages]
 
-        # ====== Phase 1: 构建/维护对话上下文 ======
-        has_system = any(m["role"] == "system" for m in messages)
+        # ====== Phase 1: 稳定前缀（prompt + 简历 + JD），整场只构建一次 ======
+        system_msgs = [m for m in messages if m.get("role") == "system"]
+        dialogue_msgs = [m for m in messages if m.get("role") != "system"]
 
-        if req.mode:
-            if not has_system:
-                # 第一轮：构建完整 system 消息（静态部分只注入一次）
-                prompt_kwargs = await _build_prompt_kwargs(req, db, user)
-                system_content = load_prompt(
-                    req.mode,
-                    candidate_level=req.candidate_level or "",
-                    interview_round=req.interview_round or "",
-                    **prompt_kwargs,
-                )
+        prefix_source = "none"
+        if req.mode and is_stable_prefix_template(req.mode):
+            # 前端若回传了 system 消息，先取出它的正文；但**不直接采信** ——
+            # 采信外部输入会让「前缀是否一致」由前端决定，一旦它拿着旧简历/
+            # 旧 JD 的 system 继续发请求，提示词就与界面设置悄悄脱节了。
+            supplied = system_msgs[0]["content"] if system_msgs else None
 
-                # 追加用户补充说明
-                if req.prompt_notes:
-                    system_content += "\n\n---\n【用户补充说明】\n" + req.prompt_notes
-
-                # 第一轮也注入动态上下文到 system 消息中
-                dynamic_ctx = _build_dynamic_context(req, prompt_kwargs)
-                if dynamic_ctx:
-                    system_content += "\n\n---\n" + dynamic_ctx
-
-                messages.insert(0, {"role": "system", "content": system_content})
+            canonical = prefix_cache.get(fingerprint)
+            if canonical is None:
+                # 未命中缓存：按请求字段重建权威前缀并缓存。
+                # 注意此时前端那份**仍可能是对的**（例如后端刚重启、缓存丢了），
+                # 所以下面统一做一次比对再决定要不要下发。
+                canonical = await _build_stable_system(req, db, user, fingerprint)
+                prefix_cache.put(fingerprint, canonical)
+                rebuilt = True
             else:
-                # 后续轮次：动态上下文注入到最后一条 user 消息前
-                prompt_kwargs = await _build_prompt_kwargs(req, db, user)
-                dynamic_ctx = _build_dynamic_context(req, prompt_kwargs)
-                if dynamic_ctx:
-                    # 找到最后一条 user 消息，在前面追加动态上下文
-                    for i in range(len(messages) - 1, -1, -1):
-                        if messages[i]["role"] == "user":
-                            messages[i]["content"] = (
-                                "【参考上下文】\n" + dynamic_ctx + "\n\n---\n【用户消息】\n" + messages[i]["content"]
-                            )
-                            break
+                rebuilt = False
 
-        # ====== Phase 2: Token 窗口裁剪 ======
+            if supplied is not None and supplied == canonical:
+                # 前端给的和权威前缀逐字节相同 —— 最理想的情况：不必下发，
+                # 服务端前缀缓存整段命中，本轮只新增尾部的问答。
+                prefix_source = "client"
+            elif supplied is None:
+                prefix_source = "build" if rebuilt else "cache"
+            else:
+                # 前端那份与当前字段不符（如刚改了简历/JD）：用权威前缀覆盖，
+                # 宁可让缓存失效一次，也不能让提示词悄悄走样。
+                prefix_source = "rebuild(client-stale)"
+
+            system_msgs = [{"role": "system", "content": canonical}]
+
+            # 把权威前缀交给前端保存（仅在前端还没持有、或它那份已经过期时才发）。
+            # 前端在后续轮次原样回传，后端就能比对通过、省掉一次重建；
+            # 而**是否采信**仍由后端按逐字节比对决定，所以发过去是安全的。
+            #
+            # 这里刻意不进消息体：它不是对话内容，不影响会话列表与报告；
+            # 走 SSE 的独立事件，前端收到后只做本地保存。
+            if prefix_source != "client":
+                yield "data: " + json.dumps(
+                    {
+                        "type": "system_prefix",
+                        "content": canonical,
+                        "fingerprint": fingerprint,
+                    },
+                    ensure_ascii=False,
+                ) + "\n\n"
+
+        # ====== Phase 2: 本轮尾部动态内容（RAG / 搜索 / 编程题）======
+        # 只追加到最后一条 user 消息**末尾**：它前面的「system + 历史问答」
+        # 完全不受影响，服务端缓存只需为这一小段重新 prefill。
+        if req.mode:
+            dynamic_ctx = await _build_dynamic_context(req, db, user)
+            if dynamic_ctx:
+                for i in range(len(dialogue_msgs) - 1, -1, -1):
+                    if dialogue_msgs[i].get("role") == "user":
+                        dialogue_msgs[i] = {
+                            **dialogue_msgs[i],
+                            "content": (
+                                dialogue_msgs[i]["content"]
+                                + "\n\n---\n【参考上下文】\n"
+                                + dynamic_ctx
+                            ),
+                        }
+                        break
+                logger.info("Dynamic context appended to tail | %d chars", len(dynamic_ctx))
+
+        # ====== Phase 3: Token 窗口裁剪 ======
+        # 只裁对话部分：system 是稳定前缀，原样透传（裁它会让前缀变短、缓存失效）。
         max_tokens = settings.MAX_CONTEXT_TOKENS
         system_reserved = settings.SYSTEM_RESERVED_TOKENS
 
-        # 计算 system 消息占用的 token 数
-        system_tokens = 0
-        for m in messages:
-            if m["role"] == "system":
-                system_tokens += estimate_tokens(m["content"]) + 4
-
-        # 为对话历史保留的 token 预算
+        system_tokens = sum(estimate_tokens(m["content"]) + 4 for m in system_msgs)
         dialogue_budget = max(max_tokens - system_tokens - system_reserved, 4096)
 
-        # 分离 system 消息和对话消息
-        system_msgs = [m for m in messages if m["role"] == "system"]
-        dialogue_msgs = [m for m in messages if m["role"] != "system"]
-
-        # 裁剪对话历史（保留最近的消息）
-        if dialogue_msgs:
-            trimmed_dialogue = trim_messages(dialogue_msgs, max_tokens=dialogue_budget)
-        else:
-            trimmed_dialogue = []
-
-        # 重新组装：system 消息始终保留在最前
-        messages = system_msgs + trimmed_dialogue
-
-        total_tokens = system_tokens + sum(estimate_tokens(m["content"]) + 4 for m in trimmed_dialogue)
-        logger.info(
-            f"Context: {len(messages)} messages, ~{total_tokens} tokens "
-            f"(budget={max_tokens}, system={system_tokens})"
+        trimmed_dialogue = (
+            trim_messages(dialogue_msgs, max_tokens=dialogue_budget)
+            if dialogue_msgs
+            else []
         )
 
-        # ====== Phase 3: 验证 & 流式输出 ======
+        messages = system_msgs + trimmed_dialogue
+
+        total_tokens = system_tokens + sum(
+            estimate_tokens(m["content"]) + 4 for m in trimmed_dialogue
+        )
+        logger.info(
+            f"Context: {len(messages)} messages, ~{total_tokens} tokens "
+            f"(budget={max_tokens}, system={system_tokens}, prefix={prefix_source}, fp={fingerprint[:12]})"
+        )
+
+        # ====== Phase 4: 验证 & 流式输出 ======
         model = req.model
         if model and not await validate_model(model, api_key=effective_key):
             yield f"data: {json.dumps({'type': 'error', 'content': f'模型 {model} 不可用'}, ensure_ascii=False)}\n\n"
@@ -329,6 +441,7 @@ async def chat_stream(
             thinking_enabled=req.thinking_enabled,
             reasoning_effort=req.reasoning_effort,
             api_key=effective_key,
+            cache_label=f"{req.mode or 'chat'}:{fingerprint[:12]}",
         ):
             if chunk["type"] == "done":
                 yield "data: [DONE]\n\n"
@@ -345,5 +458,9 @@ async def chat_stream(
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            # 把稳定前缀指纹回给调用方，便于把日志里的 fp 与某一场面试对应起来。
+            # 注意别和 DeepSeek 响应里的 system_fingerprint 混淆：那个指后端配置版本，
+            # 这个指我们这条「prompt + 简历 + JD」前缀的身份。
+            "X-Prefix-Fingerprint": fingerprint,
         },
     )

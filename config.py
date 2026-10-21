@@ -89,6 +89,16 @@ class Settings:
     MAX_CONTEXT_TOKENS: int = int(os.getenv("MAX_CONTEXT_TOKENS", "1000000"))
     SYSTEM_RESERVED_TOKENS: int = int(os.getenv("SYSTEM_RESERVED_TOKENS", "16000"))
 
+    # 稳定前缀缓存（prompt caching）最大条目数。
+    # 每场面试只缓存「静态指令 + 简历 + JD」这一条 system 消息，
+    # 用于避免每轮请求都重建它；条目少、体积大，因此上限给得很小。
+    PREFIX_CACHE_MAX_ENTRIES: int = int(os.getenv("PREFIX_CACHE_MAX_ENTRIES", "64"))
+    # 单条稳定前缀允许占用的最大 token 数，超过则不缓存（防止内存被超大简历打爆）
+    PREFIX_CACHE_MAX_TOKENS: int = int(os.getenv("PREFIX_CACHE_MAX_TOKENS", "200000"))
+    # 稳定前缀缓存的存活时间（秒）。面试通常不超过 2 小时，
+    # 超过后重新构建即可（重建只花一次拼接，不影响正确性）。
+    PREFIX_CACHE_TTL_SECONDS: int = int(os.getenv("PREFIX_CACHE_TTL_SECONDS", "1800"))
+
     # 日志等级: DEBUG / INFO / WARNING / ERROR
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
 

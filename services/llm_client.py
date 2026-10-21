@@ -81,6 +81,7 @@ async def stream_chat(
     thinking_enabled: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
     api_key: Optional[str] = None,
+    cache_label: Optional[str] = None,
 ) -> AsyncGenerator[dict, None]:
     """
     流式调用 DeepSeek，yield 统一格式 dict：
@@ -89,6 +90,9 @@ async def stream_chat(
     - {"type": "done", "content": ""}          结束
 
     reasoning_effort 支持 low / high / max 三档，非规范值会被归一化。
+
+    cache_label 只用于日志：把「稳定前缀命中情况」和具体是哪一场面试
+    （指纹前缀）关联起来，方便排查前缀为什么没命中。
     """
     from services.screen_capture import normalize_effort
     _model = model or settings.DEEPSEEK_MODEL
@@ -121,9 +125,17 @@ async def stream_chat(
             messages=msgs,
             stream=True,
             extra_body=extra_body if extra_body else None,
+            # 流式响应默认不带 usage，必须显式要求；这是观测前缀缓存的唯一途径。
+            stream_options={"include_usage": True},
         )
 
+        usage = None
         async for chunk in stream:
+            # 带 include_usage 时，最后一个 chunk 的 choices 为空、usage 有值
+            chunk_usage = getattr(chunk, "usage", None)
+            if chunk_usage is not None:
+                usage = chunk_usage
+
             if chunk.choices and len(chunk.choices) > 0:
                 delta = chunk.choices[0].delta
 
@@ -139,9 +151,11 @@ async def stream_chat(
 
             # 检查是否结束
             if chunk.choices and chunk.choices[0].finish_reason:
+                _log_cache_usage(usage, _model, cache_label)
                 yield {"type": "done", "content": ""}
                 return
 
+        _log_cache_usage(usage, _model, cache_label)
         yield {"type": "done", "content": ""}
 
     except openai.APIError as e:
@@ -150,6 +164,45 @@ async def stream_chat(
     except Exception as e:
         logger.error(f"Unexpected error in stream_chat: {e}")
         yield {"type": "error", "content": f"发生错误: {str(e)}"}
+
+
+def _log_cache_usage(usage, model: str, cache_label: Optional[str]) -> None:
+    """记录本次调用的 token 用量，重点是前缀缓存命中量。
+
+    DeepSeek 在 usage 里用 ``prompt_cache_hit_tokens`` / ``prompt_cache_miss_tokens``
+    暴露服务端前缀缓存的结果：命中量高说明「prompt + 简历 + JD」这段前缀
+    确实被复用了；如果命中量长期为 0，多半是前缀里混进了每轮变化的内容。
+
+    官方文档还提供了等价字段 ``prompt_tokens_details.cached_tokens``，
+    这里作为兜底读取（不同版本的响应里字段位置可能不同）。
+    """
+    if usage is None:
+        logger.info("LLM usage unavailable | model=%s | label=%s", model, cache_label or "-")
+        return
+
+    def pick(name):
+        value = getattr(usage, name, None)
+        if value is None:
+            details = getattr(usage, "prompt_tokens_details", None)
+            if details is not None:
+                value = getattr(details, name, None)
+        return value if isinstance(value, int) else None
+
+    prompt_tokens = getattr(usage, "prompt_tokens", None)
+    completion = getattr(usage, "completion_tokens", None)
+    hit = pick("prompt_cache_hit_tokens")
+    if hit is None:
+        hit = pick("cached_tokens")
+    miss = pick("prompt_cache_miss_tokens")
+
+    cache_rate = ""
+    if isinstance(hit, int) and isinstance(miss, int) and (hit + miss) > 0:
+        cache_rate = f" | cache_hit_rate={(hit / (hit + miss)) * 100:.1f}%"
+
+    logger.info(
+        "LLM usage | model=%s | label=%s | prompt=%s (cache_hit=%s, cache_miss=%s)%s | completion=%s",
+        model, cache_label or "-", prompt_tokens, hit, miss, cache_rate, completion,
+    )
 
 
 async def generate_report(
@@ -176,6 +229,7 @@ async def generate_report(
             messages=msgs,
             stream=False,
         )
+        _log_cache_usage(getattr(response, "usage", None), _model, "report")
         return response.choices[0].message.content or ""
     except Exception as e:
         logger.error(f"Report generation error: {e}")

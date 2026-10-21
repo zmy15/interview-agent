@@ -45,19 +45,30 @@ export function useSSE() {
       const appStore = useAppStore.getState()
 
       // 添加用户消息。展示前缀只影响本地渲染，
-      // 真正发给模型的 content 保持干净（见下方 trimmedMessages）。
+      // 真正发给模型的 content 保持干净（见下方 requestMessages）。
       const userMsg = {
         role: 'user' as const,
         content: options.displayLabel ? `${options.displayLabel}：${content}` : content,
       }
       addMessage(userMsg)
 
-      // 构建请求 messages（裁剪到最近 N 条，保留 system 消息由后端自动注入）
-      // 展示前缀不能进入模型上下文，因此最后一条用干净的 content 覆盖
+      // 构建请求 messages。
+      //
+      // 关键：把稳定前缀（prompt + 简历 + JD）作为 messages[0] 原样回传。
+      // 后端会拿它与自己缓存的权威版本逐字节比对 —— 一致就沿用（服务端前缀
+      // 缓存整段命中），不一致就用权威版覆盖。所以即便这里存的是旧值，
+      // 也只会导致那一轮重建，不会污染提示词。
+      //
+      // 展示前缀不能进入模型上下文，因此最后一条用干净的 content 覆盖；
+      // MAX_SEND_MESSAGES 只约束对话本身，system 不占这个额度。
+      const systemMessage = store.getSystemMessage()
       const allMessages = [...store.messages, { role: 'user' as const, content }]
       const trimmedMessages = allMessages.length > MAX_SEND_MESSAGES
         ? allMessages.slice(-MAX_SEND_MESSAGES)
         : allMessages
+      const requestMessages = systemMessage
+        ? [{ role: 'system' as const, content: systemMessage }, ...trimmedMessages]
+        : trimmedMessages
 
       // 获取有效的 prompt override
       const promptOverride = store.promptOverrides[store.selectedMode] || undefined
@@ -72,7 +83,7 @@ export function useSSE() {
 
       await streamChat(
         {
-          messages: trimmedMessages.map((m) => ({
+          messages: requestMessages.map((m) => ({
             role: m.role,
             content: m.content,
           })),
@@ -111,6 +122,10 @@ export function useSSE() {
           })
         },
         abortRef.current.signal,
+        // 后端下发的稳定前缀：存到**本次请求所用模式**的槽位。
+        // 这里用发送时的快照（store.selectedMode）而不是 getState() 的实时值 ——
+        // 用户可能在流式过程中切换模式，而这份前缀属于发起请求的那个模式。
+        (system, _fingerprint) => store.setSystemMessage(store.selectedMode, system),
       )
     },
     // 仅保留 isStreaming 用于发送守卫；其余动态值改用 getState() 实时读取，避免闭包过期

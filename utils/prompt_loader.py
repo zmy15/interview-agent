@@ -1,6 +1,19 @@
-"""提示模板加载工具 — 基于 LangChain ChatPromptTemplate"""
+"""提示模板加载工具 — 基于 LangChain ChatPromptTemplate
+
+模板结构约定（**改动模板时请务必遵守**）：
+    模板从「━━━ 以下为本场面试的固定背景信息 ━━━」之后开始，
+    依次是 `经验级别 → 轮次 → 岗位类型 → 简历 → JD`（求职者模式末尾还有时间预算），
+    前方全部是静态指令。
+
+    这样排列是为了**前缀缓存（prompt caching）**：一次面试里
+    「静态指令 + 简历 + JD」构成逐字节不变的稳定前缀，每轮请求只在尾部
+    追加新的问答，服务端就能复用已缓存的 KV。任何放在前缀里的可变内容
+    （RAG 检索结果、每轮变化的题库/时间预算等）都会让缓存从该位置起全部失效，
+    因此它们一律由调用方放到最后一条 user 消息的尾部。
+"""
 
 import os
+from typing import Optional
 
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -8,6 +21,10 @@ PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts"
 
 # 缓存已加载的模板，避免重复读取磁盘
 _template_cache: dict[str, ChatPromptTemplate] = {}
+
+# 遵循「指令在前、固定背景信息在后」结构的模板（见模块 docstring）。
+# 只有这些模板才允许走「只构建一次 system、后续复用」的快路径。
+_CACHED_PREFIX_TEMPLATES = frozenset({"interviewer", "candidate"})
 
 
 def _get_template(template_name: str) -> ChatPromptTemplate:
@@ -54,9 +71,11 @@ def load_prompt(template_name: str, **kwargs) -> str:
         "code": "",
         "history": "",
         "position_type": "未知",
+        "candidate_level": "",
+        "interview_round": "",
         "candidate_level_guide": "",
         "interview_round_guide": "",
-        # 时间预算默认值（用于 interviewer prompt 模板）
+        # 时间预算默认值（用于 candidate 模板）
         "duration_minutes": "30",
         "intro_min": "3",
         "tech_qa_min": "24",
@@ -69,33 +88,31 @@ def load_prompt(template_name: str, **kwargs) -> str:
         "qa_section_instruction": "根据JD中的职责要求和能力要求，结合候选人的经验级别和面试轮次，逐一考察候选人的专业能力",
         "coding_section_note": "仅技术岗",
         "coding_section_instruction": "如果系统提示中包含了\"可选编程题\"，请在专业问答进行一半后，择机插入一道编程题",
+        # 稳定前缀里的附加块（由调用方预格式化，含标题和分隔符）
+        "question_bank_text": "",
+        "prompt_notes": "",
     }
     for key, default_value in defaults.items():
         kwargs.setdefault(key, default_value)
 
-    # 格式化 resume 和 code（添加标签头）
-    if kwargs.get("resume"):
-        kwargs["resume"] = f"\n候选人简历：\n{kwargs['resume']}\n"
-    else:
-        kwargs["resume"] = ""
-
-    if kwargs.get("code"):
-        kwargs["code"] = f"\n相关代码：\n{kwargs['code']}\n"
-    else:
-        kwargs["code"] = ""
-
     # 生成候选人经验级别指导
-    candidate_level = kwargs.get("candidate_level", "")
+    level = kwargs.get("candidate_level") or ""
     if not kwargs.get("candidate_level_guide"):
-        kwargs["candidate_level_guide"] = _build_candidate_level_guide(candidate_level)
+        kwargs["candidate_level_guide"] = _build_candidate_level_guide(level) or "（未指定，按通用标准把握深度）"
 
     # 生成面试轮次指导
-    interview_round = kwargs.get("interview_round", "")
+    round_ = kwargs.get("interview_round") or ""
     if not kwargs.get("interview_round_guide"):
-        kwargs["interview_round_guide"] = _build_interview_round_guide(interview_round)
+        kwargs["interview_round_guide"] = _build_interview_round_guide(round_) or "（未指定轮次，按常规技术面把握）"
 
     # 生成动态环节标签（HR面 vs 技术面）
-    _apply_round_section_labels(kwargs, interview_round)
+    _apply_round_section_labels(kwargs, round_)
+
+    # 以下 4 个槽位由调用方传入**已格式化**的文本（可含多行），
+    # 这里只负责兜底空值，不再二次包装 —— 包装会破坏前缀的字节稳定性。
+    for key in ("resume", "code", "jd", "question_bank_text", "prompt_notes"):
+        if not kwargs.get(key):
+            kwargs[key] = "（无）" if key in ("resume", "jd", "code") else ""
 
     # LangChain ChatPromptTemplate.format() 返回格式化后的消息字符串
     formatted = prompt.format(**kwargs)
@@ -180,6 +197,54 @@ def _apply_round_section_labels(kwargs: dict, interview_round: str):
     else:
         # 技术面（一面/二面）保持默认值
         pass
+
+
+def build_question_bank_text(items: list, mode: str) -> str:
+    """把题库条目渲染成固定前缀里的一段文本。
+
+    与 ``_build_dynamic_context`` 不同，这段内容在整个会话期间不变，
+    因此可以安全地放在稳定前缀中（第二次请求就能命中缓存）。
+    """
+    if not items:
+        return ""
+
+    mode_instructions = {
+        "strict": (
+            "【题库模式：严格】你必须且只能从以下题目中逐题提问，每题原文照读，不可修改、不可跳过、不可自编。"
+            "全部题目问完后方可结束问答环节。"
+        ),
+        "mixed": (
+            "【题库模式：混合】以下题目为必考题，你必须全部问到。此外你还可以根据对话情况，"
+            "自行补充少量相关追问或扩展题。必考题优先，自补题不超过2道。"
+        ),
+        "adaptive": (
+            "【题库模式：灵活改编】以下题目作为出题参考。你可以根据候选人背景、回答水平和对话节奏，"
+            "灵活调整题目措辞、难度和顺序，也可基于题目主题自行延伸。但核心考察点不要偏离。"
+        ),
+    }
+    parts = ["【指定题库】", mode_instructions.get(mode, mode_instructions["mixed"])]
+    for i, item in enumerate(items, 1):
+        difficulty = getattr(item, "difficulty", None) or "medium"
+        category = getattr(item, "category", None) or "general"
+        content = getattr(item, "content", "") or ""
+        parts.append(
+            f"\n题目{i}（{difficulty} | {category}）：{getattr(item, 'title', '')}\n"
+            f"{content[:500]}"
+        )
+    return "\n".join(parts)
+
+
+def build_prompt_notes_text(notes: Optional[str]) -> str:
+    """把用户补充说明渲染成固定前缀里的一段文本"""
+    notes = (notes or "").strip()
+    if not notes:
+        return ""
+    return "【用户补充说明】\n" + notes
+
+
+def is_stable_prefix_template(template_name: str) -> bool:
+    """判断模板是否遵循「指令在前、固定背景信息在后」的缓存友好结构"""
+    return template_name in _CACHED_PREFIX_TEMPLATES
 
 
 def invalidate_cache():

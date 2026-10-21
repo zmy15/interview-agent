@@ -20,7 +20,7 @@ from services.api_key_store import resolve_api_key
 from services.llm_client import generate_report
 from services.position_store import PositionStore
 from utils.auth import CurrentUser, get_optional_user
-from utils.prompt_loader import load_prompt
+from utils.prompt_loader import build_prompt_notes_text, load_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +36,16 @@ async def start_interview(
     """
     开始面试，返回组装好的 system 消息。
     内部调用 PositionStore 获取岗位 JD。
+
+    注意：这里**不含** RAG 检索结果与题库 —— RAG 每轮都变，题库由
+    /chat/stream 统一注入。整场面试的稳定前缀由 /chat/stream 构建并缓存，
+    结构见 routers/chat.py 的模块说明。
     """
     prompt_kwargs = {
         "jd": "暂无岗位描述",
         "resume": req.resume_text or "",
         "code": req.code_context or "",
+        "prompt_notes": build_prompt_notes_text(req.prompt_notes),
     }
 
     if req.position_name:
@@ -68,9 +73,6 @@ async def start_interview(
             interview_round=req.interview_round or "",
             **prompt_kwargs,
         )
-        # 追加用户补充说明
-        if req.prompt_notes:
-            system_content += "\n\n---\n【用户补充说明】\n" + req.prompt_notes
     except FileNotFoundError:
         raise HTTPException(status_code=400, detail=f"不支持的面试模式: {req.mode}")
 

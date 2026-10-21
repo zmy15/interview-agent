@@ -43,6 +43,13 @@ export async function streamChat(
   onDone: () => void,
   onError: (error: string) => void,
   signal?: AbortSignal,
+  /**
+   * 后端下发的稳定前缀（prompt + 简历 + JD）。
+   *
+   * 只在首轮、或后端发现前端那份已过期时下发；前端收到后按模式存下来，
+   * 后续轮次作为 messages[0] 原样回传，服务端前缀缓存才能持续命中。
+   */
+  onSystemPrefix?: (system: string, fingerprint: string) => void,
 ): Promise<void> {
   const response = await fetch('/api/chat/stream', {
     method: 'POST',
@@ -95,6 +102,10 @@ export async function streamChat(
               onReasoning(parsed.content)
             } else if (parsed.type === 'content') {
               onContent(parsed.content)
+            } else if (parsed.type === 'system_prefix') {
+              // 稳定前缀：既不是思考链也不是正文，不能混进消息列表，
+              // 只交给调用方保存起来供下一轮回传
+              onSystemPrefix?.(parsed.content, parsed.fingerprint)
             } else if (parsed.type === 'error') {
               onError(parsed.content)
             }
