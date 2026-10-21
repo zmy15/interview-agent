@@ -164,6 +164,12 @@ python main.py --desktop --no-topmost --width 1366 --height 768
 > 图标一并移除，避免留下点不开的死按钮；不想要托盘可用 `-NoTray`，想保留任务栏图标
 > 用 `-ShowTaskbar`。
 >
+> **点右上角 X = 收进托盘**（`--close-to-tray`，默认跟随 `--tray`），不会退出程序，
+> 并弹一次气泡提示告知「还在托盘里」。真正退出请用托盘右键菜单的「退出」。
+> 想保留旧的「X 直接退出」行为：`-ExtraArgs --close-to-tray false`。
+> 注意浏览器窗口模式（`--shell browser`）的窗口属于浏览器进程，**无法拦截关闭**，
+> 点 X 仍会退出应用。
+>
 > 独立窗口要求先构建前端：`cd frontend && npm run build`（`start_app.ps1` 会在产物缺失或源码更新时自动重新构建）。
 
 **常用启动参数**
@@ -182,6 +188,7 @@ python main.py --desktop --no-topmost --width 1366 --height 768
 | `--capture-exclude [BOOL]` | `true` | 从截屏 / 录屏中排除窗口（仅 native 真正生效） |
 | `--hide-taskbar [BOOL]` | `false` | 隐藏任务栏图标（开 `--tray` 时默认变为 `true`） |
 | `--tray [BOOL]` | `false` | 显示系统托盘图标：单击显隐窗口，右键可退出 |
+| `--close-to-tray [BOOL]` | 跟随 `--tray` | 点 X 收进托盘而不是退出（浏览器模式无法拦截） |
 | `--fullscreen [BOOL]` | `false` | 全屏启动 |
 | `--app PATH` | — | 启动后打开的页面，如 `--app /login` |
 | `--browser PATH` | — | 【browser 模式】指定浏览器可执行文件 |
@@ -844,6 +851,8 @@ pre-commit install          # 安装 git hook，之后每次 commit 自动检查
 - `start_app.bat` 接受并透传任意参数给 `desktop.py`，例如 `start_app.bat --width 1600 --height 900 --no-topmost`。
 - `start_app.ps1` 是实际干活的启动器，`start_app.bat` 只是转发（因为双击 .bat 一定会先出现一个终端窗口）。常用开关：
   `-Foreground`（前台运行看日志）、`-SkipDeps`、`-NoBuild`、`-NoTray`、`-ShowTaskbar`。
+- **托盘模式下点窗口右上角 X 不会退出程序**，只会把窗口收进托盘（见上文 `--close-to-tray`）。
+  退出请用托盘图标的右键菜单。这个「关不掉」是刻意设计：避免面试进行中误点 X 丢掉会话。
 - **`start_app.ps1` 必须以 UTF-8 BOM 保存**：Windows PowerShell 5.1 在没有 BOM 时按系统
   ANSI 代码页读取 `.ps1`，中文会变乱码并破坏引号配对，脚本直接语法报错。（PowerShell 7 不受影响。）
 

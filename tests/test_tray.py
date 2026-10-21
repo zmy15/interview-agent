@@ -277,6 +277,117 @@ class TestTrayController:
         assert ctrl.tray is None
 
 
+class TestCloseToTray:
+    """点右上角 X 应「收进托盘」而不是退出
+
+    这是用户实际踩到的点：一按 X 程序就退出、托盘图标也一起消失。
+    pywebview 的 closing 事件里返回 False 才能取消关闭，因此这里锁住
+    「什么时候返回 False、什么时候必须放行」。
+    """
+
+    def _window(self, monkeypatch):
+        from desktop import NativeWindow
+
+        win = NativeWindow.__new__(NativeWindow)  # 跳过真实窗口构造
+        win._force_close = False
+        win._close_callback = None
+        win.hwnd = 1234
+        return win
+
+    def test_returns_true_without_callback(self, monkeypatch):
+        """没装托盘回调时保持原行为：放行，直接退出"""
+        win = self._window(monkeypatch)
+        assert win._on_window_closing() is True
+
+    def test_cancels_close_when_tray_installed(self, monkeypatch):
+        """装了托盘回调 → 返回 False（取消关闭）并真的收进托盘"""
+        calls = []
+        win = self._window(monkeypatch)
+        win._close_callback = lambda: calls.append("hide") or True
+
+        assert win._on_window_closing() is False, "点 X 不该退出"
+        assert calls == ["hide"], "应调用收进托盘的回调"
+
+    def test_force_close_bypasses_interception(self, monkeypatch):
+        """真正退出时（托盘菜单「退出」）必须放行，否则退出按钮会失灵"""
+        win = self._window(monkeypatch)
+        win._close_callback = lambda: True
+        win._force_close = True
+        assert win._on_window_closing() is True
+
+    def test_close_sets_force_flag(self, monkeypatch):
+        """close() 必须先置位 _force_close —— destroy() 也会走 FormClosing"""
+        from desktop import NativeWindow
+
+        win = NativeWindow.__new__(NativeWindow)
+        win._closed = False
+        win._force_close = False
+        win.hotkey = None
+        win.hwnd = 0
+        win.window = None
+        win.close()
+        assert win._force_close is True
+
+    def test_callback_failure_does_not_trap_user(self, monkeypatch):
+        """收进托盘失败时应放行关闭，不能让窗口关不掉"""
+        win = self._window(monkeypatch)
+
+        def boom():
+            raise RuntimeError("隐藏失败")
+
+        win._close_callback = boom
+        assert win._on_window_closing() is True
+
+    def test_close_then_closing_event_still_exits(self, monkeypatch):
+        """完整退出链路：托盘「退出」→ close() → destroy() → FormClosing
+
+        destroy() 内部同样会触发 FormClosing，所以 close() 必须先把
+        _force_close 置位，否则「退出」会被自己装的拦截器挡下来 ——
+        表现就是点了没反应。
+        """
+        win = self._window(monkeypatch)
+        win._close_callback = lambda: True   # 拦截器已装
+        win._closed = False
+        win.hotkey = None
+        win.window = None
+        win.hwnd = 0
+
+        win.close()                            # 用户点托盘菜单「退出」
+        assert win._on_window_closing() is True, "退出时必须放行"
+
+    def test_hide_to_tray_hides_and_updates_tray(self, monkeypatch):
+        """hide_to_tray：摘任务栏图标 → 隐藏窗口 → 同步托盘状态 + 气泡"""
+        import desktop
+
+        events = []
+        monkeypatch.setattr(
+            desktop, "hide_window", lambda hwnd: events.append(("hide", hwnd)) or True
+        )
+
+        notifications = []
+
+        class FakeTray:
+            def update_visibility(self, v):
+                events.append(("vis", v))
+
+            def notify(self, title, text):
+                notifications.append((title, text))
+
+        ctrl = desktop.TrayController(FakeWindow(hwnd=9))
+        ctrl.tray = FakeTray()
+
+        assert ctrl.hide_to_tray(announce=True) is True
+        assert ("hide", 9) in events, "应真的隐藏窗口"
+        assert ("vis", False) in events, "托盘状态应同步为不可见"
+        assert notifications and "托盘" in notifications[0][1], "应气泡告知用户还在运行"
+
+    def test_hide_to_tray_without_hwnd_is_safe(self, monkeypatch):
+        import desktop
+
+        ctrl = desktop.TrayController(FakeWindow(hwnd=0))
+        assert ctrl.hide_to_tray() is False
+
+
 class TestTrayFlagDefaults:
     """--tray 与 --hide-taskbar 的组合规则
 
@@ -305,3 +416,13 @@ class TestTrayFlagDefaults:
         args = self._resolve(monkeypatch, [])
         assert args.tray is False
         assert args.hide_taskbar is False, "不开托盘时不应擅自隐藏任务栏"
+
+    def test_close_to_tray_follows_tray_flag(self, monkeypatch):
+        """默认跟随托盘：开了托盘，X 就应变成收进托盘"""
+        assert self._resolve(monkeypatch, ["--tray"]).close_to_tray is True
+        assert self._resolve(monkeypatch, []).close_to_tray is False
+
+    def test_explicit_close_to_tray_false_wins(self, monkeypatch):
+        """想保留「X 直接退出」的用户可以显式关掉"""
+        args = self._resolve(monkeypatch, ["--tray", "--close-to-tray", "false"])
+        assert args.close_to_tray is False

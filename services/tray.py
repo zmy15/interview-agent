@@ -270,6 +270,18 @@ class TrayIcon:
         if self._hwnd:
             self._notify(NIM_MODIFY, with_info=False)
 
+    def notify(self, title: str, text: str) -> bool:
+        """弹一个气泡提示（用于「已最小化到托盘」这类一次性告知）
+
+        注意：气泡是 Windows 的「通知」，不是窗口；弹完自动消失，
+        因此这里用 NIM_MODIFY + NIF_INFO 复用同一个图标，不额外注册。
+        """
+        if not self._hwnd:
+            return False
+        self.balloon = text[:255]
+        self.title = title[:63]
+        return self._notify(NIM_MODIFY, with_info=True)
+
     def update_visibility(self, visible: bool) -> None:
         """告诉托盘当前窗口是否可见（决定菜单里显示「显示」还是「隐藏」）"""
         self._window_visible = bool(visible)

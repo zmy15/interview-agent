@@ -473,6 +473,11 @@ def find_window_by_pid(pid: int, need_title: bool = False) -> int:
 
     浏览器进程会派生多个子进程（GPU / 渲染 / 网络），--app 窗口可能由子进程创建，
     因此这里按「进程树 + 可见性 + 标题」综合匹配。
+
+    刻意**只匹配可见窗口**：把隐藏窗口也算进来时，同一个进程会多出好几个候选
+    （WebView2 的辅助窗口等），按「标题最长」排序可能选中错误的那个 ——
+    而返回值会被当成主窗口句柄用于置顶/捕获排除/托盘显隐，选错会静默失效。
+    窗口收进托盘后无需重新查找：句柄在首次解析时就已缓存（见 NativeWindow.hwnd）。
     """
     if not IS_WINDOWS or pid <= 0:
         return 0
@@ -839,6 +844,10 @@ class DesktopWindow:
             return False
         refresh_taskbar_button(self.hwnd)
         return True
+
+    def supports_close_interception(self) -> bool:
+        """浏览器窗口不归本进程管，点 X 无法拦截 —— 托盘不会接管关闭按钮"""
+        return False
 
     def close(self) -> None:
         if self._closed:
@@ -1253,6 +1262,12 @@ class NativeWindow:
         self.hwnd: int = 0
         self._closed = False
         self._started = threading.Event()
+        # 托盘模式下的「关闭 = 收进托盘」：
+        #   _close_callback 由 TrayController 注入（点 X 时调用它隐藏窗口）；
+        #   _force_close 在真正退出时置位，否则 pywebview 的 destroy()
+        #   也会走到同一个 FormClosing，把「退出」拦下来变成隐藏。
+        self._close_callback: Optional[Callable[[], bool]] = None
+        self._force_close = False
         # 全局热键：窗口失焦时也能触发截图
         self.hotkey: Optional[GlobalHotkey] = None
         self.hotkey_callback_name: str = ""
@@ -1396,6 +1411,14 @@ class NativeWindow:
         except Exception as exc:  # pragma: no cover - 后端差异
             logger.debug("登记 loaded 事件失败，缩放需在设置面板里手动恢复: %s", exc)
 
+        # 点右上角 X 时先问一句：是「收进托盘」还是「真的退出」。
+        # pywebview 的 closing 事件里返回 False 即可取消关闭（winforms 后端
+        # 会把它翻译成 FormClosing 的 args.Cancel）。
+        try:
+            self.window.events.closing += self._on_window_closing
+        except Exception as exc:  # pragma: no cover - 后端差异
+            logger.debug("登记 closing 事件失败，X 将直接退出: %s", exc)
+
         # 窗口就绪后应用窗口特效（置顶 / 捕获排除 / 隐藏任务栏）
         threading.Thread(target=self._apply_effects_when_ready, daemon=True).start()
 
@@ -1530,10 +1553,47 @@ class NativeWindow:
         refresh_taskbar_button(self.hwnd)
         return True
 
+    def set_close_to_tray(self, callback: Optional[Callable[[], bool]]) -> None:
+        """注入「点 X 时收进托盘」的回调（None 表示恢复默认的直接退出）
+
+        由 TrayController 在托盘注册成功后调用 —— 这是刻意设计的单向依赖：
+        窗口不需要知道托盘怎么实现，托盘则决定要不要接管关闭按钮。
+
+        仅 native 模式支持：浏览器模式的窗口属于浏览器进程，无法拦截关闭。
+        """
+        if not self.supports_close_interception():
+            return
+        self._close_callback = callback
+
+    def supports_close_interception(self) -> bool:
+        """能否拦截关闭按钮（native=能；browser=窗口不属于本进程，不能）"""
+        return True
+
+    def _on_window_closing(self) -> bool:
+        """右上角 X 的处理：托盘模式下令其「收进托盘」，返回 False 取消关闭。
+
+        返回 False 会让 pywebview 取消这次关闭（winforms 后端 → args.Cancel）。
+        真正退出时 _force_close 已置位，这里直接放行。
+        """
+        if self._force_close or self._close_callback is None:
+            return True
+        try:
+            handled = self._close_callback()
+        except Exception as exc:  # pragma: no cover
+            logger.warning("收进托盘失败，改为直接退出: %s", exc)
+            return True
+        if handled:
+            logger.info("🖱 点击关闭按钮：窗口已收进托盘（要退出请用托盘右键菜单）")
+            return False
+        return True
+
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        # 置位后 FormClosing 不再拦截 —— 否则 destroy() 会被「收进托盘」的
+        # 逻辑挡下来，导致托盘「退出」菜单点了没反应。
+        self._force_close = True
         # 先注销热键：窗口销毁后再调 evaluate_js 会失败，
         # 且热键不注销会一直占用 F8，直到进程退出
         if self.hotkey is not None:
@@ -1628,7 +1688,8 @@ class TrayController:
 
     def __init__(self, window, icon_path: Optional[str] = None,
                  log_path: Optional[str] = None,
-                 quit_callback: Optional[Callable[[], None]] = None):
+                 quit_callback: Optional[Callable[[], None]] = None,
+                 close_to_tray: bool = True):
         self.window = window          # NativeWindow / DesktopWindow 实例
         self.icon_path = icon_path
         self.log_path = log_path
@@ -1637,6 +1698,8 @@ class TrayController:
         # 由托盘线程调用 window.close()（pywebview 的 destroy 允许跨线程，
         # desktop.py 的 JS API close_window 就是同样的用法）。
         self.quit_callback = quit_callback
+        # 点 X 是收进托盘还是退出（browser 模式无法拦截，见 _install_close_handler）
+        self.close_to_tray = close_to_tray
         self.tray = None
         self.quit_requested = False
 
@@ -1670,9 +1733,28 @@ class TrayController:
             return False
 
         logger.info("🗂 托盘图标已就绪（单击显示/隐藏，右键退出）")
+        # 托盘存在时，点右上角 X = 收进托盘（而不是退出）。
+        # 装不上就退回原行为：X 直接退出，不会出现「点了没反应」。
+        self._install_close_handler()
         threading.Thread(target=self._sync_visibility_when_ready,
                          name="tray-hwnd-sync", daemon=True).start()
         return True
+
+    def _install_close_handler(self) -> None:
+        """把「点 X 收进托盘」装到窗口上（不支持拦截的窗口自动跳过）"""
+        if not self.close_to_tray:
+            return
+        supports = getattr(self.window, "supports_close_interception", None)
+        if callable(supports) and not supports():
+            logger.info("ℹ 当前窗口模式无法拦截关闭按钮，点 X 仍会直接退出应用")
+            return
+        install = getattr(self.window, "set_close_to_tray", None)
+        if callable(install):
+            install(self._on_close_requested)
+
+    def _on_close_requested(self) -> bool:
+        """窗口点 X 时被调用；返回 True 表示「已收进托盘，取消关闭」"""
+        return self.hide_to_tray(announce=True)
 
     def _sync_visibility_when_ready(self, timeout: float = 30.0) -> None:
         """等窗口句柄出现，把初始可见状态同步给托盘（供菜单文案与切换判断使用）"""
@@ -1720,6 +1802,27 @@ class TrayController:
         if self.tray is not None:
             self.tray.update_visibility(target)
         return target
+
+    def hide_to_tray(self, announce: bool = False) -> bool:
+        """把窗口收进托盘（点右上角 X 或点托盘图标隐藏时走这里）。
+
+        announce=True 时补一个气泡提示 —— 用户点 X 却看到窗口消失、
+        程序「似乎没了」，必须明确告诉他还在托盘里。
+        """
+        hwnd = getattr(self.window, "hwnd", 0)
+        if not hwnd:
+            return False
+        self.window.apply_taskbar_visibility(True)
+        hide_window(hwnd)
+        if self.tray is not None:
+            self.tray.update_visibility(False)
+            if announce:
+                self.tray.notify(
+                    "Interview Agent",
+                    "已最小化到托盘，应用仍在后台运行。单击图标可重新显示，右键可退出。",
+                )
+        logger.info("🗂 窗口已收进托盘（应用继续运行；托盘右键可退出）")
+        return True
 
     def _open_log(self) -> None:
         """打开日志文件（控制台不可见时的主要排查入口）"""
@@ -2183,6 +2286,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="在系统托盘显示图标（默认关闭）。开启后：单击图标显示/隐藏窗口，"
                              "右键菜单可退出。窗口隐藏时任务栏图标会一并移除，"
                              "避免留下一个点不开的死按钮。")
+    window.add_argument("--close-to-tray", type=_str2bool, nargs="?", const=True, default=None,
+                        help="点窗口右上角 X 时收进托盘而不是退出（默认跟随 --tray："
+                             "开了托盘就收进托盘）。想保留「X 直接退出」可传 false。"
+                             "浏览器窗口模式无法拦截关闭，此项不生效。")
     window.add_argument("--opacity", type=float, default=MAX_OPACITY,
                         help=f"窗口透明度 {MIN_OPACITY}-{MAX_OPACITY}（1.0=不透明，默认 1.0）；"
                              f"也可传 20-100 的百分数，运行中可在界面顶栏拖动滑块调整")
@@ -2386,6 +2493,7 @@ def run_desktop(args: argparse.Namespace) -> int:
                                        "assets", "tray.ico"),
                 log_path=log_path,
                 quit_callback=window.close,
+                close_to_tray=args.close_to_tray,
             )
             tray_ctrl.start()
 
@@ -2465,13 +2573,14 @@ def run_desktop(args: argparse.Namespace) -> int:
             icon_path=os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                    "assets", "tray.ico"),
             log_path=log_path,
+            close_to_tray=args.close_to_tray,
         )
         # 等 hwnd 就绪（特效线程负责写入），最多等 20 秒
         deadline = time.time() + 20.0
         while time.time() < deadline and not getattr(window, "hwnd", 0):
             time.sleep(0.3)
         tray_ctrl.start()
-        logger.info("ℹ 关闭窗口即退出；要最小化到托盘请单击托盘图标隐藏窗口")
+        logger.info("ℹ 单击托盘图标可隐藏窗口；浏览器模式无法拦截关闭按钮，点 X 会退出应用")
 
     # ── 6. 阻塞直到窗口关闭 / 用户中断 / 托盘请求退出 ──
     try:
@@ -2553,6 +2662,12 @@ def _apply_env_defaults(args: argparse.Namespace) -> None:
         if args.tray:
             args.hide_taskbar = True
         args.hide_taskbar = env_bool("DESKTOP_HIDE_TASKBAR", args.hide_taskbar)
+
+    if "close_to_tray" not in took_arg:
+        # 没显式指定时跟随托盘开关：开了托盘就把 X 变成「收进托盘」。
+        # 这符合用户对托盘应用的预期 —— 点 X 不该让程序整个消失。
+        args.close_to_tray = args.tray
+        args.close_to_tray = env_bool("DESKTOP_CLOSE_TO_TRAY", args.close_to_tray)
     if "host" not in took_arg:
         args.host = os.getenv("HOST") or args.host
     if "port" not in took_arg:
