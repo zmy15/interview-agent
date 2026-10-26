@@ -86,7 +86,7 @@ repos:
 
   # ── Python 代码检查（ruff）──
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.17.1
+    rev: v0.17.2
     hooks:
       # 静态检查：--fix 自动修复可修复的问题（导入排序、未使用导入等）
       #
