@@ -1,3 +1,8 @@
+# GPU 运行（STT_DEVICE=cuda）需要 CUDA 12：faster-whisper 1.x 依赖
+# ctranslate2 4.x，而它只提供 CUDA 12 构建（Windows wheel 自带 cuDNN 9，
+# 系统仍需 CUDA 12 的 cuBLAS）。CUDA 11.8 只能整体降级到
+# ctranslate2==3.24.0 + faster-whisper==0.10.1（Python ≤ 3.12，PyAV 10 没有
+# Windows wheel），不推荐。详见 README「语音功能」。
 faster-whisper>=1.0.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0

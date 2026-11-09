@@ -95,7 +95,7 @@ Pick one of three methods:
 | `STT_ENABLED` | `false` | Speech-to-Text (voice to text) |
 | `TTS_ENABLED` | `false` | Text-to-Speech (text to voice) |
 | `STT_MODEL` | `small` | Whisper model (base:140MB / small:480MB) |
-| `STT_DEVICE` | `cpu` | Inference device (cpu / cuda) |
+| `STT_DEVICE` | `cpu` | Inference device (cpu / cuda; GPU requires **CUDA 12**: cuBLAS 12 + cuDNN 9) |
 | `TTS_SPEED` | `1.0` | Speech rate (0.5-2.0) |
 
 <details>
@@ -184,6 +184,8 @@ docker compose --profile tts up    # TTS only
 ```
 
 First run auto-downloads models (whisper ~480MB + Piper ~50MB).
+
+GPU STT (`STT_DEVICE=cuda`) requires **CUDA 12** with cuBLAS 12 and cuDNN 9: `faster-whisper` 1.x depends on `ctranslate2` 4.x, which only ships CUDA 12 builds. Without them model loading fails (e.g. `CUDA failed with error ...` or a missing cuBLAS DLL) — set `STT_DEVICE=cpu` instead. CUDA 11.8 only works by downgrading to `ctranslate2==3.24.0` + `faster-whisper==0.10.1` (Python ≤ 3.12, no Windows wheel for PyAV 10), which is not recommended.
 
 #### Data Persistence
 

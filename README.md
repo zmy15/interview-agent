@@ -423,7 +423,7 @@ LLM usage | prompt=1504 (cache_hit=1408, cache_miss=96) | cache_hit_rate=93.6%  
 | `STT_ENABLED` | `false` | 语音识别（语音转文字） |
 | `TTS_ENABLED` | `false` | 语音合成（文字转语音） |
 | `STT_MODEL` | `base` | Whisper 模型：`tiny` / `base` / `small` / `medium` / `large-v3-turbo` |
-| `STT_DEVICE` | `cpu` | 推理设备：`cpu` / `cuda` |
+| `STT_DEVICE` | `cpu` | 推理设备：`cpu` / `cuda`（GPU 需 **CUDA 12**：cuBLAS 12 + cuDNN 9） |
 | `STT_COMPUTE_TYPE` | `int8` | 量化类型：`int8` / `float16` / `int8_float16`（留空按设备自动：GPU→float16，CPU→int8） |
 | `STT_SERVICE_URL` | `http://stt:8000` | STT 微服务地址（本地运行为 `http://localhost:8001`） |
 | `STT_WS_URL` | `ws://stt:8000/stream` | STT WebSocket 地址 |
@@ -832,7 +832,8 @@ pre-commit install          # 安装 git hook，之后每次 commit 自动检查
 
 - **三个开关默认全为 `false`**，未启用时接口不注册、依赖不加载，对系统零影响。
 - **本地运行时**，`STT_SERVICE_URL` / `TTS_SERVICE_URL` 需指向 `http://localhost:8001` / `http://localhost:8002`；Docker 内部网络则是 `http://stt:8000` / `http://tts:8000`。`start.bat` 会自动设置前者。
-- **`STT_DEVICE=cuda` 需要 CTranslate2 的 CUDA 运行库**（cuBLAS / cuDNN），与 `torch` 无关；缺少时会自动回退 CPU 并在日志中告警。
+- **`STT_DEVICE=cuda` 需要 CUDA 12**：`faster-whisper` 1.x 依赖 `ctranslate2` 4.x，其 wheel 只提供 CUDA 12 构建，因此需要 CUDA 12 的 **cuBLAS + cuDNN 9**（Windows 轮子里自带 `cudnn64_9.dll`），与 `torch` 无关。缺运行库时模型加载会直接失败（如 `CUDA failed with error ...` 或找不到 cuBLAS DLL），请把 `STT_DEVICE` 改回 `cpu`。
+- **想用 CUDA 11.8 跑 GPU**：只能整体降级到 `ctranslate2==3.24.0` + `faster-whisper==0.10.1`（Python ≤ 3.12，且 PyAV 10 没有 Windows wheel），不推荐；详见 `stt_service/requirements.txt` 顶部说明。
 - **Whisper 模型选择**：`tiny` / `base` 体积小但中文准确率偏低，建议使用 `large-v3-turbo`。
 - 首次转录时 STT 需要加载模型，因此心跳与连接超时设置得比较宽松，避免误报「连不上」。
 

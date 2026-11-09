@@ -211,7 +211,7 @@ class Settings:
     # ── STT 语音识别配置 ──
     # whisper 模型大小: tiny / base / small / medium
     STT_MODEL: str = os.getenv("STT_MODEL", "base")
-    # 推理设备: cpu / cuda
+    # 推理设备: cpu / cuda（cuda 需 CUDA 12 + cuDNN 9，见 README「语音功能」）
     STT_DEVICE: str = os.getenv("STT_DEVICE", "cpu")
     # 量化类型: int8 / float16 / int8_float16
     STT_COMPUTE_TYPE: str = os.getenv("STT_COMPUTE_TYPE", "int8")
