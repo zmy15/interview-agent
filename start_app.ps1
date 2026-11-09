@@ -144,21 +144,76 @@ Write-Log '======== Interview Agent 启动 ========'
 Write-Log ("参数: Foreground={0} SkipDeps={1} NoBuild={2} NoTray={3} ShowTaskbar={4}" -f `
     $Foreground, $SkipDeps, $NoBuild, $NoTray, $ShowTaskbar)
 
-# ── 1. 选择解释器 ──
-$venvPython = Join-Path $root '.venv\Scripts\python.exe'
-$venvPythonW = Join-Path $root '.venv\Scripts\pythonw.exe'
+# ── 1. 解释器：优先 .venv；首次启动时自动创建 ──
+$venvDir = Join-Path $root '.venv'
+$venvPython = Join-Path $venvDir 'Scripts\python.exe'
+$venvPythonW = Join-Path $venvDir 'Scripts\pythonw.exe'
 $python = $venvPython
 $pythonw = $venvPythonW
 
+# 系统 Python：优先 py 启动器（装了多个版本时它会自己挑最新的 3.x），
+# 再退回 PATH 里的 python.exe / python3.exe。统一返回可执行文件路径，
+# 调用方不必再关心「要不要带 -3」。
+function Find-SystemPython {
+    $py = Get-Command 'py.exe' -ErrorAction SilentlyContinue
+    if ($py) {
+        $probe = Invoke-Native { & $py.Source -3 -c "import sys; print(sys.executable)" }
+        if ($probe.Code -eq 0) {
+            $exe = ($probe.Output | Select-Object -Last 1).ToString().Trim()
+            if ($exe -and (Test-Path $exe)) { return $exe }
+        }
+    }
+    foreach ($name in @('python.exe', 'python3.exe')) {
+        $cmd = Get-Command $name -ErrorAction SilentlyContinue
+        if ($cmd) { return $cmd.Source }
+    }
+    return $null
+}
+
 if (Test-Path $venvPython) {
     Write-Log '[1/5] 使用虚拟环境 .venv'
-} else {
-    Write-Log '[1/5] 未找到 .venv，改用 PATH 里的 Python' 'WARN'
+} elseif ($SkipDeps) {
+    # 用户明确要求跳过依赖：不创建虚拟环境，退回系统 Python（保持旧行为）
+    Write-Log '[1/5] 未找到 .venv，按 -SkipDeps 跳过自动创建，改用 PATH 里的 Python' 'WARN'
     $cmd = Get-Command 'python.exe' -ErrorAction SilentlyContinue
-    if (-not $cmd) { Show-Failure '未找到 Python：既没有 .venv\Scripts\python.exe，PATH 里也没有 python.exe。请先安装 Python 3.10+。' }
+    if (-not $cmd) { Show-Failure '未找到 Python：既没有 .venv\Scripts\python.exe，PATH 里也没有 python.exe。请先安装 Python 3.11+。' }
     $python = $cmd.Source
     $cmdw = Get-Command 'pythonw.exe' -ErrorAction SilentlyContinue
     $pythonw = if ($cmdw) { $cmdw.Source } else { $python }
+} else {
+    # 首次启动：自动创建虚拟环境，之后的依赖都装进 .venv，不污染系统 Python
+    Write-Log '[1/5] 未找到 .venv，正在自动创建虚拟环境...'
+    Show-WaitingNotice "首次启动需要创建 Python 虚拟环境并安装依赖，可能需要几分钟。`n`n完成后会自动打开窗口。"
+    $sysPython = Find-SystemPython
+    if (-not $sysPython) {
+        Show-Failure '未找到 Python：py 启动器与 PATH 里的 python.exe 都不可用。请先安装 Python 3.11+（安装时勾选 "Add python.exe to PATH"）。'
+    }
+
+    $ver = Invoke-Native { & $sysPython -c "import sys; print('%d.%d' % sys.version_info[:2])" }
+    if ($ver.Code -ne 0) {
+        Write-Log ($ver.Output | Out-String) 'PY'
+        Show-Failure "无法运行 Python：$sysPython"
+    }
+    $verText = ($ver.Output | Out-String).Trim()
+    if ([version]$verText -lt [version]'3.11') {
+        Show-Failure "Python 版本过低（$verText）：本项目需要 Python 3.11+（CI 使用 3.11 / 3.12）。请安装新版后重试。"
+    }
+
+    Write-Log "      使用系统 Python $verText：$sysPython"
+    $make = Invoke-Native { & $sysPython -m venv $venvDir }
+    if ($make.Code -ne 0 -or -not (Test-Path $venvPython)) {
+        Write-Log ($make.Output | Out-String) 'VENV'
+        Show-Failure "创建虚拟环境失败：$venvDir`n`n提示：Debian/Ubuntu 需要先执行 sudo apt install python3-venv；Windows 请确认安装的是 python.org 官方版本（不是 Microsoft Store 版）。"
+    }
+    Write-Log "      虚拟环境已创建：$venvDir"
+
+    # pip 自更新失败不阻断启动：自带 pip 一样能装 requirements
+    $pipSelf = Invoke-Native { & $venvPython -m pip install --upgrade pip -q }
+    if ($pipSelf.Code -ne 0) {
+        Write-Log '      pip 自更新失败，继续使用虚拟环境自带的 pip' 'WARN'
+    } else {
+        Write-Log '      pip 已就绪'
+    }
 }
 
 # ── 2. .env ──
@@ -169,17 +224,34 @@ if (-not (Test-Path (Join-Path $root '.env'))) {
     }
 }
 
-# ── 3. Python 依赖 ──
+# ── 3. Python 依赖（全部装进 .venv） ──
 if ($SkipDeps) {
     Write-Log '[2/5] 跳过依赖检查（-SkipDeps）'
 } else {
     Write-Log '[2/5] 检查 Python 依赖...'
-    $pip = Invoke-Native { & $python -m pip install -r (Join-Path $root 'requirements.txt') -q }
-    if ($pip.Code -ne 0) {
-        if ($pip.Output) { Write-Log ($pip.Output | Out-String) 'PIP' }
-        Show-Failure 'Python 依赖安装失败，请检查网络或改用国内镜像。'
+    $req = Join-Path $root 'requirements.txt'
+    # 标记文件放在 .venv 内部：虚拟环境一重建，标记自动失效，
+    # 不会出现「新 venv 里什么都没装却被判定为依赖已就绪」。
+    $depsMarker = Join-Path $venvDir '.deps_installed'
+    $needInstall = $true
+    if ((Test-Path $depsMarker) -and (Test-Path $req)) {
+        $needInstall = (Get-Item $req).LastWriteTimeUtc -gt (Get-Item $depsMarker).LastWriteTimeUtc
     }
-    Write-Log '      Python 依赖已就绪'
+
+    if ($needInstall) {
+        Write-Log '      安装依赖到虚拟环境（首次较慢）...'
+        $pip = Invoke-Native { & $python -m pip install -r $req -q }
+        if ($pip.Code -ne 0) {
+            if ($pip.Output) { Write-Log ($pip.Output | Out-String) 'PIP' }
+            Show-Failure 'Python 依赖安装失败，请检查网络或改用国内镜像：pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple'
+        }
+        # 空文件当标记，mtime 即「依赖装好」的时间；不写版本号，避免无意义改动。
+        # 用 WriteAllText 而不是 New-Item -Force：后者对已存在的文件不会刷新 mtime。
+        [IO.File]::WriteAllText($depsMarker, '')
+        Write-Log '      Python 依赖已就绪'
+    } else {
+        Write-Log '      Python 依赖已就绪（requirements.txt 未变化，跳过安装）'
+    }
 }
 
 # ── 4. 前端构建产物 ──

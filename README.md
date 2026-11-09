@@ -116,7 +116,7 @@ JWT_SECRET=请换成一串足够长的随机字符串
 
 #### 方式一：本地脚本（开发推荐）
 
-**Windows** — 双击 `start.bat`
+**Windows** — 双击 `start.bat`（它只负责转调 `start.ps1`，逻辑都在 PowerShell 里；也可以直接 `.\start.ps1` 运行）
 
 **macOS / Linux**
 
@@ -125,7 +125,9 @@ chmod +x start.sh
 ./start.sh
 ```
 
-脚本会自动完成：检查 Python / Node → 创建 `.env` → 安装依赖 → 初始化数据库 → （可选）配置语音 → 启动后端与前端 → 打开浏览器。启动后访问前端 <http://localhost:5173>，API 文档 <http://localhost:8000/docs>。
+脚本会自动完成：检查 Python / Node → **首次启动自动创建 `.venv` 虚拟环境并把依赖装进去** → 创建 `.env` → 初始化数据库 → （可选）配置语音 → 启动后端与前端 → 打开浏览器。启动后访问前端 <http://localhost:5173>，API 文档 <http://localhost:8000/docs>。
+
+> 需要 Python 3.11+。`requirements.txt` 没变化时会跳过安装，只有首次启动（或依赖清单更新后）才会联网安装。
 
 启动过程中会询问是否启用语音功能（默认 `n`）；选 `y` 后会继续询问 STT 推理设备（CPU / GPU）。
 
@@ -844,9 +846,11 @@ pre-commit install          # 安装 git hook，之后每次 commit 自动检查
 
 ### 启动脚本
 
-- `start.bat` / `start.sh` **每次启动都会重装 Python 依赖**，每次都会联网耗时。
-- `start.bat` / `start.sh` 会**交互询问**是否启用语音；`start_app.bat` / `start_app.ps1` 则完全从 `.env` 读取，不提问。
-- 语音相关的安装与设备选择在 `start.bat` 中**只在当前窗口会话内生效，不会写回 `.env`**。想让配置长期生效，请手动写入 `.env`。
+- `start.bat`（转调 `start.ps1`）/ `start.sh` / `start_app.ps1` 首次启动会自动创建 `.venv` 虚拟环境，并把 `requirements.txt` 装进这个虚拟环境（不污染系统 Python）。依赖装好后会在 `.venv` 里写一个标记，`requirements.txt` 未变化时下次启动直接跳过安装。
+- 自动创建虚拟环境需要 **Python 3.11+**；Linux 上若报「创建虚拟环境失败」，先装 `python3-venv`（`sudo apt install python3-venv`）。
+- `start.bat` 现在只是一个转发器（和 `start_app.bat` 同一套路），实际逻辑在同目录的 `start.ps1`：`start.bat` 负责双击可用，`start.ps1` 负责干活。`start.ps1` 支持 `-SkipDeps`（跳过建虚拟环境 + 装依赖，依赖已就绪时可明显加快启动）。
+- `start.ps1` / `start.sh` 会**交互询问**是否启用语音；`start_app.bat` / `start_app.ps1` 则完全从 `.env` 读取，不提问。
+- 语音相关的安装与设备选择在 `start.ps1` 中**只在当前窗口会话内生效，不会写回 `.env`**。想让配置长期生效，请手动写入 `.env`。
 - 脚本只检查「是否安装了 Node」，并未校验版本。由于前端使用 Vite 8，建议使用 **Node 20+**。
 - `start_app.bat` 接受并透传任意参数给 `desktop.py`，例如 `start_app.bat --width 1600 --height 900 --no-topmost`。
 - `start_app.ps1` 是实际干活的启动器，`start_app.bat` 只是转发（因为双击 .bat 一定会先出现一个终端窗口）。常用开关：

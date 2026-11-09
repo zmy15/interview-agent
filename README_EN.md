@@ -1,4 +1,4 @@
-﻿<p align="center">
+<p align="center">
   <img src="https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" alt="React">
@@ -101,7 +101,7 @@ Pick one of three methods:
 <details>
 <summary><b>Method 1: Local Script (dev recommended)</b></summary>
 
-**Windows** — Double-click `start.bat`
+**Windows** — Double-click `start.bat` (it only forwards to `start.ps1`; you can also run `.\start.ps1` directly)
 
 **macOS / Linux**:
 ```bash
@@ -109,7 +109,7 @@ chmod +x start.sh
 ./start.sh
 ```
 
-The script automates: environment check → dependency install → start backend `:8000` + frontend `:5173` → open browser.
+The script automates: environment check → **create a `.venv` virtualenv on first launch and install dependencies into it** → start backend `:8000` + frontend `:5173` → open browser. Requires Python 3.11+; dependencies are reinstalled only when `requirements.txt` changes.
 </details>
 
 <details>
@@ -262,7 +262,8 @@ interview-agent/
 ├── requirements.txt         # Python dependencies
 ├── Dockerfile               # Multi-stage build (frontend + backend)
 ├── docker-compose.yml       # Docker Compose orchestration
-├── start.bat                # Windows one-click launcher
+├── start.bat                # Windows one-click launcher (forwards to start.ps1)
+├── start.ps1                # PowerShell web launcher (venv bootstrap + services)
 ├── start.sh                 # macOS/Linux one-click launcher
 ├── .env.example             # Environment template
 ├── positions.json           # Position data

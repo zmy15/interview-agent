@@ -23,21 +23,37 @@ if ! command -v python3 &> /dev/null && ! command -v python &> /dev/null; then
     exit 1
 fi
 
-# 优先使用 python3
+# 优先使用 python3（下面只用它来创建虚拟环境）
 if command -v python3 &> /dev/null; then
-    PYTHON=python3
-    PIP=pip3
+    SYS_PYTHON=python3
 else
-    PYTHON=python
-    PIP=pip
+    SYS_PYTHON=python
 fi
 
-# ========== 检测虚拟环境 ==========
-if [ -f ".venv/bin/python" ]; then
-    PYTHON=".venv/bin/python"
-    PIP=".venv/bin/pip"
-    echo -e "${GREEN}[提示]${NC} 使用虚拟环境: .venv"
+# ========== 创建/检测虚拟环境 ==========
+# 首次启动自动创建 .venv，之后所有依赖都装进虚拟环境，不动系统 Python。
+if [ ! -x ".venv/bin/python" ]; then
+    echo -e "${YELLOW}[提示]${NC} 未检测到虚拟环境，正在自动创建 .venv（首次启动只需一次）..."
+    if ! $SYS_PYTHON -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'; then
+        echo -e "${RED}[错误]${NC} Python 版本过低，本项目需要 Python 3.11+（当前：$($SYS_PYTHON --version 2>&1)）"
+        exit 1
+    fi
+    if ! $SYS_PYTHON -m venv .venv; then
+        echo -e "${RED}[错误]${NC} 创建虚拟环境失败"
+        echo -e "       Debian/Ubuntu 需要先执行: ${YELLOW}sudo apt install python3-venv${NC}"
+        exit 1
+    fi
+    if [ ! -x ".venv/bin/python" ]; then
+        echo -e "${RED}[错误]${NC} 虚拟环境创建后仍找不到 .venv/bin/python"
+        exit 1
+    fi
+    # 虚拟环境自带的 pip 可能偏旧，尽力升级一次；失败不影响后面的安装
+    .venv/bin/python -m pip install --upgrade pip -q 2>/dev/null || true
+    echo -e "${GREEN}[提示]${NC} 虚拟环境创建完成: $(.venv/bin/python --version 2>&1)"
 fi
+
+PYTHON=".venv/bin/python"
+echo -e "${GREEN}[提示]${NC} 使用虚拟环境: .venv"
 
 # ========== 检查 Node.js ==========
 if ! command -v node &> /dev/null; then
@@ -56,21 +72,22 @@ if [ ! -f ".env" ]; then
     fi
 fi
 
-# ========== 安装 Python 依赖 ==========
+# ========== 安装 Python 依赖（装在虚拟环境里） ==========
 echo -e "${GREEN}[1/5]${NC} 检查 Python 依赖..."
-# 删除旧标记以强制重新检查（平台化新增了依赖）
-rm -f .deps_installed
-if [ ! -f ".deps_installed" ]; then
-    echo "正在安装 Python 依赖（含平台化新增：SQLAlchemy / JWT / bcrypt）..."
-    $PIP install -r requirements.txt -q
-    if [ $? -ne 0 ]; then
+# 标记文件放在 .venv 内部：虚拟环境重建后标记自然消失，
+# 不会出现「新环境里没装依赖却被当作已就绪」。
+DEPS_MARKER=".venv/.deps_installed"
+if [ -f "$DEPS_MARKER" ] && [ ! "requirements.txt" -nt "$DEPS_MARKER" ]; then
+    echo -e "Python 依赖已就绪 ${GREEN}√${NC}"
+else
+    echo "正在安装 Python 依赖到虚拟环境（首次较慢）..."
+    if ! $PYTHON -m pip install -r requirements.txt -q; then
         echo -e "${RED}[错误]${NC} Python 依赖安装失败，请检查网络连接"
+        echo -e "       可改用国内镜像: ${YELLOW}pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple${NC}"
         exit 1
     fi
-    touch .deps_installed
+    touch "$DEPS_MARKER"
     echo -e "Python 依赖安装完成 ${GREEN}√${NC}"
-else
-    echo -e "Python 依赖已就绪 ${GREEN}√${NC}"
 fi
 
 # ========== 安装前端依赖 ==========
@@ -122,15 +139,15 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     if [[ $REPLY == "2" ]]; then
         export STT_DEVICE=cuda
         echo -e "${GREEN}[语音]${NC} 已选择 GPU 模式"
-        $PIP install faster-whisper ctranslate2 -q 2>/dev/null
+        $PYTHON -m pip install faster-whisper ctranslate2 -q 2>/dev/null
     else
         export STT_DEVICE=cpu
         echo -e "${GREEN}[语音]${NC} 已选择 CPU 模式"
-        $PIP install faster-whisper -q 2>/dev/null
+        $PYTHON -m pip install faster-whisper -q 2>/dev/null
     fi
 
     echo -e "${GREEN}[语音]${NC} 安装语音依赖..."
-    $PIP install silero-vad numpy ffmpeg-python piper-tts -q 2>/dev/null
+    $PYTHON -m pip install silero-vad numpy ffmpeg-python piper-tts -q 2>/dev/null
     echo -e "${GREEN}[语音]${NC} 依赖安装完成"
     VOICE_ON=1
 else
