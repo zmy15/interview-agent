@@ -164,8 +164,9 @@ async def capture(
     except FileNotFoundError:
         logger.warning("提示词模板 %s.txt 缺失，使用内置精简版", _PROMPT_TEMPLATE)
         system_prompt = (
-            "你是面试答题助手。请先逐字提取截图中的题目，再给出答案，"
-            "并列出不确定之处。若图中没有题目，请如实说明，不要编造。"
+            "你是面试答题助手。请直接给出截图中题目的答案，"
+            "不要复述题干，也不要输出「识别到的题目」「不确定性」等小节标题。"
+            "若图中没有题目，请如实说明，不要编造。"
         )
 
     # load_prompt 走的是 ChatPromptTemplate.format()，返回值会带上
@@ -178,11 +179,14 @@ async def capture(
     question = (req.prompt or "").strip() or _DEFAULT_QUESTION
 
     # ── 6) 调用界面选中的模型 ──
+    # req.messages 为当前对话历史（纯文本），让截图接着上文作答；
+    # 图片仍然只有本次这一张（见 services/screen_capture.py）。
     try:
         answer, used_model, used_thinking = await sc.ask_vision(
             data_url,
             prompt=question,
             system_prompt=system_prompt,
+            history=req.messages,
             api_key=await resolve_api_key(request, db, user, explicit=req.api_key),
             model=req.model,
             thinking=req.thinking_enabled,

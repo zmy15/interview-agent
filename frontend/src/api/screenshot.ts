@@ -36,6 +36,11 @@ export interface CaptureRequest {
   include_cursor?: boolean
   /** 自定义提问，为空则使用后端 prompts/screenshot.txt */
   prompt?: string
+  /**
+   * 当前对话的历史消息（纯文本），让截图接着上文作答。
+   * 只允许 user / assistant；图片始终只有本次这一张。
+   */
+  messages?: { role: string; content: string }[]
   /** 界面选中的模型；不支持图片输入时后端会明确返回「不支持」 */
   model?: string
   api_key?: string

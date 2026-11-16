@@ -118,6 +118,21 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message, highlightCode, isStr
                 style={{ marginBottom: 8 }}
               />
             )}
+            {/* 界面元信息（如截图尺寸/耗时/模型）：只渲染，不参与上下文 */}
+            {message.meta && (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: token.colorTextSecondary,
+                  borderLeft: `3px solid ${token.colorBorder}`,
+                  paddingLeft: 8,
+                  marginBottom: 8,
+                  whiteSpace: 'pre-wrap',
+                }}
+              >
+                {message.meta}
+              </div>
+            )}
             <StreamingText text={message.content} highlightCode={highlightCode} />
             {/* TTS 朗读按钮 */}
             {!isStreaming && isAssistant && message.content && ttsAvailable && (

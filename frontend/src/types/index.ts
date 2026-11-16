@@ -4,6 +4,12 @@ export interface Message {
   role: 'system' | 'user' | 'assistant'
   content: string
   reasoning?: string  // 思维链内容（前端用）
+  /**
+   * 界面附加信息（例如「📷 屏幕截图 · 尺寸 · 耗时 · 模型」）。
+   * 只用于本地渲染与展示，**绝不进入模型上下文**：
+   * 构建请求时一律只读 content，不读 meta。
+   */
+  meta?: string
 }
 
 export type CandidateLevel = 'intern' | 'new_grad' | 'experienced'

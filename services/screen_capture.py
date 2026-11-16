@@ -4,7 +4,7 @@
 职责：
     1) 抓取主显示器画面
     2) 编码为 base64 data URL，交给 DeepSeek 视觉模型
-    3) 返回「识别到的题目 + 答案」
+    3) 返回答案（只给答案，不复述题干）
 
 捕获后端：windows-capture（Rust 实现，基于 Windows Graphics Capture）
     它是**显示器维度**的捕获接口：monitor_index 从 1 开始
@@ -513,11 +513,70 @@ async def resolve_capture_model(
     )
 
 
+# ── 对话历史（让截图「接着上文」） ──
+#
+# 截图不是孤立动作：用户通常先聊了几轮，再截一张图问细节，
+# 因此允许前端把此前的对话一并带上。但历史**只能是文本**：
+# 图片只允许出现一次（本次截图），否则既会挤占 token 预算，
+# 也会让模型分不清哪张才是当前屏幕。
+MAX_HISTORY_MESSAGES = 20      # 只带最近若干条（约 10 轮对话）
+MAX_HISTORY_CHARS = 12000      # 历史总字符上限，超出则从最旧的开始丢
+
+
+def _sanitize_history(history: Optional[list]) -> list[dict]:
+    """把前端传来的历史裁剪成可安全拼进视觉请求的文本消息。
+
+    规则：
+      * 只保留 user / assistant —— system 由后端模板独占，
+        客户端传来的 system 一律丢弃（不允许覆盖或注入截图规则）；
+      * 只保留非空文本字符串 —— 历史里不带图片，整次请求只有一张图；
+      * 从最新往回取，条数与总字符数双上限，避免历史把屏幕画面挤出上下文。
+
+    参数元素可以是 pydantic 对象（路由传的是 Message）或普通 dict。
+    """
+    if not history:
+        return []
+
+    kept: list[dict] = []
+    total = 0
+    # 倒序取（最新的优先保留），取够后再反转回时间顺序
+    for item in reversed(history):
+        if isinstance(item, dict):
+            role = item.get("role")
+            content = item.get("content")
+        else:
+            role = getattr(item, "role", None)
+            content = getattr(item, "content", None)
+
+        role = str(role or "").strip()
+        if role not in ("user", "assistant"):
+            continue
+        # 历史里若混进结构化 content（带图），直接丢弃，绝不转发图片
+        if not isinstance(content, str):
+            continue
+        content = content.strip()
+        if not content:
+            continue
+        if len(kept) >= MAX_HISTORY_MESSAGES:
+            break
+        if len(content) > MAX_HISTORY_CHARS:
+            content = content[:MAX_HISTORY_CHARS] + "…（历史过长已截断）"
+        if kept and total + len(content) > MAX_HISTORY_CHARS:
+            break
+
+        kept.append({"role": role, "content": content})
+        total += len(content)
+
+    kept.reverse()
+    return kept
+
+
 async def ask_vision(
     image_data_url: str,
     prompt: str,
     system_prompt: str = "",
     *,
+    history: Optional[list] = None,
     api_key: Optional[str] = None,
     model: Optional[str] = None,
     max_tokens: Optional[int] = None,
@@ -531,6 +590,9 @@ async def ask_vision(
         - thinking / reasoning_effort 透传界面的思考开关与推理强度。
           思考模式下 temperature / presence_penalty / frequency_penalty
           不生效（传了不报错但被忽略），所以这里不传 temperature。
+
+    history 为当前对话的历史消息（纯文本）：拼在 system 之后、
+    本次带图提问之前，截图因此能「接着上文」回答；图片始终只有一张。
     """
     from services.llm_client import get_client
 
@@ -558,6 +620,13 @@ async def ask_vision(
     messages: list[dict] = []
     if system_prompt.strip():
         messages.append({"role": "system", "content": system_prompt})
+
+    # 先拼历史（纯文本），再拼本次带图的新提问。
+    # 历史里的图片/非文本块已在 _sanitize_history 中丢弃，
+    # 因此整段请求里只有下面这一张图。
+    history_msgs = _sanitize_history(history)
+    messages.extend(history_msgs)
+
     # 图片只能出现在 user 消息中，放 system/assistant 会返回 400
     messages.append(
         {
@@ -620,11 +689,12 @@ async def ask_vision(
     if usage:
         reasoning = getattr(choice.message, "reasoning_content", None) or ""
         logger.info(
-            "视觉问答完成 | model=%s | thinking=%s(%s) | prompt_tokens=%s | "
+            "视觉问答完成 | model=%s | thinking=%s(%s) | history=%d | prompt_tokens=%s | "
             "completion_tokens=%s | reasoning_chars=%d | content_chars=%d | finish=%s",
             _model,
             _thinking,
             _effort if _thinking else "-",
+            len(history_msgs),
             getattr(usage, "prompt_tokens", "?"),
             getattr(usage, "completion_tokens", "?"),
             len(reasoning),

@@ -147,7 +147,7 @@ class Settings:
     # 思维链与正文共享该预算，2048 容易被推理吃光导致正文被截断。
     SCREENSHOT_MAX_TOKENS: int = int(os.getenv("SCREENSHOT_MAX_TOKENS", "8192"))
     # 截图问答在界面未传思考开关时的默认值。
-    # 截图答题是「照抄题干 + 给答案」，不需要长链推理；
+    # 截图答题只要答案（不复述题干），不需要长链推理；
     # 开启只会占用输出预算并拖慢响应，故默认关闭。
     # （界面上的思考开关优先于本配置）
     SCREENSHOT_THINKING_ENABLED: bool = (

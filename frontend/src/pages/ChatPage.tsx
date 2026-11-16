@@ -54,6 +54,7 @@ import VoiceInputPanel from '@/components/VoiceInputPanel'
 import { useVoiceAvailability } from '@/hooks/useVoiceAvailability'
 import { useSystemAudioListener } from '@/hooks/useSystemAudioListener'
 import { screenshotApi } from '@/api/screenshot'
+import { toContextContent } from '@/utils/messageContext'
 import {
   isDesktopWindow,
   getWindowState,
@@ -76,6 +77,13 @@ const PHASE_LABELS: Record<string, { label: string; color: string }> = {
   coding: { label: '编程题', color: 'orange' },
   reverse: { label: '反问环节', color: 'purple' },
 }
+
+/**
+ * 截图请求携带的历史消息条数上限。
+ * 历史只是帮助「接着上文」，不能把本次截图的画面挤出上下文；
+ * 后端还会按 20 条 / 12000 字符再裁一次（services/screen_capture.py）。
+ */
+const MAX_SCREENSHOT_HISTORY = 20
 
 const DIFFICULTY_COLORS: Record<string, string> = { easy: 'green', medium: 'orange', hard: 'red' }
 const DIFFICULTY_LABELS: Record<string, string> = { easy: '简单', medium: '中等', hard: '困难' }
@@ -424,6 +432,18 @@ const ChatPage: React.FC = () => {
       setCaptureElapsed(Math.floor((Date.now() - startedAt) / 1000))
     }, 200)
 
+    // 截图请求继承当前对话：把此前的消息（纯文本）一起带上，
+    // 视觉模型才能接着上文作答；本次仍然只发一张图（就是这张截图）。
+    //
+    // 必须在写入「📷 截图答题」占位消息**之前**取快照，否则本轮提问会重复；
+    // 空内容（流式占位、被中止的半截消息）没有价值，一并过滤。
+    const historyMessages = useChatStore
+      .getState()
+      .messages.filter((m) => m.content.trim())
+      .slice(-MAX_SCREENSHOT_HISTORY)
+      // 只发 content：meta（截图尺寸/耗时/模型）是界面装饰，老数据里的残留也一并剥掉
+      .map((m) => ({ role: m.role, content: toContextContent(m.content) }))
+
     // 记录用户触发的动作，让对话上下文更清晰
     addMessage({
       role: 'user',
@@ -449,6 +469,9 @@ const ChatPage: React.FC = () => {
         res = await screenshotApi.capture({
           // 把输入框内容作为附加要求；为空则用后端内置提示词
           prompt: inputValue.trim() || undefined,
+          // 此前的对话作为纯文本上下文一起发送，截图因此「接着上文」；
+          // 图片仍然只有本次这一张。
+          messages: historyMessages.length > 0 ? historyMessages : undefined,
           // 不传 api_key：后端会用该用户在数据库里加密保存的密钥
           // 模型与思考配置跟随界面选择：
           // 后端会用官方 /models 的 input_modalities 校验该模型能否看图，
@@ -465,11 +488,14 @@ const ChatPage: React.FC = () => {
       }
 
       const meta =
-        `> 📷 屏幕截图 · ${res.width}×${res.height} · ` +
-        `${(res.elapsed_ms / 1000).toFixed(1)}s · 模型 \`${res.model}\`` +
+        `📷 屏幕截图 · ${res.width}×${res.height} · ` +
+        `${(res.elapsed_ms / 1000).toFixed(1)}s · 模型 ${res.model}` +
         `${res.thinking_enabled ? ' · 🧠 思考' : ''}`
 
-      addMessage({ role: 'assistant', content: `${meta}\n\n${res.answer}` })
+      // 元信息放进 meta 字段，只用于界面展示；content 只留答案本身。
+      // 这样后续任何一轮请求（普通聊天 / 再次截图带上的历史）都只会
+      // 发送 content，元信息永远不会变成对话上下文。
+      addMessage({ role: 'assistant', content: res.answer, meta })
       setInputValue('')
       syncAutoScrollBeforeSend()
       message.success(`识别完成（${(res.elapsed_ms / 1000).toFixed(1)}s）`)
@@ -1327,7 +1353,7 @@ const ChatPage: React.FC = () => {
           title={
             capturing
               ? '正在截图并识别…'
-              : '截取主显示器画面，AI 提取题目并作答（结果直接显示在对话中）｜快捷键 F8'
+              : '截取主显示器画面，接着当前对话上下文让 AI 提取题目并作答（本次只发这一张图）｜快捷键 F8'
           }
         >
           <Button

@@ -269,6 +269,9 @@ class CaptureRequest(BaseModel):
     """主显示器截图并识别"""
     include_cursor: bool = False     # 是否把鼠标光标画进截图
     prompt: Optional[str] = None     # 自定义提问，为空则用 prompts/screenshot.txt
+    # 此前的对话历史（纯文本），用于「接着上文」作答。
+    # 只接受 user / assistant：system 由后端模板独占；图片始终只有本次这一张。
+    messages: Optional[list[Message]] = None
     model: Optional[str] = None      # 覆盖视觉模型（界面选中的模型）
     api_key: Optional[str] = None    # 前端传入的 Key，覆盖 .env
     save: Optional[bool] = None      # 是否保存到磁盘，覆盖 settings.SCREENSHOT_SAVE

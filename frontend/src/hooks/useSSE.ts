@@ -2,6 +2,7 @@ import { useCallback, useRef } from 'react'
 import { useChatStore } from '@/stores/chatStore'
 import { useAppStore } from '@/stores/appStore'
 import { streamChat } from '@/api/chat'
+import { toContextContent } from '@/utils/messageContext'
 
 /** 单次发送最大消息数（含 system 消息发送约 30 轮对话，DeepSeek 1M 窗口绰绰有余） */
 const MAX_SEND_MESSAGES = 80
@@ -85,7 +86,8 @@ export function useSSE() {
         {
           messages: requestMessages.map((m) => ({
             role: m.role,
-            content: m.content,
+            // 元信息（meta）等界面装饰不进上下文，老数据里的残留也在此剥掉
+            content: toContextContent(m.content),
           })),
           mode: store.selectedMode,
           position_name: store.selectedPosition || undefined,
