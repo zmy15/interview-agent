@@ -114,7 +114,7 @@ repos:
 #
 # 行为说明：
 #   - 每个 PR 自动运行钩子，并直接向 PR 提交修复（autofix）
-#   - 钩子版本的**自动升级已关闭**（autoupdate_schedule: disabled），
+#   - 钩子版本的**自动升级已关闭**：不写 autoupdate_schedule 即为关闭，
 #     不会再每周自动开一个只改 rev 的 PR
 #   - 在 PR 中评论 `pre-commit.ci run`（单独一行）可重新触发
 #   - 提交信息含 [skip ci] / [ci skip] / [skip pre-commit.ci] 时跳过
@@ -125,12 +125,17 @@ ci:
 
     for more information, see https://pre-commit.ci
   autofix_prs: true
-  # 下面这条提交信息只在 autoupdate 重新开启后才会用到
-  autoupdate_commit_msg: "[pre-commit.ci] 自动更新 pre-commit 钩子版本"
-  # 自动升级钩子版本：已关闭。
-  # 关闭原因：它会每周自动开一个只改 rev 的 PR（例如 PR #11），对本项目是噪音。
-  # 需要升级时手动执行 `pre-commit autoupdate`，或临时改回 weekly。
-  autoupdate_schedule: disabled
+  # 自动升级钩子版本：**不写 autoupdate_schedule 就是关闭**。
+  #
+  # 不要写成 `autoupdate_schedule: disabled` —— pre-commit.ci 的配置校验
+  # 只接受 monthly / quarterly / weekly，写 disabled 会被直接拒绝：
+  #   At key: autoupdate_schedule
+  #   Expected one of monthly, quarterly, weekly but got: 'disabled'
+  # 该字段本身是可选的，省掉即表示不自动升级（pre-commit.ci 的默认行为）。
+  # 注意本地 `pre-commit validate-config` 查不出这个错：客户端只校验 ci 是
+  # 不是 dict，取值校验在 pre-commit.ci 服务端。
+  # 需要升级时手动执行 `pre-commit autoupdate`。
+  #
   # 本地钩子（如依赖未安装的工具）不适合在 CI 中运行；当前没有本地钩子，
   # 预留此位置以便后续按需跳过。
   skip: []
