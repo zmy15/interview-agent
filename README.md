@@ -55,13 +55,13 @@ Interview Agent 是一个基于大语言模型的 **AI 模拟面试平台**。�
 - 🧑‍💻 编程题模式：按岗位类型从题库选题（仅求职者模式 + 技术岗生效）
 - 📝 面试报告：多维度评估（技术能力 / 沟通表达 / 综合素质），支持结构化 QA 逐题评估
 - 🗂️ 题库管理：自建题目、从 LeetCode 题库导入、三种使用模式（严格 / 混合 / 灵活改编）
-- 📎 提示词资料：上传 txt / md 等文档（也支持 pdf / docx），作为**独立消息插在系统提示词与对话之间**，整场不变、不破坏前缀缓存
+- 📎 提示词资料：上传 txt / md 等文档（也支持 pdf / docx），作为背景资料随对话一起发给 AI
 - 💬 会话历史：完整回放历史对话，含思维链与 token 计数
 
 **知识与检索**
 - 📚 RAG 向量知识库：上传 PDF / Word / 文本 / 代码 / 项目压缩包，FAISS 向量检索增强回答
 - 🌐 联网搜索：集成 DuckDuckGo，实时补充最新技术资讯
-- 🗂️ 岗位管理：一个岗位可挂多份 JD，创建时可一并粘贴第一份 JD（同一个事务落库），可指定对话使用哪一份
+- 🗂️ 岗位管理：一个岗位可挂多份 JD，创建时可一并粘贴第一份 JD，可指定对话使用哪一份
 
 **平台与体验**
 - 🔐 用户系统：JWT 认证（access + refresh），数据按用户隔离；也可一键切换到**单用户免登录模式**
@@ -321,7 +321,6 @@ docker run -d \
 
 ```
 system:  静态指令 → 经验级别 → 轮次 → 岗位类型 → 题库/补充说明 → 简历 → JD →（时间预算）
-system:  【附加资料】上传的文档（可选，整场不变；见下）
 user:    历史提问……（每轮只在尾部追加）
 user:    本轮提问 + 【参考上下文】RAG / 联网搜索 / 编程题   ← 唯一每轮变化的部分
 ```
@@ -335,14 +334,7 @@ user:    本轮提问 + 【参考上下文】RAG / 联网搜索 / 编程题   �
   **最后一条 user 消息的末尾**，绝不放进 `system`（放进去会让它之后的 KV 全部失效）；
 - token 裁剪只作用于对话部分，`system` 原样透传（裁它会让前缀变短、缓存失效）。
 
-**提示词资料（附加文档）**是界面「资料」按钮上传的 txt / md / pdf / docx，
-由后端渲染成 `【附加资料】…` 并作为**第二条 system 消息**夹在系统提示词与对话之间：
-
-- 它整场对话不变，因此仍属于稳定前缀，服务端缓存照样命中（换文档 = 换前缀，只重建一次）；
-- 它不进 `prompts/*.txt`，所以增删文档完全不必改提示词模板；
-- 它不在对话里，所以历史再长也不会被 token 裁剪裁掉；
-- 用 `system` 而非 `user` 角色：它是背景事实，不是候选人的一轮发言
-  （也避开「user / assistant 必须交替」这类模型侧约束）。
+界面「资料」上传的文档整场对话不变，所以同样不影响前缀缓存（换文档只会重建一次）。
 
 > **实测（deepseek-flash，2026-10）**：缓存确实是「从第 0 个 token 起的严格前缀匹配」。
 > 用同一段 nonce 前缀做对照实验——只改尾部时 `cache_hit=128`（命中前半段），
@@ -563,7 +555,7 @@ LLM usage | prompt=1504 (cache_hit=1408, cache_miss=96) | cache_hit_rate=93.6%  
 | `interview_question_count` | `int` | `0` | 计划题目数量（0 表示按默认 8 题） |
 | `interview_coding_min` | `int` | `0` | 编程题预留时间（分钟） |
 | `prompt_notes` | `string` | `null` | 界面 PromptEditor 的补充说明，追加到 system prompt 末尾 |
-| `prompt_documents` | `{name,text}[]` | `null` | 随提示词附带的背景文档，后端拼成一条独立消息插在 system 与对话之间 |
+| `prompt_documents` | `{name,text}[]` | `null` | 随提示词附带的背景文档（插在 system 之后、对话之前） |
 | `question_bank_ids` | `string[]` | `null` | 从题库中选定的题目 ID 列表 |
 | `question_bank_mode` | `string` | `"mixed"` | 题库使用模式：`strict` / `mixed` / `adaptive` |
 
@@ -601,7 +593,7 @@ LLM usage | prompt=1504 (cache_hit=1408, cache_miss=96) | cache_hit_rate=93.6%  
 
 | 模块 | 方法 | 路径 | 说明 |
 |------|------|------|------|
-| 岗位 | `GET` `POST` | `/positions` | 列表 / 创建岗位（可带 `jd_content` 一并创建第一份 JD） |
+| 岗位 | `GET` `POST` | `/positions` | 列表 / 创建岗位（可顺带提交第一份 JD） |
 | 岗位 | `GET` `PUT` `DELETE` | `/positions/{name}` | 岗位详情 / 更新 / 删除 |
 | 岗位 | `POST` `PUT` `DELETE` | `/positions/{name}/jds` | JD 管理（一个岗位可挂多份 JD） |
 | 题库 | `GET` `POST` | `/question-bank/` | 题目列表 / 新增题目 |
@@ -611,7 +603,7 @@ LLM usage | prompt=1504 (cache_hit=1408, cache_miss=96) | cache_hit_rate=93.6%  
 | 上传 | `POST` | `/upload/resume` | 上传简历 |
 | 上传 | `POST` | `/upload/code` | 上传代码 |
 | 上传 | `POST` | `/upload/project` | 上传项目（解析目录结构与技术栈） |
-| 上传 | `POST` | `/upload/document` | 上传提示词附加文档（只解析文本，不落库、不建索引） |
+| 上传 | `POST` | `/upload/document` | 上传提示词附加文档（只解析文本，不落库） |
 | 上传 | `GET` `DELETE` | `/upload/files` | 上传记录列表 / 清空 |
 | 上传 | `GET` `DELETE` | `/upload/files/{id}` | 单条记录详情 / 删除 |
 | 知识库 | `POST` | `/knowledge/upload` | 上传文档并建索引 |
@@ -715,8 +707,6 @@ CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）在 Ubuntu 上跑 Py
 
 项目使用 [pre-commit](https://pre-commit.com) 在提交前自动检查代码，并由 [pre-commit.ci](https://pre-commit.ci) 在 PR 上自动运行与修复。
 
-> **ruff 静态检查已从 pre-commit 中移除**（2026-11），钩子版本的**自动升级也已关闭**。原因见下方「包含的检查」与「CI 行为」。
-
 ### 本地启用
 
 ```bash
@@ -730,10 +720,8 @@ pre-commit install          # 安装 git hook，之后每次 commit 自动检查
 |------|------|
 | `pre-commit run --all-files` | 对全部文件跑一遍检查 |
 | `pre-commit run <hook-id>` | 只跑某个钩子，如 `pre-commit run trailing-whitespace` |
-| `pre-commit autoupdate` | 手动把钩子版本升级到最新 tag（不会自动开 PR） |
+| `pre-commit autoupdate` | 手动把钩子版本升级到最新 tag |
 | `git commit --no-verify` | 跳过本次检查（仅在确有必要时使用） |
-
-> ruff 需要自己手动跑：`ruff check .`（只检查）/ `ruff check . --fix`（自动修复）。规则集见 `pyproject.toml` 的 `[tool.ruff.lint]`。
 
 ### 包含的检查
 
@@ -746,18 +734,16 @@ pre-commit install          # 安装 git hook，之后每次 commit 自动检查
 | `end-of-file-fixer` / `trailing-whitespace` | 修正文件末尾换行与行尾空白 |
 | `detect-private-key` | 兜底防止私钥误提交 |
 
-> **ruff 不再自动运行**。它带 `--fix`，会直接改写文件，于是 `git commit` 变成「钩子失败 → 重新 add → 再 commit」两步，打断的成本高于收益，因此从钩子里移除；需要时手动执行 `ruff check .`（或 `--fix`）。
+> Python 静态检查用 `ruff`，但不挂在 pre-commit 里（它的 `--fix` 会直接改文件，打断提交流程）。需要时手动执行 `ruff check .`，自动修复加 `--fix`；规则集见 `pyproject.toml` 的 `[tool.ruff.lint]`。
 >
-> **未启用 `ruff-format`**：它会重写 64/70 个 Python 文件（约 3.7 万行），与功能改动混在一起会让代码审查失去意义。如需统一格式，建议单独开一个只做格式化的提交，届时再手动执行。
->
-> 静态规则集刻意从窄到宽（见 `pyproject.toml`），目前只启用确定性问题与导入排序；`UP`（如 `Optional[X]` → `X | None`）等会带来大量改动的规则尚未开启，可在后续逐步收紧。
+> **未启用 `ruff-format`**：它会重写 64/70 个 Python 文件（约 3.7 万行），与功能改动混在一起会让代码审查失去意义。如需统一格式，建议单独开一个只做格式化的提交。
 
 ### CI 行为
 
 登录 [pre-commit.ci](https://pre-commit.ci) 用 GitHub 账号授权本仓库即可启用，无需额外配置：
 
 - 每个 PR 自动运行钩子，并直接向 PR 提交修复
-- **钩子版本的自动升级已关闭**（`autoupdate_schedule: disabled`）：不会再每周自动开一个只改 `rev` 的 PR；需要升级时手动执行 `pre-commit autoupdate`
+- 钩子版本不自动升级（需要时手动 `pre-commit autoupdate`）
 - 在 PR 中单独一行评论 `pre-commit.ci run` 可重新触发
 - 提交信息含 `[skip ci]` / `[skip pre-commit.ci]` 时跳过
 
@@ -823,8 +809,8 @@ pre-commit install          # 安装 git hook，之后每次 commit 自动检查
 - **`/chat/stream` 只读取请求体里的 `api_key`**，不读取 `X-DEEPSEEK-API-KEY` 请求头（`/chat/models` 两者都读）。若只通过请求头传 Key，对话会静默回退到 `.env` 的 `DEEPSEEK_API_KEY`。
 - **`code_context` 字段目前不生效**，代码与项目上下文统一走 RAG 向量检索提供。
 - **`position_name` 同时是 RAG 的触发条件**：传入岗位名才会检索该岗位的知识库。
-- **岗位名有字符限制**：2–50 个字符，允许字母、数字、中文、下划线、连字符 **和空格**（不允许点、斜杠等符号）；首尾空白会被去掉、连续空格折叠成一个。同一用户下重名返回 **409**。
-- **新建岗位可一并提交 JD**：`POST /positions` 的 `jd_content` 与岗位在同一个事务里落库；岗位的 `description` 字段仅为兼容旧数据保留，界面已不再填写。
+- **岗位名有字符限制**：2–50 个字符，允许字母、数字、中文、下划线、连字符 **和空格**（不允许点、斜杠等符号）。同一用户下重名返回 **409**。
+- **新建岗位可一并提交第一份 JD**：`POST /positions` 的 `jd_content` 字段（留空则不建 JD）。
 - **`position_type` 在岗位创建时判定后不再变化**。「技术支持」「设计 / UI / UX」被归为**非技术岗**，此类岗位下编程题不会启用。
 - **`/interview/report` 失败时返回 HTTP 200**，正文为 `报告生成失败: ...`，前端需自行识别。
 
@@ -846,9 +832,7 @@ pre-commit install          # 安装 git hook，之后每次 commit 自动检查
 - 知识库检索的 `top_k` 仅接受 **1–20**，越界时静默回退为 3。
 - 文件解析失败返回 **422**，扩展名不支持返回 **400**。
 - 只有**代码**与**项目**会被索引进向量库（简历不索引）。
-- `/upload/document` 是**提示词附加文档**专用：只解析并返回文本（GBK 编码的 txt 会自动识别），
-  **不写 uploads 表、也不进 FAISS** —— 原文由前端本地保存，每轮对话随 `prompt_documents` 发回。
-  超出 `PROMPT_DOC_MAX_CHARS` 的部分会截断并在正文末尾留标记。
+- `/upload/document` 只返回解析出的文本（GBK 编码的 txt 会自动识别），不写入上传记录、也不建向量索引；超长内容会被截断并在正文末尾留标记。
 - 项目解析会自动跳过系统垃圾文件，并推断技术栈（Python / React / Java / Go / Rust / Docker 等）。
 
 ### Windows 专有功能
