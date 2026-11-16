@@ -10,12 +10,19 @@
     追加新的问答，服务端就能复用已缓存的 KV。任何放在前缀里的可变内容
     （RAG 检索结果、每轮变化的题库/时间预算等）都会让缓存从该位置起全部失效，
     因此它们一律由调用方放到最后一条 user 消息的尾部。
+
+    另有一类内容不进模板：用户在界面「资料」里上传的背景文档。
+    它由 ``build_prompt_documents_text`` 渲染，被调用方包成一条**独立消息**
+    插在 system 之后、对话之前（见 routers/chat.py 的 Phase 1.5）——
+    既是稳定前缀的一部分，又不必改动任何 prompts/*.txt。
 """
 
 import os
 from typing import Optional
 
 from langchain_core.prompts import ChatPromptTemplate
+
+from config import settings
 
 PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
 
@@ -240,6 +247,117 @@ def build_prompt_notes_text(notes: Optional[str]) -> str:
     if not notes:
         return ""
     return "【用户补充说明】\n" + notes
+
+
+# ============ 附加文档（prompt documents） ============
+
+# 被截断时追加的标记。它同时也是「已截断」的判据 —— 有了它，
+# truncate_document_text 对同一段文本重复调用才不会把标记自己再切掉。
+_TRUNCATED_MARK = "\n……（文档过长，已截断）"
+
+# 文档块的固定开头。刻意说明「不是提问、不要复述」：
+# 否则模型容易把整篇资料当成用户的一轮发言，或者照着念一遍。
+_DOCUMENTS_HEADER = (
+    "【附加资料】以下是用户主动提供的参考文档，供你在整场对话中参考。"
+    "请把它们当作背景事实来使用：不要逐字复述，也不要把它们当成对话中的提问。"
+)
+
+
+def truncate_document_text(
+    text: str,
+    max_chars: Optional[int] = None,
+) -> tuple[str, bool]:
+    """按长度上限截断单份文档，返回 ``(结果, 本次是否发生截断)``。
+
+    幂等：已经是截断结果的文本会原样返回（见 ``_TRUNCATED_MARK``）。
+    """
+    text = (text or "").strip()
+    if not text:
+        return "", False
+
+    limit = int(
+        max_chars
+        if max_chars is not None
+        else getattr(settings, "PROMPT_DOC_MAX_CHARS", 80000)
+    )
+    if limit <= 0 or len(text) <= limit or text.endswith(_TRUNCATED_MARK):
+        return text, False
+    return text[:limit] + _TRUNCATED_MARK, True
+
+
+def build_prompt_documents_text(documents) -> str:
+    """把附加文档渲染成「系统提示词之后、对话之前」的一段文本。
+
+    与模板里的槽位不同，这段内容**不经过 prompts/*.txt**：调用方把它包成
+    一条独立消息，所以既不用改模板，也不受对话裁剪影响（裁剪只作用于
+    system 之后的对话部分）。
+
+    同一批文档在整场对话里必须渲染成**逐字节相同**的文本 —— 不能带时间戳、
+    随机数之类的易变信息，否则稳定前缀失效、服务端缓存每轮都会落空。
+
+    Args:
+        documents: ``PromptDocument`` 列表或等价的 dict 列表
+            （``{"name": ..., "text": ...}``）；为空时返回空串。
+
+    Returns:
+        形如 ``【附加资料】…（文档 1/2：xxx.md）\\n<正文>`` 的整段文本。
+    """
+    items = _document_items(documents)
+    if not items:
+        return ""
+
+    max_total = int(getattr(settings, "PROMPT_DOC_MAX_TOTAL_CHARS", 200000))
+    max_files = int(getattr(settings, "PROMPT_DOC_MAX_FILES", 8))
+
+    selected = items[:max_files]
+    parts = [_DOCUMENTS_HEADER]
+    used = 0
+
+    for index, (name, text) in enumerate(selected, 1):
+        remain = max_total - used
+        if remain <= 0:
+            parts.append(f"\n（其余 {len(selected) - index + 1} 份文档超出总长度上限，未附加）")
+            break
+
+        if len(text) > remain:
+            # 没放完时把额度写进小标题，比只留一个「已截断」标记更好定位问题
+            note = (
+                f"（文档 {index}/{len(selected)}：{name}"
+                f" —— 超出总长度上限，仅保留前 {remain} 字）"
+            )
+            body = text[:remain] + _TRUNCATED_MARK
+        else:
+            note = f"（文档 {index}/{len(selected)}：{name}）"
+            body = text
+
+        used += len(body)
+        parts.append(f"\n{note}\n{body}")
+
+    if len(items) > len(selected):
+        parts.append(f"\n（另有 {len(items) - len(selected)} 份文档超出数量上限，未附加）")
+
+    return "\n".join(parts)
+
+
+def _document_items(documents) -> list[tuple[str, str]]:
+    """把请求里的文档对象规整成 ``[(文件名, 正文)]``，跳过空文档"""
+    items: list[tuple[str, str]] = []
+    for index, doc in enumerate(documents or [], 1):
+        if isinstance(doc, dict):
+            name = doc.get("name") or ""
+            text = doc.get("text") or ""
+        else:
+            name = getattr(doc, "name", "") or ""
+            text = getattr(doc, "text", "") or ""
+
+        text = truncate_document_text(text)[0]
+        if not text:
+            continue
+
+        # 文件名会进入前缀，压掉换行/多余空白以免破坏块结构
+        name = " ".join(str(name).split()) or f"文档{index}"
+        items.append((name[:120], text))
+    return items
 
 
 def is_stable_prefix_template(template_name: str) -> bool:

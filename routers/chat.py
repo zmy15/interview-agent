@@ -5,6 +5,7 @@
     稳定前缀（整场面试逐字节不变 → 服务端前缀缓存据此复用 KV）
         system: 静态指令 → 经验级别 → 轮次 → 岗位类型 → 简历 → JD
                 → 题库/补充说明 →（求职者模式）时间预算
+        system: 【附加资料】用户上传的文档（见 Phase 1.5）
     历史问答（每轮只在尾部追加，前缀不受影响）
         user / assistant 交替……
     本轮尾部动态内容（放这里只会让缓存 miss 这一小段）
@@ -12,6 +13,11 @@
 
 system 只构建一次：优先复用请求里已有的 system 消息，其次命中进程内稳定前缀
 缓存，最后才现算并写入缓存。
+
+附加文档单独成一条消息、夹在 system 与对话之间，而不是塞进模板：
+    1. 模板（prompts/*.txt）不必为它留占位符，改文档不动提示词；
+    2. 它同样整场不变，所以仍属于稳定前缀，缓存照样命中；
+    3. token 裁剪只作用于对话部分，文档不会随历史被裁掉。
 """
 
 import json
@@ -36,6 +42,7 @@ from services.rag_pipeline import build_rag_context
 from utils.auth import CurrentUser, get_optional_user
 from utils.context_manager import estimate_tokens, trim_messages
 from utils.prompt_loader import (
+    build_prompt_documents_text,
     build_prompt_notes_text,
     build_question_bank_text,
     is_stable_prefix_template,
@@ -99,14 +106,21 @@ async def list_models(
 
 # ============ 辅助函数 ============
 
-def _fingerprint_parts(req: ChatRequest, user: Optional[CurrentUser]) -> dict:
+def _fingerprint_parts(
+    req: ChatRequest,
+    user: Optional[CurrentUser],
+    documents_text: str = "",
+) -> dict:
     """收集「整场面试期间不变」的字段，用于计算稳定前缀指纹。
 
     这里刻意**不含** RAG / 编程题 / 联网搜索 —— 它们每轮都可能变化，
     已经被移到尾部，不该影响 system 的复用判断。
+
+    ``documents_text`` 是渲染好的附加文档块：它和 system 一样整场不变，
+    必须算进指纹 —— 否则换了文档指纹没变，就会命中文档不对的旧前缀。
     """
     return {
-        "v": 1,  # 结构版本号：模板布局或字段含义变更时递增，避免旧指纹误命中
+        "v": 2,  # 结构版本号：模板布局或字段含义变更时递增，避免旧指纹误命中
         "mode": req.mode,
         "position_name": req.position_name,
         "jd_id": req.jd_id,
@@ -115,6 +129,7 @@ def _fingerprint_parts(req: ChatRequest, user: Optional[CurrentUser]) -> dict:
         "candidate_level": req.candidate_level or "",
         "interview_round": req.interview_round or "",
         "prompt_notes": req.prompt_notes or "",
+        "prompt_documents": documents_text,
         "duration_minutes": req.interview_duration_minutes,
         "question_count": req.interview_question_count,
         "coding_min": req.interview_coding_min,
@@ -326,10 +341,15 @@ async def chat_stream(
     # （生成器里 db 仍然可用，但提前取好更直观，也便于 validate_model 复用）。
     effective_key = await resolve_api_key(request, db, user, explicit=req.api_key)
 
+    # 附加文档：整场对话不变的「资料」文本，只渲染一次。
+    # 它既参与指纹计算（换文档 = 换前缀），也用于下面 Phase 1.5 的注入；
+    # 放在生成器外是为了避免每次重算，同时保证两处用的是同一份字节。
+    documents_text = build_prompt_documents_text(req.prompt_documents)
+
     # 稳定前缀指纹：只由「整场面试期间不变」的请求字段决定，**不接受前端传入**。
     # 前端若能左右它，就等于把提示词一致性的判断交给了外部输入；
     # 而后端自己算出来的值与请求字段一一对应，永远等价于「同一场面试」。
-    fingerprint = prefix_cache.signature(_fingerprint_parts(req, user))
+    fingerprint = prefix_cache.signature(_fingerprint_parts(req, user, documents_text))
 
     async def event_generator():
         messages = [m.model_dump() for m in req.messages]
@@ -385,6 +405,24 @@ async def chat_stream(
                     ensure_ascii=False,
                 ) + "\n\n"
 
+        # ====== Phase 1.5: 附加文档（系统提示词 → 文档 → 对话）======
+        # 独立成一条 system 消息，而不是拼进模板或塞进对话：
+        #   · 整场对话不变 → 仍是稳定前缀的一部分，服务端缓存照样命中；
+        #   · 不进 prompts/*.txt → 上传/删除文档完全不必改提示词；
+        #   · 不在对话里 → token 裁剪只裁对话，文档不会历史一长就被裁掉。
+        # 用 system 角色而非 user：它是背景事实，不是候选人的一轮发言
+        # （也能避开「user/assistant 必须交替」这类模型侧约束）。
+        document_msgs = (
+            [{"role": "system", "content": documents_text}]
+            if documents_text
+            else []
+        )
+        if document_msgs:
+            logger.info(
+                "Prompt documents attached | %d chars | fp=%s",
+                len(documents_text), fingerprint[:12],
+            )
+
         # ====== Phase 2: 本轮尾部动态内容（RAG / 搜索 / 编程题）======
         # 只追加到最后一条 user 消息**末尾**：它前面的「system + 历史问答」
         # 完全不受影响，服务端缓存只需为这一小段重新 prefill。
@@ -405,11 +443,13 @@ async def chat_stream(
                 logger.info("Dynamic context appended to tail | %d chars", len(dynamic_ctx))
 
         # ====== Phase 3: Token 窗口裁剪 ======
-        # 只裁对话部分：system 是稳定前缀，原样透传（裁它会让前缀变短、缓存失效）。
+        # 只裁对话部分：system（含附加文档）是稳定前缀，原样透传
+        # （裁它会让前缀变短、缓存失效）。
         max_tokens = settings.MAX_CONTEXT_TOKENS
         system_reserved = settings.SYSTEM_RESERVED_TOKENS
 
-        system_tokens = sum(estimate_tokens(m["content"]) + 4 for m in system_msgs)
+        prefix_msgs = system_msgs + document_msgs
+        system_tokens = sum(estimate_tokens(m["content"]) + 4 for m in prefix_msgs)
         dialogue_budget = max(max_tokens - system_tokens - system_reserved, 4096)
 
         trimmed_dialogue = (
@@ -418,7 +458,7 @@ async def chat_stream(
             else []
         )
 
-        messages = system_msgs + trimmed_dialogue
+        messages = prefix_msgs + trimmed_dialogue
 
         total_tokens = system_tokens + sum(
             estimate_tokens(m["content"]) + 4 for m in trimmed_dialogue

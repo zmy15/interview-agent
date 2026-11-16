@@ -54,6 +54,7 @@ Interview Agent is an LLM-powered AI mock interview platform supporting both **i
 - 🎛️ **Model Selection** — Choose between DeepSeek V4 Pro / Flash, toggle thinking mode & reasoning effort
 - 🔒 **Security** — CORS domain whitelist + FAISS index SHA-256 integrity verification
 - 📐 **Context Window Management** — tiktoken precise token counting + LangChain trim_messages smart trimming
+- 📎 **Prompt Documents** — Upload txt / md (also pdf / docx) as extra context; injected as a standalone message **between the system prompt and the dialogue**, stable for the whole session and prefix-cache friendly
 - 🎤 **Voice Input (STT)** — Hold to talk / Spacebar to record; faster-whisper streaming recognition with real-time text
 - 🔊 **Voice Playback (TTS)** — One-click AI reply reading; Piper TTS Chinese voice synthesis
 - 🎛️ **Flexible Voice Toggle** — Choose CPU/GPU at startup; Docker Profile on-demand; disabled by default, zero impact
@@ -387,6 +388,8 @@ Create Position → Add JD → Upload Knowledge → Upload Resume → Set Durati
 | `interview_round` | `string` | Interview round: `"first"` / `"second"` / `"hr"` |
 | `interview_duration_minutes` | `int` | Total interview duration (minutes), affects time budget awareness |
 | `interview_question_count` | `int` | Planned question count |
+| `prompt_documents` | `{name,text}[]` | Background documents rendered as a standalone message between the system prompt and the dialogue |
+| `prompt_notes` | `string` | Extra instructions appended to the end of the system prompt (PromptEditor) |
 
 ---
 
@@ -405,6 +408,7 @@ Create Position → Add JD → Upload Knowledge → Upload Resume → Set Durati
 | Interview | `POST` | `/interview/plan` | 🆕 Interview time planning (phase breakdown + dynamic replan) |
 | Upload | `POST` | `/upload/resume` | Upload resume |
 | Upload | `POST` | `/upload/code` | Upload code |
+| Upload | `POST` | `/upload/document` | Upload a prompt document (text only; not stored, not indexed) |
 | Knowledge | `POST` | `/knowledge/upload` | Upload document |
 | Knowledge | `GET` | `/knowledge/collections` | List collections |
 | Knowledge | `DELETE` | `/knowledge/{name}` | Delete collection |

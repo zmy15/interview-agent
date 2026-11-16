@@ -20,6 +20,7 @@ from services.parser import (
 from services.upload_store import UploadStore
 from services.vector_store import VectorStoreManager, is_vector_store_available
 from utils.auth import CurrentUser, get_current_user
+from utils.prompt_loader import truncate_document_text
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,14 @@ MAX_RESUME_SIZE = 5 * 1024 * 1024   # 5MB
 MAX_CODE_SIZE = 2 * 1024 * 1024     # 2MB
 MAX_PROJECT_SIZE = 50 * 1024 * 1024  # 50MB
 MAX_STORED_TEXT = 100 * 1024         # 存储文本上限 100KB（预览之外截断）
+MAX_PROMPT_DOC_SIZE = 5 * 1024 * 1024  # 提示词附加文档 5MB
+
+# 可附加到提示词的文档格式：以纯文本为主，另有 pdf/docx（复用 services/parser.py）。
+# 刻意不收 .doc —— 它依赖 antiword/catdoc，解析失败时会退化成乱码。
+PROMPT_DOC_EXTENSIONS = {
+    ".txt", ".md", ".markdown", ".text", ".rst", ".csv", ".tsv",
+    ".json", ".yaml", ".yml", ".xml", ".log", ".ini", ".pdf", ".docx",
+}
 
 
 def _get_ext(filename: str) -> str:
@@ -196,6 +205,57 @@ async def upload_project(
         tech_stack=project["tech_stack"],
         type="project",
     )
+
+
+@router.post("/document", response_model=UploadResponse)
+async def upload_prompt_document(
+    file: UploadFile = File(...),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """上传要附加到提示词里的背景文档（txt / md 等，另支持 pdf / docx）。
+
+    与 ``/upload/resume``、``/upload/code`` 不同，这里**不落库、也不建向量索引**：
+    原文由前端保存在本地，每轮对话随 ``prompt_documents`` 一起发来，由后端
+    拼成一条独立消息插在系统提示词与对话之间（见 routers/chat.py 的 Phase 1.5）。
+    它只属于这一场对话的稳定前缀，不是知识库语料，没必要进 uploads 表或 FAISS。
+
+    超出 ``PROMPT_DOC_MAX_CHARS`` 的部分会被截断，并在正文末尾留下标记。
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="文件名不能为空")
+
+    ext = _get_ext(file.filename)
+    if ext not in PROMPT_DOC_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的文档格式，支持: {', '.join(sorted(PROMPT_DOC_EXTENSIONS))}",
+        )
+
+    content = await file.read()
+    if len(content) > MAX_PROMPT_DOC_SIZE:
+        raise HTTPException(status_code=413, detail="文件大小超过 5MB 限制")
+
+    try:
+        text = parse_file(content, file.filename)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.error(f"Prompt document parse error: {e}")
+        raise HTTPException(status_code=422, detail=f"文件解析失败: {str(e)}")
+
+    text, truncated = truncate_document_text(text)
+    if not text:
+        raise HTTPException(status_code=422, detail="无法从文件中提取文本内容")
+    if truncated:
+        logger.info(
+            "Prompt document truncated | file=%s | kept=%d chars", file.filename, len(text)
+        )
+
+    logger.info(
+        "Prompt document parsed | file=%s | user=%s | %d chars",
+        file.filename, user.id, len(text),
+    )
+    return UploadResponse(filename=file.filename, text=text, type="document")
 
 
 def _index_to_faiss(filename: str, text: str, doc_type: str, upload_id: str):

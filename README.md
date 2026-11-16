@@ -55,6 +55,7 @@ Interview Agent 是一个基于大语言模型的 **AI 模拟面试平台**。�
 - 🧑‍💻 编程题模式：按岗位类型从题库选题（仅求职者模式 + 技术岗生效）
 - 📝 面试报告：多维度评估（技术能力 / 沟通表达 / 综合素质），支持结构化 QA 逐题评估
 - 🗂️ 题库管理：自建题目、从 LeetCode 题库导入、三种使用模式（严格 / 混合 / 灵活改编）
+- 📎 提示词资料：上传 txt / md 等文档（也支持 pdf / docx），作为**独立消息插在系统提示词与对话之间**，整场不变、不破坏前缀缓存
 - 💬 会话历史：完整回放历史对话，含思维链与 token 计数
 
 **知识与检索**
@@ -310,6 +311,9 @@ docker run -d \
 | `PREFIX_CACHE_MAX_ENTRIES` | `64` | 最多缓存多少场面试的稳定前缀 |
 | `PREFIX_CACHE_MAX_TOKENS` | `200000` | 单条稳定前缀的 token 上限，超过则不缓存 |
 | `PREFIX_CACHE_TTL_SECONDS` | `1800` | 稳定前缀缓存存活时间（秒） |
+| `PROMPT_DOC_MAX_CHARS` | `80000` | 单份附加文档最多保留多少字符（超出截断） |
+| `PROMPT_DOC_MAX_TOTAL_CHARS` | `200000` | 所有附加文档合计字符上限（超出不再附加） |
+| `PROMPT_DOC_MAX_FILES` | `8` | 最多同时附加多少份文档 |
 
 ### 上下文结构（前缀缓存）
 
@@ -317,6 +321,7 @@ docker run -d \
 
 ```
 system:  静态指令 → 经验级别 → 轮次 → 岗位类型 → 题库/补充说明 → 简历 → JD →（时间预算）
+system:  【附加资料】上传的文档（可选，整场不变；见下）
 user:    历史提问……（每轮只在尾部追加）
 user:    本轮提问 + 【参考上下文】RAG / 联网搜索 / 编程题   ← 唯一每轮变化的部分
 ```
@@ -329,6 +334,15 @@ user:    本轮提问 + 【参考上下文】RAG / 联网搜索 / 编程题   �
 - RAG 检索结果、联网搜索、编程题等**每轮变化**的内容，一律追加到
   **最后一条 user 消息的末尾**，绝不放进 `system`（放进去会让它之后的 KV 全部失效）；
 - token 裁剪只作用于对话部分，`system` 原样透传（裁它会让前缀变短、缓存失效）。
+
+**提示词资料（附加文档）**是界面「资料」按钮上传的 txt / md / pdf / docx，
+由后端渲染成 `【附加资料】…` 并作为**第二条 system 消息**夹在系统提示词与对话之间：
+
+- 它整场对话不变，因此仍属于稳定前缀，服务端缓存照样命中（换文档 = 换前缀，只重建一次）；
+- 它不进 `prompts/*.txt`，所以增删文档完全不必改提示词模板；
+- 它不在对话里，所以历史再长也不会被 token 裁剪裁掉；
+- 用 `system` 而非 `user` 角色：它是背景事实，不是候选人的一轮发言
+  （也避开「user / assistant 必须交替」这类模型侧约束）。
 
 > **实测（deepseek-flash，2026-10）**：缓存确实是「从第 0 个 token 起的严格前缀匹配」。
 > 用同一段 nonce 前缀做对照实验——只改尾部时 `cache_hit=128`（命中前半段），
@@ -521,6 +535,10 @@ LLM usage | prompt=1504 (cache_hit=1408, cache_miss=96) | cache_hit_rate=93.6%  
   "interview_round": "first",
   "interview_duration_minutes": 30,
   "interview_question_count": 10,
+  "prompt_documents": [
+    {"name": "personal.md", "text": "个人经历 / 项目细节……"},
+    {"name": "project.md", "text": "项目架构与关键技术点……"}
+  ],
   "question_bank_ids": [],
   "question_bank_mode": "mixed"
 }
@@ -545,6 +563,7 @@ LLM usage | prompt=1504 (cache_hit=1408, cache_miss=96) | cache_hit_rate=93.6%  
 | `interview_question_count` | `int` | `0` | 计划题目数量（0 表示按默认 8 题） |
 | `interview_coding_min` | `int` | `0` | 编程题预留时间（分钟） |
 | `prompt_notes` | `string` | `null` | 界面 PromptEditor 的补充说明，追加到 system prompt 末尾 |
+| `prompt_documents` | `{name,text}[]` | `null` | 随提示词附带的背景文档，后端拼成一条独立消息插在 system 与对话之间 |
 | `question_bank_ids` | `string[]` | `null` | 从题库中选定的题目 ID 列表 |
 | `question_bank_mode` | `string` | `"mixed"` | 题库使用模式：`strict` / `mixed` / `adaptive` |
 
@@ -592,6 +611,7 @@ LLM usage | prompt=1504 (cache_hit=1408, cache_miss=96) | cache_hit_rate=93.6%  
 | 上传 | `POST` | `/upload/resume` | 上传简历 |
 | 上传 | `POST` | `/upload/code` | 上传代码 |
 | 上传 | `POST` | `/upload/project` | 上传项目（解析目录结构与技术栈） |
+| 上传 | `POST` | `/upload/document` | 上传提示词附加文档（只解析文本，不落库、不建索引） |
 | 上传 | `GET` `DELETE` | `/upload/files` | 上传记录列表 / 清空 |
 | 上传 | `GET` `DELETE` | `/upload/files/{id}` | 单条记录详情 / 删除 |
 | 知识库 | `POST` | `/knowledge/upload` | 上传文档并建索引 |
@@ -809,6 +829,7 @@ pre-commit install          # 安装 git hook，之后每次 commit 自动检查
 | `/upload/resume` | **5MB** | `.pdf` `.docx` `.doc` `.txt` | 413 |
 | `/upload/code` | **2MB** | `.py` `.js` `.ts` `.jsx` `.tsx` `.java` `.go` `.cpp` `.c` `.h` `.hpp` `.rs` `.rb` `.php` `.swift` `.kt` `.scala` `.cs` `.vue` `.html` `.css` `.scss` `.sql` `.sh` `.bash` `.yaml` `.yml` `.json` `.xml` `.md` `.r` `.m` | 413 |
 | `/upload/project` | **50MB** | `.zip` `.tar.gz` `.tgz` `.tar.bz2` `.tar.xz` `.tar` `.7z`（`.7z` 需 `py7zr`） | 413 |
+| `/upload/document` | **5MB** | `.txt` `.md` `.markdown` `.text` `.rst` `.csv` `.tsv` `.json` `.yaml` `.yml` `.xml` `.log` `.ini` `.pdf` `.docx` | 413 |
 | `/knowledge/upload`（`doc_type=faq`） | **10MB** | 同简历格式（**不支持 `.md`**） | 413 |
 | `/knowledge/upload`（`doc_type=code`） | **10MB** | 同代码格式 | 413 |
 | `/knowledge/upload`（`doc_type=project`） | **50MB** | 同压缩包格式 | 413 |
@@ -819,6 +840,9 @@ pre-commit install          # 安装 git hook，之后每次 commit 自动检查
 - 知识库检索的 `top_k` 仅接受 **1–20**，越界时静默回退为 3。
 - 文件解析失败返回 **422**，扩展名不支持返回 **400**。
 - 只有**代码**与**项目**会被索引进向量库（简历不索引）。
+- `/upload/document` 是**提示词附加文档**专用：只解析并返回文本（GBK 编码的 txt 会自动识别），
+  **不写 uploads 表、也不进 FAISS** —— 原文由前端本地保存，每轮对话随 `prompt_documents` 发回。
+  超出 `PROMPT_DOC_MAX_CHARS` 的部分会截断并在正文末尾留标记。
 - 项目解析会自动跳过系统垃圾文件，并推断技术栈（Python / React / Java / Go / Rust / Docker 等）。
 
 ### Windows 专有功能

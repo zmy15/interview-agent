@@ -1,8 +1,11 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { UploadRecord, VoiceMode } from '@/types'
+import type { PromptDocument, UploadRecord, VoiceMode } from '@/types'
 
 export type UploadType = 'resume' | 'code' | 'project'
+
+/** 最多同时附加多少份提示词文档（与后端 PROMPT_DOC_MAX_FILES 的默认值一致） */
+export const MAX_PROMPT_DOCS = 8
 
 /**
  * 侧边栏显示模式：
@@ -37,6 +40,15 @@ interface AppState {
   uploads: UploadRecord[]    // 本地缓存的已上传文件列表
   projectStructure: Record<string, string[]> | null  // 当前项目的文件结构
   projectTechStack: string[]  // 当前项目的技术栈
+
+  /**
+   * 附加到提示词的背景文档（txt/md 等）。
+   *
+   * 原文存在本地（随 store 持久化），每轮对话随 `prompt_documents` 发给后端，
+   * 由后端拼成一条独立消息插在系统提示词与对话之间。
+   * 它不进 messages —— 否则会出现在聊天记录和报告里。
+   */
+  promptDocs: PromptDocument[]
 
   // 语音设置
   voiceMode: VoiceMode
@@ -80,6 +92,16 @@ interface AppState {
   /** 根据 activeCodeIds + uploads 重新计算 codeText */
   recomputeCodeText: () => void
 
+  // 提示词附加文档 actions
+  /** 追加一份文档（同名同内容视为重复，直接覆盖） */
+  addPromptDoc: (doc: PromptDocument) => void
+  removePromptDoc: (id: string) => void
+  /** 临时启用/停用某份文档（不删除，方便对比效果） */
+  togglePromptDoc: (id: string) => void
+  /** 就地修改正文（用户在弹窗里删改后保存） */
+  updatePromptDocText: (id: string, text: string) => void
+  clearPromptDocs: () => void
+
   // 语音 actions
   setVoiceMode: (mode: VoiceMode) => void
   setAutoPlayTTS: (auto: boolean) => void
@@ -120,6 +142,8 @@ export const useAppStore = create<AppState>()(
       uploads: [],
       projectStructure: null,
       projectTechStack: [],
+
+      promptDocs: [],
 
       voiceMode: 'manual',
       autoPlayTTS: false,
@@ -254,6 +278,34 @@ export const useAppStore = create<AppState>()(
       setProjectMeta: (structure, techStack) =>
         set({ projectStructure: structure, projectTechStack: techStack }),
 
+      // 提示词附加文档 actions
+      // 同一份文件重传时会拿到新 id，因此这里按「同名 + 同内容」去重，
+      // 避免前缀里出现两段一模一样的资料。
+      addPromptDoc: (doc) =>
+        set((state) => {
+          const rest = state.promptDocs.filter(
+            (d) => d.id !== doc.id && !(d.name === doc.name && d.text === doc.text),
+          )
+          return { promptDocs: [doc, ...rest].slice(0, MAX_PROMPT_DOCS) }
+        }),
+
+      removePromptDoc: (id) =>
+        set((state) => ({ promptDocs: state.promptDocs.filter((d) => d.id !== id) })),
+
+      togglePromptDoc: (id) =>
+        set((state) => ({
+          promptDocs: state.promptDocs.map((d) =>
+            d.id === id ? { ...d, enabled: !d.enabled } : d,
+          ),
+        })),
+
+      updatePromptDocText: (id, text) =>
+        set((state) => ({
+          promptDocs: state.promptDocs.map((d) => (d.id === id ? { ...d, text } : d)),
+        })),
+
+      clearPromptDocs: () => set({ promptDocs: [] }),
+
       setVoiceMode: (mode) => set({ voiceMode: mode }),
       setAutoPlayTTS: (auto) => set({ autoPlayTTS: auto }),
       setTTSSpeed: (speed) => set({ ttsSpeed: speed }),
@@ -322,6 +374,8 @@ export const useAppStore = create<AppState>()(
         uploads: state.uploads.slice(0, 20),  // 最多缓存 20 条
         projectStructure: state.projectStructure,
         projectTechStack: state.projectTechStack,
+        // 附加文档原文也持久化：刷新页面/重开窗口后不必重新上传
+        promptDocs: state.promptDocs.slice(0, MAX_PROMPT_DOCS),
         voiceMode: state.voiceMode,
         autoPlayTTS: state.autoPlayTTS,
         ttsSpeed: state.ttsSpeed,

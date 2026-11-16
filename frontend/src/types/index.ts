@@ -44,6 +44,8 @@ export interface ChatRequest {
   interview_question_count?: number
   interview_coding_min?: number
   prompt_notes?: string
+  /** 随提示词附带的背景文档，后端插在 system 与对话之间 */
+  prompt_documents?: { name: string; text: string }[]
   question_bank_ids?: string[]
   question_bank_mode?: 'strict' | 'mixed' | 'adaptive'
 }
@@ -51,6 +53,23 @@ export interface ChatRequest {
 export type ChatMode = 'interviewer' | 'candidate'
 
 export type PromptTemplates = Partial<Record<ChatMode, string>>
+
+/**
+ * 随提示词附带的背景文档（界面「资料」里上传的 txt/md 等）。
+ *
+ * 它不是对话内容：后端会把它拼成一条独立消息，位置在系统提示词之后、
+ * 对话之前（见 routers/chat.py 的 Phase 1.5）。整场对话里内容不变，
+ * 因此仍属于稳定前缀，服务端前缀缓存照样命中。
+ */
+export interface PromptDocument {
+  id: string
+  name: string
+  text: string
+  /** 是否随请求发送（关掉可临时摘掉某份文档，而不必删除） */
+  enabled: boolean
+  /** 上传时间戳（毫秒），仅用于列表排序 */
+  addedAt: number
+}
 
 // ============ 语音相关 ============
 
@@ -140,7 +159,8 @@ export interface InterviewPlanResponse {
 export interface UploadResponse {
   filename: string
   text: string
-  type: 'resume' | 'code'
+  /** document 为「附加到提示词的背景文档」，不落库、不建索引 */
+  type: 'resume' | 'code' | 'document'
 }
 
 export interface ProjectStructure {

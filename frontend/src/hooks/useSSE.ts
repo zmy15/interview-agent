@@ -74,6 +74,13 @@ export function useSSE() {
       // 获取有效的 prompt override
       const promptOverride = store.promptOverrides[store.selectedMode] || undefined
 
+      // 附加文档：只发「启用且正文非空」的那些。
+      // 后端会把它拼成一条独立消息插在 system 与对话之间，
+      // 因此这里只需原样带上原文，不需要自己拼格式。
+      const promptDocuments = appStore.promptDocs
+        .filter((doc) => doc.enabled && doc.text.trim())
+        .map((doc) => ({ name: doc.name, text: doc.text }))
+
       // 使用 getState() 获取最新值，避免 useCallback 闭包过期
       const latestCandidateLevel = store.candidateLevel || undefined
       const latestInterviewRound = store.interviewRound || undefined
@@ -98,6 +105,7 @@ export function useSSE() {
           thinking_enabled: store.thinkingEnabled || undefined,
           reasoning_effort: store.thinkingEnabled ? store.reasoningEffort : undefined,
           prompt_notes: promptOverride,
+          prompt_documents: promptDocuments.length > 0 ? promptDocuments : undefined,
           // 不再传 api_key：后端会用该用户在数据库里加密保存的密钥，
           // 没有则回退到 .env 的 DEEPSEEK_API_KEY
           resume_text: appStore.resumeText || undefined,

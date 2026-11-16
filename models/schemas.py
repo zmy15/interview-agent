@@ -18,6 +18,17 @@ class Message(BaseModel):
     content: str
 
 
+class PromptDocument(BaseModel):
+    """随提示词附带的背景文档（界面里上传的 txt/md 等）。
+
+    它不是对话内容，也不是知识库语料：前端本地保存原文，每轮随请求发来，
+    由后端拼接成**一条独立消息**插在系统提示词与对话之间。
+    """
+
+    name: str = ""   # 展示用文件名，缺省时后端按「文档N」编号
+    text: str = ""   # 文档正文（纯文本）
+
+
 class ChatRequest(BaseModel):
     messages: list[Message]
     mode: Optional[str] = None  # "interviewer" / "candidate"
@@ -38,6 +49,9 @@ class ChatRequest(BaseModel):
     interview_question_count: int = 0  # 计划题目数量
     interview_coding_min: int = 0  # 编程题预留时间
     prompt_notes: Optional[str] = None  # 前端 PromptEditor 补充说明，追加到 system prompt 末尾
+    # 界面「资料」里上传的背景文档。由后端拼成一条独立消息，位置在
+    # system（稳定前缀）之后、历史问答之前 —— 见 routers/chat.py 的 Phase 1.5。
+    prompt_documents: Optional[list[PromptDocument]] = None
     question_bank_ids: Optional[list[str]] = None  # 从题库中选定的题目ID列表（AI将从中出题）
     question_bank_mode: Optional[str] = "mixed"  # 题库使用模式: strict(完全按题库) / mixed(部分题库) / adaptive(AI可改编)
 

@@ -26,6 +26,8 @@ export async function streamChat(
     thinking_enabled?: boolean
     reasoning_effort?: string
     prompt_notes?: string
+    /** 随提示词附带的背景文档（后端插在 system 与对话之间） */
+    prompt_documents?: { name: string; text: string }[]
     api_key?: string
     resume_text?: string
     code_context?: string

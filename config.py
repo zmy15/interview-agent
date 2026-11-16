@@ -99,6 +99,20 @@ class Settings:
     # 超过后重新构建即可（重建只花一次拼接，不影响正确性）。
     PREFIX_CACHE_TTL_SECONDS: int = int(os.getenv("PREFIX_CACHE_TTL_SECONDS", "1800"))
 
+    # ── 提示词附加文档（prompt documents） ──
+    # 界面里上传的 txt/md 等文档会作为**一条独立消息**插在「系统提示词」与
+    # 「对话」之间（见 routers/chat.py 的 Phase 1.5），整场对话里逐字节不变，
+    # 因此仍是稳定前缀的一部分，服务端缓存照样命中。
+    #
+    # 下面三个上限是保险丝 —— 文档整段随 /chat/stream 的请求体发送，
+    # 又会被拼进前缀，过长既挤占对话预算，也让每轮请求体变得很大：
+    #   PROMPT_DOC_MAX_CHARS       单份文档最多保留多少字符（超出截断）
+    #   PROMPT_DOC_MAX_TOTAL_CHARS 所有文档合计上限（超出不再附加）
+    #   PROMPT_DOC_MAX_FILES       最多同时附加多少份
+    PROMPT_DOC_MAX_CHARS: int = int(os.getenv("PROMPT_DOC_MAX_CHARS", "80000"))
+    PROMPT_DOC_MAX_TOTAL_CHARS: int = int(os.getenv("PROMPT_DOC_MAX_TOTAL_CHARS", "200000"))
+    PROMPT_DOC_MAX_FILES: int = int(os.getenv("PROMPT_DOC_MAX_FILES", "8"))
+
     # 日志等级: DEBUG / INFO / WARNING / ERROR
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
 

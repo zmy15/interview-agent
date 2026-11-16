@@ -36,6 +36,7 @@ import {
   CodeOutlined,
   BookOutlined,
   MoreOutlined,
+  FileAddOutlined,
 } from '@ant-design/icons'
 import { useChatStore } from '@/stores/chatStore'
 import { useAppStore } from '@/stores/appStore'
@@ -47,6 +48,7 @@ import ChatMessage from '@/components/ChatMessage'
 import ModelSelector from '@/components/ModelSelector'
 import PositionSelect from '@/components/PositionSelect'
 import PromptEditor from '@/components/PromptEditor'
+import PromptDocumentsModal from '@/components/PromptDocumentsModal'
 import { getInterviewPlan } from '@/api/interview'
 import type { ChatMode, InterviewPlanResponse, CandidateLevel, InterviewRound, AnswerLength } from '@/types'
 import { questionBankApi, type QuestionItem } from '@/api/questionBank'
@@ -141,6 +143,7 @@ const ChatPage: React.FC = () => {
     setSystemAudioStatus,
     focusMode,
     toggleFocusMode,
+    promptDocs,
   } = useAppStore()
   const { sendMessage, abort } = useSSE()
   const { sttAvailable, ttsAvailable } = useVoiceAvailability()
@@ -153,6 +156,8 @@ const ChatPage: React.FC = () => {
 
   const [inputValue, setInputValue] = useState('')
   const [promptEditorOpen, setPromptEditorOpen] = useState(false)
+  // 提示词资料（附加文档）弹窗：上传的文档会被后端插在 system 与对话之间
+  const [docModalOpen, setDocModalOpen] = useState(false)
   const [apiKeyModalOpen, setApiKeyModalOpen] = useState(false)
   // 输入框里用户**新键入**的密钥。服务端只回传掩码、回不到明文，
   // 因此打开弹窗时不预填内容，只在弹窗上方展示当前掩码。
@@ -871,6 +876,9 @@ const ChatPage: React.FC = () => {
         }
       : null
 
+  // 已启用的提示词资料数量（只用于工具栏计数，实际内容由 useSSE 组装请求时读取）
+  const enabledDocCount = promptDocs.filter((doc) => doc.enabled).length
+
   return (
     <div
       style={{
@@ -1067,6 +1075,25 @@ const ChatPage: React.FC = () => {
             >
               Prompt
             </Button>
+
+            {/* 提示词资料：上传 txt/md 等文档，后端插在 system 与对话之间 */}
+            <Tooltip
+              title={
+                enabledDocCount > 0
+                  ? `已附加 ${enabledDocCount} 份资料文档（位于系统提示词与对话之间）`
+                  : '上传文档作为提示词资料（txt / md 等），插在系统提示词与对话之间'
+              }
+            >
+              <Button
+                size="small"
+                icon={<FileAddOutlined />}
+                type={enabledDocCount > 0 ? 'primary' : 'default'}
+                ghost={enabledDocCount > 0}
+                onClick={() => setDocModalOpen(true)}
+              >
+                资料{enabledDocCount > 0 ? `(${enabledDocCount})` : ''}
+              </Button>
+            </Tooltip>
 
             <Tooltip
               title={
@@ -1388,6 +1415,12 @@ const ChatPage: React.FC = () => {
       <PromptEditor
         open={promptEditorOpen}
         onClose={() => setPromptEditorOpen(false)}
+      />
+
+      {/* 提示词资料（附加文档）弹窗 */}
+      <PromptDocumentsModal
+        open={docModalOpen}
+        onClose={() => setDocModalOpen(false)}
       />
 
       {/* API Key 配置弹窗 */}
