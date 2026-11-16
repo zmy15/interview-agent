@@ -54,6 +54,7 @@ import VoiceInputPanel from '@/components/VoiceInputPanel'
 import { useVoiceAvailability } from '@/hooks/useVoiceAvailability'
 import { useSystemAudioListener } from '@/hooks/useSystemAudioListener'
 import { screenshotApi } from '@/api/screenshot'
+import { systemAudioApi } from '@/api/systemAudio'
 import { toContextContent } from '@/utils/messageContext'
 import {
   isDesktopWindow,
@@ -590,10 +591,25 @@ const ChatPage: React.FC = () => {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
+  /**
+   * 清空对话时，把服务端累积的语音转写也一并清掉。
+   *
+   * 转写缓冲是按会话存在服务端内存里的（SYSTEM_AUDIO_TRANSCRIPT_BUFFER），
+   * 与「对话消息」不是同一份数据。只清本地消息时，缓冲里还留着上一段对话
+   * 的语音；一旦前端游标归零（比如刷新页面），这些旧内容会被当成新识别
+   * 结果重新派发一遍。
+   */
+  const clearServerTranscript = () => {
+    void systemAudioApi.clear().catch(() => {
+      // 清空失败不影响本地清空（例如当前没有捕获会话，后端会返回 cleared=false）
+    })
+  }
+
   const handleClear = () => {
     clearChat()
     resetPractice()
     lastAIQuestionRef.current = ''
+    clearServerTranscript()
     message.success(`已清空「${selectedMode === 'interviewer' ? '面试官' : '求职者'}」对话`)
   }
 
@@ -601,6 +617,7 @@ const ChatPage: React.FC = () => {
     clearAllChats()
     resetPractice()
     lastAIQuestionRef.current = ''
+    clearServerTranscript()
     message.success('已清空全部对话记录')
   }
 

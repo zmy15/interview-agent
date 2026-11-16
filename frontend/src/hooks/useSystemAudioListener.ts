@@ -15,7 +15,9 @@
  *     1) start 只在「开关从未开变为开」时调用一次（边沿触发，不是电平触发）；
  *     2) 组件重挂载只负责「接管轮询」，不会去动后端会话；
  *     3) 只有开关真正关闭 / 明确离开对话页时，才停止后端捕获；
- *     4) 轮询的 since 只增不减，避免序号重置导致永远拉不到新内容。
+ *     4) 轮询游标放在**模块级**（sharedSince），重挂载不会归零 —— 否则
+ *        切走再切回会把服务端缓冲里的历史逐条重放一遍；
+ *     5) 页面刷新后首次轮询只对齐游标，不回放本次加载之前的历史。
  *
  *   后端 /system-audio/start 也是幂等的：即使前端多调一次，
  *   只要设备没变，它也会复用现有会话而不是重建。
@@ -35,6 +37,25 @@ const POLL_INTERVAL = 1000
  */
 const STOP_GRACE_MS = 1200
 
+/**
+ * 已消费到的最大 seq —— 刻意放在**模块级**，而不是组件里的 useRef。
+ *
+ * 为什么：切到左侧别的标签页会让 ChatPage 卸载，再切回来时组件是全新的，
+ * useRef 会重置成 0；而服务端的转写缓冲还在（SYSTEM_AUDIO_TRANSCRIPT_BUFFER
+ * 默认 200 条）。于是 `transcript(0)` 把整段历史原样返回，onText 被逐条
+ * 调用 —— 用户看到的就是「清空对话 → 切走 → 切回，之前的语音又逐条输出了
+ * 一遍」，而且每条都会重新触发一次提问。
+ *
+ * 放在模块级后：
+ *   - 同一次页面会话内，卸载/重挂载都从上次的位置继续，既不重放也不丢；
+ *   - 页面刷新时模块状态归零，由第一次轮询向服务端取游标（不回放历史）。
+ *
+ * null = 本次页面会话尚未同步过。
+ */
+let sharedSince: number | null = null
+/** 是否已有一次「首同步」在飞行中，避免并发轮询重复取基准 */
+let seeding = false
+
 export interface ListenerOptions {
   /** 是否处于 AI 对话界面（false 时停止监听） */
   active: boolean
@@ -52,10 +73,9 @@ export function useSystemAudioListener({ active, onText, onError }: ListenerOpti
   const [sttConnected, setSttConnected] = useState(false)
   const [sttError, setSttError] = useState<string | null>(null)
 
-  // 已消费到的最大 seq：**只增不减**。
-  // 后端因会话重建而重置序号时，这里绝不能跟着归零，
-  // 否则 `seq > since` 恒不成立，轮询将永远拿不到新内容。
-  const sinceRef = useRef(0)
+  // 已消费到的最大 seq（模块级，见 sharedSince 的注释）。
+  // 只增不减：后端序号来自进程级计数器，正常只会变大；
+  // 只有后端重启（序号从头开始）时才回零，见 poll()。
   const timerRef = useRef<number | null>(null)
   const stopTimerRef = useRef<number | null>(null)
   // 是否已经向后端发起过 start（用于边沿触发判断）
@@ -74,13 +94,43 @@ export function useSystemAudioListener({ active, onText, onError }: ListenerOpti
   /** 拉取增量转写并按需派发 */
   const poll = useCallback(async () => {
     try {
-      const res = await systemAudioApi.transcript(sinceRef.current)
+      // ── 本页面会话的第一次轮询：只取游标，不回放历史 ──
+      //
+      // 服务端缓冲里可能还留着本次页面加载之前识别的内容（比如上一轮
+      // 对话的语音）。直接 transcript(0) 会把它们整批当新消息派发出去。
+      // 这里把游标对齐到服务端的 latest_seq，历史就「已消费」了。
+      if (sharedSince === null) {
+        if (seeding) return
+        seeding = true
+        try {
+          const snapshot = await systemAudioApi.transcript(0)
+          sharedSince = snapshot.latest_seq
+          setSttConnected(snapshot.stt_connected)
+          setSttError(snapshot.stt_error ?? null)
+          setListening(snapshot.running)
+        } catch (err) {
+          sharedSince = null // 失败就保持未同步，下次轮询重试
+          throw err
+        } finally {
+          seeding = false
+        }
+        return
+      }
+
+      const res = await systemAudioApi.transcript(sharedSince)
+
+      // 后端重启过：进程级序号计数器从头开始，旧游标（比如 42）会让
+      // `seq > since` 恒不成立，表现为「监听开着但一个字都不出」。
+      // 此时必须把游标归零，宁可重放一小段也不能永久卡死。
+      if (res.latest_seq < sharedSince) {
+        sharedSince = 0
+      }
 
       if (res.lines.length > 0) {
         // 取本批最大 seq 推进游标（用 max 而不是直接赋值，
         // 防止后端返回乱序时游标倒退）
-        const maxSeq = res.lines.reduce((m, l) => Math.max(m, l.seq), sinceRef.current)
-        sinceRef.current = maxSeq
+        const maxSeq = res.lines.reduce((m, l) => Math.max(m, l.seq), sharedSince)
+        sharedSince = maxSeq
 
         for (const line of res.lines) {
           // 只把「断句完成」的文本交给上层：partial 是边说边变的，
