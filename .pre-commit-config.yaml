@@ -84,19 +84,27 @@ repos:
       # 私有密钥检测：.env 已被 .gitignore 排除，此处兜底防误提交
       - id: detect-private-key
 
-  # ── Python 代码检查（ruff）──
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.17.4
-    hooks:
-      # 静态检查：--fix 自动修复可修复的问题（导入排序、未使用导入等）
-      #
-      # 注意：仅启用安全规则集（见 pyproject.toml 的 [tool.ruff.lint]）。
-      # 未启用 ruff-format —— 它会重写 64/70 个 Python 文件（约 3.7 万行），
-      # 与任何功能改动混在一起会让代码审查失去意义。
-      # 如需统一格式，建议单独开一个只做格式化的提交，届时再启用：
-      #     - id: ruff-format
-      - id: ruff
-        args: [--fix]
+  # ── Python 代码检查（ruff）—— 已关闭，需要时手动跑 ──
+  #
+  # 关闭原因：ruff 钩子带 --fix，会直接改写文件。于是 `git commit` 变成
+  # 「钩子失败 → 重新 add → 再 commit」两步，对单人维护的仓库来说，
+  # 打断的成本高于它顺手修掉的那点导入排序/未使用导入。
+  #
+  # 规则集仍保留在 pyproject.toml 的 [tool.ruff.lint]，随时可手动执行：
+  #     ruff check .            # 只检查
+  #     ruff check . --fix      # 自动修复
+  #
+  # 想恢复成「提交时自动检查并修复」，把下面这段取消注释、并把 rev 换成
+  # `pre-commit autoupdate` 得到的最新 tag 即可：
+  # - repo: https://github.com/astral-sh/ruff-pre-commit
+  #   rev: v0.17.4
+  #   hooks:
+  #     # 只启用安全规则集（见 pyproject.toml）；
+  #     # 不启用 ruff-format —— 它会重写 64/70 个 Python 文件（约 3.7 万行），
+  #     # 与任何功能改动混在一起会让代码审查失去意义。如需统一格式，
+  #     # 建议单独开一个只做格式化的提交，届时再加 `- id: ruff-format`。
+  #     - id: ruff
+  #       args: [--fix]
 
 # ============================================================================
 # pre-commit.ci 配置
@@ -106,7 +114,8 @@ repos:
 #
 # 行为说明：
 #   - 每个 PR 自动运行钩子，并直接向 PR 提交修复（autofix）
-#   - 每周一约 16:00 UTC 自动提交钩子版本升级 PR（autoupdate）
+#   - 钩子版本的**自动升级已关闭**（autoupdate_schedule: disabled），
+#     不会再每周自动开一个只改 rev 的 PR
 #   - 在 PR 中评论 `pre-commit.ci run`（单独一行）可重新触发
 #   - 提交信息含 [skip ci] / [ci skip] / [skip pre-commit.ci] 时跳过
 # ============================================================================
@@ -116,8 +125,12 @@ ci:
 
     for more information, see https://pre-commit.ci
   autofix_prs: true
+  # 下面这条提交信息只在 autoupdate 重新开启后才会用到
   autoupdate_commit_msg: "[pre-commit.ci] 自动更新 pre-commit 钩子版本"
-  autoupdate_schedule: weekly
+  # 自动升级钩子版本：已关闭。
+  # 关闭原因：它会每周自动开一个只改 rev 的 PR（例如 PR #11），对本项目是噪音。
+  # 需要升级时手动执行 `pre-commit autoupdate`，或临时改回 weekly。
+  autoupdate_schedule: disabled
   # 本地钩子（如依赖未安装的工具）不适合在 CI 中运行；当前没有本地钩子，
   # 预留此位置以便后续按需跳过。
   skip: []
