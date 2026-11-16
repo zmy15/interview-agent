@@ -8,7 +8,6 @@
 </p>
 
 <h1 align="center">🎯 Interview Agent</h1>
-<p align="center"><strong>AI Mock Interview Platform — Dual Perspectives · RAG Knowledge Base · Real-time Aids</strong></p>
 
 <p align="center">
   <a href="#-overview">Overview</a> •
@@ -40,12 +39,6 @@ Interview Agent is an **LLM-powered mock interview platform**. It splits "interv
 ### Three Real-time Aids
 
 Besides the mock practice, the project offers real-time help for **actual interviews** (all built on Windows capabilities):
-
-| Feature | Captures | Purpose |
-|---------|----------|---------|
-| 📷 **Screenshot answering** | Screen (Windows Graphics Capture) | One-shot capture of the primary monitor, handed to a vision model to extract and answer the question |
-| 🎧 **System audio transcription** | Speaker loopback (WASAPI Loopback) | Grabs what the other side says in a meeting app or video, transcribed live |
-| 🎤 **Voice input / playback** | Microphone (STT) and speakers (TTS) | Hold to talk and get text; one-click reading of AI replies |
 
 ---
 
