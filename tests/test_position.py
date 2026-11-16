@@ -1,5 +1,7 @@
 """岗位管理接口测试"""
 
+from urllib.parse import quote
+
 import pytest
 
 
@@ -75,6 +77,86 @@ class TestPositionCRUD:
         # 确认已删除
         response = client.get(f"/positions/{sample_position['name']}")
         assert response.status_code == 404
+
+
+class TestPositionNameRules:
+    """岗位名称规则 — 允许空格，但要归一化并拦掉非法字符"""
+
+    def test_name_with_spaces(self, client):
+        """岗位名可以带空格（真实岗位名常见，如「AI Agent 质量效能工程师」）"""
+        name = "AI Agent 质量效能工程师"
+        resp = client.post("/positions", json={"name": name})
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["name"] == name
+
+        # 带空格的名字在 URL 里用 %20 传递，读写都应正常
+        path = f"/positions/{quote(name)}"
+        assert client.get(path).status_code == 200
+        assert client.get(path).json()["name"] == name
+        assert client.delete(path).status_code == 200
+
+    def test_name_whitespace_normalized(self, client):
+        """首尾空白去掉、连续空白折叠成一个空格"""
+        resp = client.post("/positions", json={"name": "  前端   工程师  "})
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["name"] == "前端 工程师"
+
+        client.delete(f"/positions/{quote('前端 工程师')}")
+
+    def test_blank_name_rejected(self, client):
+        """纯空白不算合法名称（会先被归一化成空串）"""
+        resp = client.post("/positions", json={"name": "   "})
+        assert resp.status_code == 422
+
+        # 去掉首尾空白后只剩 1 个字符，同样不合法
+        resp = client.post("/positions", json={"name": "  前  "})
+        assert resp.status_code == 422
+
+    def test_illegal_chars_rejected(self, client):
+        """允许空格不等于允许任意字符：斜杠、点号仍然不行"""
+        for name in ("前端/工程师", "前端.工程师", "前端&工程师"):
+            resp = client.post("/positions", json={"name": name})
+            assert resp.status_code == 400, f"{name} 不应被接受: {resp.text}"
+
+
+class TestCreatePositionWithJD:
+    """新建岗位时直接带上第一份 JD（界面「新建岗位」的 JD 输入框）"""
+
+    def test_create_with_jd(self, client):
+        name = "带 JD 的岗位"
+        resp = client.post(
+            "/positions",
+            json={"name": name, "jd_content": "  负责后端接口开发与性能优化  "},
+        )
+        assert resp.status_code == 201, resp.text
+
+        body = resp.json()
+        assert len(body["jds"]) == 1
+        # JD 内容两端空白会被去掉
+        assert body["jds"][0]["content"] == "负责后端接口开发与性能优化"
+
+        # 确实落库了：重新查询仍能拿到
+        again = client.get(f"/positions/{quote(name)}").json()
+        assert [jd["content"] for jd in again["jds"]] == ["负责后端接口开发与性能优化"]
+
+        client.delete(f"/positions/{quote(name)}")
+
+    def test_create_without_jd(self, client):
+        name = "没有 JD 的岗位"
+        resp = client.post("/positions", json={"name": name})
+        assert resp.status_code == 201
+        assert resp.json()["jds"] == []
+
+        client.delete(f"/positions/{quote(name)}")
+
+    def test_blank_jd_is_ignored(self, client):
+        """JD 留空/纯空白时不建 JD（而不是建一条空 JD）"""
+        name = "JD 留空的岗位"
+        resp = client.post("/positions", json={"name": name, "jd_content": "   \n  "})
+        assert resp.status_code == 201
+        assert resp.json()["jds"] == []
+
+        client.delete(f"/positions/{quote(name)}")
 
 
 class TestJDManagement:

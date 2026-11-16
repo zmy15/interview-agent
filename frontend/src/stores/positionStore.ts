@@ -8,8 +8,8 @@ interface PositionState {
   error: string | null
 
   fetchPositions: () => Promise<void>
-  createPosition: (name: string, description: string) => Promise<void>
-  updatePosition: (name: string, description: string) => Promise<void>
+  /** 创建岗位；jdContent 非空时后端会顺手写入第一份 JD（同事务） */
+  createPosition: (name: string, jdContent?: string) => Promise<void>
   deletePosition: (name: string) => Promise<void>
 }
 
@@ -28,23 +28,11 @@ export const usePositionStore = create<PositionState>()((set) => ({
     }
   },
 
-  createPosition: async (name, description) => {
+  createPosition: async (name, jdContent) => {
     set({ loading: true, error: null })
     try {
-      await positionApi.createPosition({ name, description })
+      await positionApi.createPosition({ name, jd_content: jdContent || undefined })
       // 刷新列表
-      const res = await positionApi.listPositions()
-      set({ positions: res.positions, loading: false })
-    } catch (err) {
-      set({ error: (err as Error).message, loading: false })
-      throw err
-    }
-  },
-
-  updatePosition: async (name, description) => {
-    set({ loading: true, error: null })
-    try {
-      await positionApi.updatePosition(name, { description })
       const res = await positionApi.listPositions()
       set({ positions: res.positions, loading: false })
     } catch (err) {

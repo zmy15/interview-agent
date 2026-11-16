@@ -24,15 +24,19 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/positions", tags=["positions"])
 
-# 岗位名称校验正则
-_NAME_PATTERN = re.compile(r"^[\w\u4e00-\u9fff-]{2,50}$")
+# 岗位名称校验正则。
+# 允许空格：真实岗位名常带空格（如「AI Agent 质量效能工程师」）。
+# 空格在 URL 里由前端 encodeURIComponent 编码，知识库目录名另有
+# VectorStoreManager._sanitize_collection_name 兜底，因此不必限制得过窄。
+_NAME_PATTERN = re.compile(r"^[\w\u4e00-\u9fff\- ]{2,50}$")
 
 
 def _validate_position_name(name: str):
+    """校验岗位名称（首尾空白与连续空白已由 PositionCreate 归一化）"""
     if not _NAME_PATTERN.match(name):
         raise HTTPException(
             status_code=400,
-            detail="岗位名称需为 2-50 个字符，允许字母/数字/中文/下划线/连字符",
+            detail="岗位名称需为 2-50 个字符，允许字母/数字/中文/下划线/连字符/空格",
         )
 
 
@@ -45,13 +49,25 @@ async def create_position(
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(get_current_user),
 ):
-    """创建新岗位"""
+    """创建新岗位（可在同一个请求里附带第一份 JD）
+
+    岗位与 JD 在同一个数据库事务里写入（见 database.get_db）：
+    要么都成功，要么都不落库，不会出现「岗位建好了但 JD 丢了」。
+    """
     _validate_position_name(req.name)
     store = PositionStore(db)
     try:
-        return await store.create(req.name, req.description, user_id=user.id)
+        pos = await store.create(req.name, req.description, user_id=user.id)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+
+    jd_content = (req.jd_content or "").strip()
+    if jd_content:
+        jd = await store.add_jd(req.name, jd_content, user_id=user.id)
+        if jd is not None:
+            pos.jds.append(jd)
+
+    return pos
 
 
 @router.get("", response_model=PositionListResponse)

@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ============ 候选人与面试配置常量 ============
 
@@ -197,6 +197,22 @@ class UploadListResponse(BaseModel):
 class PositionCreate(BaseModel):
     name: str = Field(..., min_length=2, max_length=50)
     description: str = ""
+    # 创建岗位时顺手写入的第一份 JD（界面「新建岗位」里的 JD 输入框）。
+    # 与 description 的区别：**JD 才是真正进入提示词的内容**，
+    # description 只是一句备注，界面上已经不再让用户填它。
+    jd_content: str = ""
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _normalize_name(cls, value):
+        """岗位名允许空格：去掉首尾空白，并把连续空白折叠成一个空格。
+
+        必须在 Field 的长度校验**之前**执行（mode="before"），否则
+        「  前端  」这种输入会靠空格凑够 min_length 蒙混过关。
+        """
+        if isinstance(value, str):
+            return " ".join(value.split())
+        return value
 
 
 class PositionUpdate(BaseModel):

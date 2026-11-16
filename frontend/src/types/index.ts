@@ -200,7 +200,10 @@ export interface UploadListResponse {
 
 export interface PositionCreate {
   name: string
-  description: string
+  /** 仅作备注，界面上已不再填写（JD 才是进入提示词的内容） */
+  description?: string
+  /** 创建岗位时顺带写入的第一份 JD（可选）；后端与岗位同事务落库 */
+  jd_content?: string
 }
 
 export interface PositionUpdate {

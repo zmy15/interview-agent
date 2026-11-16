@@ -12,7 +12,7 @@ import {
   Tag,
   theme,
 } from 'antd'
-import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
+import { PlusOutlined, DeleteOutlined } from '@ant-design/icons'
 import { usePositionStore } from '@/stores/positionStore'
 import * as positionApi from '@/api/position'
 import type { PositionResponse, JDResponse } from '@/types'
@@ -20,10 +20,10 @@ import type { PositionResponse, JDResponse } from '@/types'
 const { Text } = Typography
 
 const PositionPage: React.FC = () => {
-  const { positions, loading, fetchPositions, createPosition, updatePosition, deletePosition } =
+  const { positions, loading, fetchPositions, createPosition, deletePosition } =
     usePositionStore()
   const [modalOpen, setModalOpen] = useState(false)
-  const [editingPos, setEditingPos] = useState<PositionResponse | null>(null)
+  const [submitting, setSubmitting] = useState(false)
   const [form] = Form.useForm()
   const { token } = theme.useToken()
 
@@ -40,31 +40,29 @@ const PositionPage: React.FC = () => {
   }, [fetchPositions])
 
   const handleCreate = () => {
-    setEditingPos(null)
     form.resetFields()
     setModalOpen(true)
   }
 
-  const handleEdit = (pos: PositionResponse) => {
-    setEditingPos(pos)
-    form.setFieldsValue({ name: pos.name, description: pos.description })
-    setModalOpen(true)
-  }
-
   const handleSubmit = async () => {
-    const values = await form.validateFields()
+    let values: { name: string; jd_content?: string }
     try {
-      if (editingPos) {
-        await updatePosition(editingPos.name, values.description)
-        message.success('岗位已更新')
-      } else {
-        await createPosition(values.name, values.description)
-        message.success('岗位已创建')
-      }
+      values = await form.validateFields()
+    } catch {
+      return // 校验未通过，antd 已在表单上提示
+    }
+
+    setSubmitting(true)
+    try {
+      // JD 与岗位一起提交：后端在同一事务里落库，不会出现「岗位建好但 JD 丢了」
+      await createPosition(values.name.trim(), (values.jd_content || '').trim() || undefined)
+      message.success(values.jd_content?.trim() ? '岗位与 JD 已创建' : '岗位已创建')
       setModalOpen(false)
       form.resetFields()
     } catch (err) {
       message.error((err as Error).message || '操作失败')
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -138,16 +136,11 @@ const PositionPage: React.FC = () => {
       },
     },
     {
-      title: '描述',
-      dataIndex: 'description',
-      key: 'description',
-      ellipsis: true,
-    },
-    {
       title: 'JD 数量',
       key: 'jdCount',
+      width: 100,
       render: (_: unknown, record: PositionResponse) => (
-        <Tag color="blue">{record.jds.length} 条</Tag>
+        <Tag color={record.jds.length > 0 ? 'blue' : 'default'}>{record.jds.length} 条</Tag>
       ),
     },
     {
@@ -159,16 +152,9 @@ const PositionPage: React.FC = () => {
     {
       title: '操作',
       key: 'actions',
-      width: 240,
+      width: 200,
       render: (_: unknown, record: PositionResponse) => (
         <Space size="small">
-          <Button
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => handleEdit(record)}
-          >
-            编辑
-          </Button>
           <Button
             size="small"
             onClick={() => loadJDs(record.name)}
@@ -213,32 +199,47 @@ const PositionPage: React.FC = () => {
         pagination={false}
       />
 
-      {/* 岗位编辑弹窗 */}
+      {/* 新建岗位弹窗：岗位名称 + 第一份 JD（一步到位） */}
       <Modal
-        title={editingPos ? '编辑岗位' : '新建岗位'}
+        title="新建岗位"
         open={modalOpen}
         onOk={handleSubmit}
         onCancel={() => setModalOpen(false)}
-        okText="保存"
+        okText="创建"
         cancelText="取消"
+        confirmLoading={submitting}
+        width={640}
       >
         <Form form={form} layout="vertical">
           <Form.Item
             name="name"
             label="岗位名称"
             rules={[
-              { required: true, message: '请输入岗位名称' },
-              { min: 2, max: 50, message: '2-50 个字符' },
+              { required: true, whitespace: true, message: '请输入岗位名称' },
               {
-                pattern: /^[\w\u4e00-\u9fff-]{2,50}$/,
-                message: '允许字母/数字/中文/下划线/连字符',
+                // 名字允许空格，但「 a 」「  」这类去掉首尾空白后不足 2 字符的不行，
+                // 否则后端归一化后会变成 1 个字符、返回 422
+                validator: (_, value: string) =>
+                  !value || value.trim().length >= 2
+                    ? Promise.resolve()
+                    : Promise.reject(new Error('去掉首尾空格后至少 2 个字符')),
+              },
+              { max: 50, message: '最多 50 个字符' },
+              {
+                // 与后端 _NAME_PATTERN 保持一致：允许空格，但不允许纯空白
+                pattern: /^[\w\u4e00-\u9fff\- ]{2,50}$/,
+                message: '允许字母/数字/中文/下划线/连字符/空格',
               },
             ]}
           >
-            <Input disabled={!!editingPos} placeholder="如: 前端工程师" />
+            <Input placeholder="如: AI Agent 质量效能工程师" maxLength={50} />
           </Form.Item>
-          <Form.Item name="description" label="岗位描述">
-            <Input.TextArea rows={3} placeholder="简要描述岗位职责和要求" />
+          <Form.Item
+            name="jd_content"
+            label="JD 内容（可选）"
+            extra="创建后立即成为该岗位的第一份 JD，对话时会被拼进提示词；之后可用「管理 JD」继续添加或修改。"
+          >
+            <Input.TextArea rows={8} placeholder="粘贴岗位描述 (Job Description)…" />
           </Form.Item>
         </Form>
       </Modal>
