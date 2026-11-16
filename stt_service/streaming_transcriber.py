@@ -1,5 +1,5 @@
 """
-流式转录器 — VAD 分段 → faster-whisper 异步转录
+流式转录器 — VAD 分段 → 异步转录（faster-whisper / Qwen3-ASR 可切换）
 边说边出字：前一段 final 文本累积 + 当前段 partial 输出
 """
 
@@ -9,6 +9,8 @@ import os
 import sys
 import threading
 from typing import Callable, Optional
+
+from stt_config import BACKEND_QWEN, BACKEND_WHISPER
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +224,47 @@ def get_shared_whisper(model_size: str, device: str, compute_type: str):
         return model
 
 
-def preload_shared_models(model_size: str, device: str, compute_type: str) -> bool:
+def get_shared_qwen(
+    model_path: str,
+    device: str,
+    compute_type: str,
+    max_new_tokens: int = 256,
+):
+    """取（或首次加载）进程级共享的 Qwen3-ASR 模型。
+
+    与 Whisper 共用同一个缓存与锁：两者都是"只读共享 + 纯推理"，
+    不需要各自维护一套生命周期。
+    """
+    key = ("qwen3_asr", model_path, device, compute_type, int(max_new_tokens))
+    with _model_lock:
+        if key in _model_cache:
+            return _model_cache[key]
+
+        from asr_engine import Qwen3AsrModel
+
+        logger.info(
+            "首次加载 Qwen3-ASR 模型（path=%s device=%s compute=%s）…",
+            model_path, device, compute_type,
+        )
+        model = Qwen3AsrModel(
+            model_path,
+            device=device,
+            compute_type=compute_type,
+            max_new_tokens=max_new_tokens,
+        )
+        _model_cache[key] = model
+        logger.info("Qwen3-ASR 模型已加载并缓存，后续连接直接复用")
+        return model
+
+
+def preload_shared_models(
+    model_size: str,
+    device: str,
+    compute_type: str,
+    backend: str = BACKEND_WHISPER,
+    qwen_model: str = "",
+    qwen_max_new_tokens: int = 256,
+) -> bool:
     """预热共享模型（供启动时调用，让首个连接也无需等待）。
 
     返回**是否全部成功**。调用方必须据此判断状态：
@@ -232,11 +274,20 @@ def preload_shared_models(model_size: str, device: str, compute_type: str) -> bo
     """
     ok = True
 
-    try:
-        get_shared_whisper(model_size, device, compute_type)
-    except Exception as exc:
-        ok = False
-        logger.error("预热 Whisper 失败（首个连接时会重试）: %s", exc)
+    if backend == BACKEND_QWEN:
+        try:
+            get_shared_qwen(
+                qwen_model, device, compute_type, qwen_max_new_tokens
+            )
+        except Exception as exc:
+            ok = False
+            logger.error("预热 Qwen3-ASR 失败（首个连接时会重试）: %s", exc)
+    else:
+        try:
+            get_shared_whisper(model_size, device, compute_type)
+        except Exception as exc:
+            ok = False
+            logger.error("预热 Whisper 失败（首个连接时会重试）: %s", exc)
 
     try:
         VADProcessor(sample_rate=16000)._ensure_model()
@@ -313,6 +364,11 @@ class StreamingTranscriber:
         on_partial: Optional[Callable[[str], None]] = None,
         on_final: Optional[Callable[[str], None]] = None,
         on_vad: Optional[Callable[[str], None]] = None,
+        # ── 后端选择 ──
+        backend: str = BACKEND_WHISPER,
+        qwen_model: str = "",
+        qwen_max_new_tokens: int = 256,
+        language: str = "auto",
         # ── 分块参数（方案 C）──
         chunk_max_seconds: float = 25.0,
         chunk_overlap_seconds: float = 0.5,
@@ -322,6 +378,12 @@ class StreamingTranscriber:
         self.device = device
         self.compute_type = compute_type
         self.sample_rate = sample_rate
+        self.backend = backend
+        self.qwen_model = qwen_model
+        self.qwen_max_new_tokens = max(32, int(qwen_max_new_tokens))
+        # auto → Whisper 仍强制 zh（历史行为，避免短片段误判语种导致整段
+        # 被当成英文转写）；Qwen3-ASR 则交给模型自判，中英混说更稳。
+        self.language = (language or "auto").strip()
 
         # 分块上限：语音连续不停时，最多攒这么久就切一块送 Whisper。
         # 这是**兜底**，不是主要切分依据 —— 正常应在自然停顿处收块。
@@ -376,19 +438,39 @@ class StreamingTranscriber:
         # 后台转录任务
         self._pending_tasks: list[asyncio.Task] = []
 
-    # ── 懒加载 Whisper ──
+    # ── 懒加载模型 ──
 
     def _ensure_model(self):
-        """确保 Whisper 模型可用（复用进程级共享实例）
+        """确保模型可用（复用进程级共享实例）
 
-        模型加载很慢（CUDA 上约 11 秒），因此**不**在每次连接时重新加载。
-        共享实例只做纯推理，不持有任何会话状态。
+        模型加载很慢（CUDA 上 Whisper 约 11 秒），因此**不**在每次连接时
+        重新加载。共享实例只做纯推理，不持有任何会话状态。
         """
         if self._model is not None:
             return
-        self._model = get_shared_whisper(
-            self.model_size, self.device, self.compute_type
-        )
+        if self.backend == BACKEND_QWEN:
+            self._model = get_shared_qwen(
+                self.qwen_model or self.model_size,
+                self.device,
+                self.compute_type,
+                self.qwen_max_new_tokens,
+            )
+        else:
+            self._model = get_shared_whisper(
+                self.model_size, self.device, self.compute_type
+            )
+
+    def _language_for_model(self) -> Optional[str]:
+        """把 STT_LANGUAGE 翻译成当前后端认识的形式。
+
+        Whisper 的 language 必须是 'zh' 这类硬编码（传 None 会逐段自动探测，
+        短片段上很容易把中文判成英文）；Qwen3-ASR 传 None 表示"模型自判"，
+        更适合中英混说。
+        """
+        value = self.language
+        if value.lower() in ("", "auto"):
+            return None if self.backend == BACKEND_QWEN else "zh"
+        return value
 
     # ── 核心：逐帧处理 ──
 
@@ -600,7 +682,7 @@ class StreamingTranscriber:
             segments, info = await asyncio.to_thread(
                 self._model.transcribe,
                 audio_float32,
-                language="zh",
+                language=self._language_for_model(),
                 beam_size=5,
                 vad_filter=False,
                 initial_prompt=self._build_prompt(ctx),
@@ -735,7 +817,13 @@ class StreamingTranscriber:
         return ""
 
     def _build_prompt(self, context: Optional[str] = None) -> str:
-        """构造本块的 initial_prompt：标点提示词 + 上一块尾部文本。
+        """构造本块的提示：Whisper 是"标点提示词 + 上文"，Qwen 只给上文。
+
+        为什么两个后端形态不同：
+             Whisper 靠 initial_prompt 续写，需要一句"请加标点"的指令把
+             标点唤回来；Qwen3-ASR 的 prompt 是**上下文/热词**（system
+             message），塞指令句反而会被当成偏置词，只传上一块的真实文本
+             才是它期望的用法。Qwen 自带标点与简体，不需要任何提示。
 
         为什么把上文拼进 prompt 而不是打开 condition_on_previous_text：
             后者会让模型把上一段的**用词**直接套到新音频上（形似而神不似），
@@ -746,7 +834,16 @@ class StreamingTranscriber:
         截断（中文约 1 字 1 token 多一点），120 字符是安全值。
         """
         tail = self._context_tail if context is None else context
-        if not tail or self.chunk_context_chars <= 0:
+        tail = tail or ""
+        if self.chunk_context_chars > 0:
+            tail = tail[-self.chunk_context_chars:]
+        else:
+            tail = ""
+
+        if self.backend == BACKEND_QWEN:
+            return tail
+
+        if not tail:
             return self.INITIAL_PROMPT
         # 兜底截断：调用方一般已按 chunk_context_chars 截过，
         # 但 _context_tail 也可能被整体赋值（如 reset 后又累积），

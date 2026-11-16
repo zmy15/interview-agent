@@ -608,3 +608,57 @@ def test_silero_model_shared():
     # 状态互相独立：改一个不应影响另一个
     a._model._state[:] = 1.0
     assert b._model._state.max() == 0.0, "状态被跨实例污染"
+
+
+# ══════════════════════════════════════════════════════════════
+# bug 4：flush 不得重复推送
+# ══════════════════════════════════════════════════════════════
+
+
+def test_flush_delivers_tail_through_on_final():
+    """flush 冲刷出的最后一段必须走 on_final 回调。
+
+    这是「不再重复发 final」的前提：handler 只等 flush()，文本全靠回调送出。
+    若 flush 内部改成不回推回调，客户端就会丢掉最后一句。
+    """
+    finals = []
+    tr = _make_transcriber(_FakeWhisper("最后一句。"), finals=finals)
+
+    async def run():
+        # 不给静音：音频仍留在缓冲里，只由 flush 冲刷
+        tr.vad._speech_probability = lambda frame: 0.9
+        for _ in range(10):
+            await tr.process_frame(np.ones(FRAME, dtype=np.float32) * 0.1)
+        return await tr.flush()
+
+    full = asyncio.run(run())
+
+    assert finals == ["最后一句。"], f"flush 未通过 on_final 推送: {finals}"
+    assert full == "最后一句。"
+
+
+def test_ws_flush_branch_does_not_resend_full_transcript():
+    """WebSocket 的 flush 分支不得把整场文本当 final 再发一次。
+
+    回归：早期实现 `final_text = await transcriber.flush()` 后直接
+    `send_json({"type": "final", "text": final_text})`，而 flush() 返回的是
+    **整场累积文本**，于是每次停止（系统音频流程会发 flush）客户端都会
+    收到一条重复的整段转写。
+
+    为什么读源码而不是起服务测：导入 stt_service.main 会执行 load_config()
+    并创建 FastAPI app，与 test_stt_service 里的模块级缓存互相干扰
+    （同一手法见 test_stt_hallucination.py 对 main.py 的断言）。
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "stt_service", "main.py"), encoding="utf-8") as fh:
+        src = fh.read()
+
+    start = src.index('if msg.get("type") == "flush":')
+    end = src.index('elif msg.get("type") == "reset":', start)
+    block = src[start:end]
+
+    assert "transcriber.flush()" in block, "flush 分支应调用 flush()"
+    assert '"type": "final"' not in block, (
+        "flush 分支又在发 final —— 会与 on_final 回调重复，客户端看到整段重复"
+    )
+    assert "final_text" not in block, "不应再把 flush() 的整场返回文本当消息内容"

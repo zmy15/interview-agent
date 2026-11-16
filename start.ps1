@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Interview Agent 网页版启动器（start.bat 的 PowerShell 实现）。
 
@@ -318,15 +318,52 @@ if ($voiceAnswer -match '^\s*(y|yes)\s*$') {
         Write-Host '[语音] 已选择 CPU 模式' -ForegroundColor Green
     }
 
-    # 模型由 .env 的 STT_MODEL 决定（STT 服务读取），这里只展示，不改配置
-    $modelShow = 'base（默认）'
-    $modelLine = Select-String -Path $envFile -Pattern '^STT_MODEL=' -ErrorAction SilentlyContinue |
+    # 后端与模型由 .env 决定（STT 服务读取），这里只展示，不改配置
+    $backendShow = 'qwen3_asr'
+    $backendLine = Select-String -Path $envFile -Pattern '^STT_BACKEND=' -ErrorAction SilentlyContinue |
         Select-Object -First 1
-    if ($modelLine) { $modelShow = ($modelLine.Line -replace '^STT_MODEL=', '').Trim() }
-    Write-Host "[语音] Whisper 模型: $modelShow（改 .env 的 STT_MODEL 可切换）"
+    if ($backendLine) { $backendShow = ($backendLine.Line -replace '^STT_BACKEND=', '').Trim() }
+
+    if ($backendShow -eq 'faster_whisper') {
+        $modelShow = 'base（默认）'
+        $modelLine = Select-String -Path $envFile -Pattern '^STT_MODEL=' -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($modelLine) { $modelShow = ($modelLine.Line -replace '^STT_MODEL=', '').Trim() }
+        Write-Host "[语音] 后端: Whisper（模型 $modelShow，改 .env 的 STT_MODEL 可切换）"
+    } else {
+        $qwenShow = 'Qwen/Qwen3-ASR-0.6B（默认）'
+        $qwenLine = Select-String -Path $envFile -Pattern '^STT_QWEN_MODEL=' -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($qwenLine) { $qwenShow = ($qwenLine.Line -replace '^STT_QWEN_MODEL=', '').Trim() }
+        Write-Host "[语音] 后端: Qwen3-ASR（权重 $qwenShow，改 .env 的 STT_QWEN_MODEL 可切换）"
+    }
 
     Write-Host '[语音] 安装语音依赖...'
-    $null = Invoke-Native { & $python -m pip install @sttPkgs -q }
+    if ($backendShow -eq 'faster_whisper') {
+        # Whisper 走 ctranslate2，装进主环境即可
+        $null = Invoke-Native { & $python -m pip install @sttPkgs -q }
+    } else {
+        # Qwen3-ASR 需要 transformers 4.x，而主环境是 5.x（RAG 的
+        # sentence-transformers 依赖它），两者冲突 → 单独建 .venv-stt。
+        $sttVenv = Join-Path $root '.venv-stt'
+        $sttPython = Join-Path $sttVenv 'Scripts\python.exe'
+        if (-not (Test-Path $sttPython)) {
+            Write-Host '[语音] 创建 STT 独立虚拟环境 .venv-stt ...'
+            & $python -m venv $sttVenv
+        }
+        Write-Host '[语音] 安装 STT 依赖（torch 约 2.5GB，仅首次）...'
+        $null = Invoke-Native { & $sttPython -m pip install --upgrade pip -q }
+        if ($env:STT_DEVICE -eq 'cuda') {
+            # PyPI 上 Windows 的 torch 轮子是 CPU 版，GPU 推理必须用官方 CUDA 源
+            $null = Invoke-Native { & $sttPython -m pip install torch --index-url https://download.pytorch.org/whl/cu126 -q }
+        } else {
+            $null = Invoke-Native { & $sttPython -m pip install torch -q }
+        }
+        # qwen-asr 的依赖里有个需要编译的 sox 包（Windows 上常常装不上），
+        # 因此 --no-deps 只装包本身，运行时依赖单独列出来装。
+        $null = Invoke-Native { & $sttPython -m pip install --no-deps qwen-asr -q }
+        $null = Invoke-Native { & $sttPython -m pip install "transformers==4.57.6" "accelerate==1.12.0" nagisa soynlp pytz librosa numpy onnxruntime fastapi uvicorn websockets python-multipart python-dotenv soundfile zhconv -q }
+    }
     $null = Invoke-Native { & $python -m pip install silero-vad numpy ffmpeg-python -q }
     $null = Invoke-Native { & $python -m pip install piper-tts huggingface_hub -q }
     $null = Invoke-Native { & $python -m pip install zhconv -q }
@@ -367,7 +404,11 @@ $ttsStarted = $false
 if ($voiceOn) {
     if (Test-PortFree -Port 8001 -Name 'STT') {
         Write-Host '[语音] 启动 STT 语音识别服务 (端口 8001)...'
-        Start-Process -FilePath $python -ArgumentList @(
+        # Qwen3-ASR 后端跑在独立环境 .venv-stt 里（transformers 4.x）
+        $sttPython = $python
+        $sttVenvPython = Join-Path $root '.venv-stt\Scripts\python.exe'
+        if (Test-Path $sttVenvPython) { $sttPython = $sttVenvPython }
+        Start-Process -FilePath $sttPython -ArgumentList @(
             '-m', 'uvicorn', 'stt_service.main:app', '--host', '0.0.0.0', '--port', '8001'
         ) -WorkingDirectory $root
         $sttStarted = $true

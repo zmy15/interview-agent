@@ -137,6 +137,32 @@ def test_pause_hint_fires_only_once_per_pause():
     assert len(pauses) == 1, f"停顿提示重复触发 {len(pauses)} 次"
 
 
+def test_preroll_prepended_before_the_transition_frame():
+    """静默→语音的那一帧必须排在 preroll 之后。
+
+    回归：早期实现先 `_append_frame`（当前帧进 buffer）再 `_promote_preroll`
+    （把更早的帧 extend 到它后面），缓冲头部变成「当前帧 + 之前 0.3s」——
+    起头那个音节被倒着重放了一遍。Whisper 上只是开头含糊，
+    Qwen3-ASR 会直接把它转成重复字（实测「你你」）。
+    """
+    vad = VADProcessor(sample_rate=SR, silence_timeout=1.0, preroll_seconds=0.3)
+    vad._ensure_model()
+
+    probs = iter([0.0, 0.0, 0.0, 0.9, 0.9])  # 3 帧静音后开始说话
+    vad._speech_probability = lambda f: next(probs)
+
+    # 每帧填不同的常量值，便于断言缓冲里的先后顺序
+    for i in range(5):
+        vad.process_frame(np.full(FRAME, (i + 1) / 10.0, dtype=np.float32))
+
+    audio = vad.peek_buffer()
+    order = [round(float(audio[i * FRAME]), 1) for i in range(5)]
+
+    assert order == [0.1, 0.2, 0.3, 0.4, 0.5], (
+        f"缓冲顺序错误（起头帧被提前/重复）: {order}"
+    )
+
+
 def test_speech_resume_after_pause():
     """停顿后继续说话应给出 resume 事件"""
     vad = VADProcessor(sample_rate=SR, silence_timeout=1.0, pause_hint=0.4)

@@ -71,7 +71,12 @@ logger = logging.getLogger("stt_service")
 
 # ── 配置（环境变量 + .env，解析逻辑见 stt_config.py） ──
 _cfg = load_config()
+STT_BACKEND = _cfg.backend
 STT_MODEL = _cfg.model
+STT_MODEL_NAME = _cfg.model_name
+STT_QWEN_MODEL = _cfg.qwen_model
+STT_QWEN_MAX_NEW_TOKENS = _cfg.qwen_max_new_tokens
+STT_LANGUAGE = _cfg.language
 STT_DEVICE = _cfg.device
 STT_COMPUTE_TYPE = _cfg.compute_type
 VAD_SILENCE_TIMEOUT = _cfg.vad_silence_timeout
@@ -82,6 +87,10 @@ CHUNK_CONTEXT_CHARS = _cfg.chunk_context_chars
 # 分块参数的单一来源：两处构造 StreamingTranscriber（WebSocket 每连接一个）
 # 都必须传同一套值，否则「单例预热」与「实际会话」行为不一致。
 _CHUNK_KWARGS = dict(
+    backend=STT_BACKEND,
+    qwen_model=STT_QWEN_MODEL,
+    qwen_max_new_tokens=STT_QWEN_MAX_NEW_TOKENS,
+    language=STT_LANGUAGE,
     chunk_max_seconds=CHUNK_MAX_SECONDS,
     chunk_overlap_seconds=CHUNK_OVERLAP_SECONDS,
     chunk_context_chars=CHUNK_CONTEXT_CHARS,
@@ -113,7 +122,14 @@ async def _preload_models():
         try:
             # preload 返回是否真的成功 —— 它内部会吞掉异常并逐个记录，
             # 不能只看「有没有抛异常」就认定就绪。
-            ready = preload_shared_models(STT_MODEL, STT_DEVICE, STT_COMPUTE_TYPE)
+            ready = preload_shared_models(
+                STT_MODEL,
+                STT_DEVICE,
+                STT_COMPUTE_TYPE,
+                backend=STT_BACKEND,
+                qwen_model=STT_QWEN_MODEL,
+                qwen_max_new_tokens=STT_QWEN_MAX_NEW_TOKENS,
+            )
             _model_loaded = bool(ready)
             if ready:
                 logger.info("模型预热完成，连接将立即可用")
@@ -175,7 +191,8 @@ async def health():
 
     return JSONResponse({
         "status": status,
-        "model": STT_MODEL,
+        "backend": STT_BACKEND,
+        "model": STT_MODEL_NAME,
         "device": STT_DEVICE,
         "vad": "loaded" if _model_loaded else "not_loaded",
         "error": _model_error,
@@ -228,15 +245,15 @@ async def transcribe(file: UploadFile = File(...)):
         transcriber = get_transcriber()
         await asyncio.to_thread(transcriber._ensure_model)
 
-        # faster-whisper 需要 float32 输入
+        # faster-whisper 需要 float32 输入；Qwen3-ASR 的后端同样收 float32
         segments, info = transcriber._model.transcribe(
             audio_np.astype(np.float32),
-            language="zh",
+            language=transcriber._language_for_model(),
             beam_size=5,
-            vad_filter=True,   # HTTP 批量模式用 whisper 内置 VAD
-            # 与 WebSocket 流式路径保持一致：不给这句提示的话，
-            # 短音频会退化成没有标点的连续文字。
-            initial_prompt=StreamingTranscriber.INITIAL_PROMPT,
+            vad_filter=True,   # HTTP 批量模式用 whisper 内置 VAD（Qwen 后端会忽略）
+            # 与 WebSocket 流式路径保持一致：Whisper 拿到这句提示才肯输出标点；
+            # Qwen 后端只需要上文（这里没有上文，传空即可）。
+            initial_prompt=transcriber._build_prompt(""),
         )
         text = "".join(seg.text for seg in segments)
 
@@ -307,7 +324,12 @@ async def websocket_stream(ws: WebSocket):
         transcriber._ensure_model()
 
         # 发送就绪信号
-        await ws.send_json({"type": "ready", "model": STT_MODEL, "device": STT_DEVICE})
+        await ws.send_json({
+            "type": "ready",
+            "backend": STT_BACKEND,
+            "model": STT_MODEL_NAME,
+            "device": STT_DEVICE,
+        })
 
         # 处理音频帧
         while True:
@@ -338,9 +360,14 @@ async def websocket_stream(ws: WebSocket):
                 try:
                     msg = json.loads(data["text"])
                     if msg.get("type") == "flush":
-                        # 强制转录并返回最终文本
-                        final_text = await transcriber.flush()
-                        await ws.send_json({"type": "final", "text": final_text})
+                        # 冲刷剩余音频。转录结果由 on_final 回调推送
+                        # （flush 内部的 _transcribe_segment 会走同一条路径），
+                        # 这里**不能**再把 flush() 的返回值发一遍 ——
+                        # 它返回的是整场累积文本，早期实现那样发，客户端
+                        # 每次停止都会看到整段转写被重复追加（实测两条 final）。
+                        await transcriber.flush()
+                        # 只回一个完成信号，便于客户端确认冲刷结束
+                        await ws.send_json({"type": "flushed"})
                     elif msg.get("type") == "reset":
                         transcriber.reset()
                 except json.JSONDecodeError:

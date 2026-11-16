@@ -54,6 +54,9 @@ services:
     env_file:
       - .env
     environment:
+      # 容器里仍是老的 Whisper 链路：镜像没装 transformers 4.x/qwen-asr，
+      # Qwen3-ASR 后端目前只支持本机（.venv-stt + 本地权重）。
+      - STT_BACKEND=faster_whisper
       - STT_MODEL=${STT_MODEL:-base}
       - STT_DEVICE=${STT_DEVICE:-cpu}
       - STT_COMPUTE_TYPE=${STT_COMPUTE_TYPE:-int8}

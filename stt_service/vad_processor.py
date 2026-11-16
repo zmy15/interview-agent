@@ -400,6 +400,13 @@ class VADProcessor:
         #     preroll_seconds 秒（用于接住被 VAD 判定延迟的起头字）；
         #   - 一旦判定开始说话：把窗口里的帧作为前置缓冲并入 buffer，
         #     之后只累积说话期间的帧。
+        # 顺序很关键：从静默切到语音的**那一帧**必须先让前置窗口入 buffer，
+        # 再把自己追加进去。早期实现是先 _append_frame（当前帧进 buffer）、
+        # 之后才 _promote_preroll（把更早的帧 extend 到它后面），于是开头
+        # 变成「最新一帧 + 之前的 0.3 秒」，等于把起头那个字倒着重放了一遍。
+        # Whisper 上只表现为开头含糊，Qwen3-ASR 会直接把它听成「你你」。
+        if self._state == VADState.SILENCE and is_speech:
+            self._promote_preroll()
         self._append_frame(audio_frame, is_speech)
 
         events = []
@@ -412,7 +419,6 @@ class VADProcessor:
                 self._speech_start_time = ts
                 self._silence_start_time = None
                 self._pause_notified = False
-                self._promote_preroll()
         else:  # SPEECH
             # 注意：不能写 `self._speech_start_time or ts` —— 语音从第 0 秒
             # 就开始时，_speech_start_time 是 0.0（falsy），会被错误地替换成

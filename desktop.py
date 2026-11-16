@@ -2284,6 +2284,24 @@ def voice_services_enabled() -> tuple[bool, bool]:
 class _MicroService:
     """在隐藏子进程中运行的语音微服务"""
 
+    #: 服务目录 → 需要使用的独立虚拟环境（存在才用）
+    #
+    # STT 默认跑 Qwen3-ASR，它要求 transformers 4.x，而主环境是 5.x
+    # 给 RAG 的 sentence-transformers 用，两者不能共存 —— 所以单独建
+    # .venv-stt。没有这个目录时退回主解释器（此时只适合 Whisper 后端）。
+    VENV_BY_SERVICE = {"stt_service": ".venv-stt"}
+
+    @staticmethod
+    def python_for(directory: str) -> str:
+        root = os.path.dirname(os.path.abspath(__file__))
+        venv = _MicroService.VENV_BY_SERVICE.get(directory)
+        if venv:
+            for parts in (("Scripts", "python.exe"), ("bin", "python")):
+                exe = os.path.join(root, venv, *parts)
+                if os.path.isfile(exe):
+                    return exe
+        return sys.executable
+
     def __init__(self, name: str, directory: str, module: str, host: str, port: int):
         self.name = name
         self.directory = directory
@@ -2354,8 +2372,11 @@ class _MicroService:
         log_path = os.path.join(log_dir, f"{self.name.lower()}-service.log")
         try:
             self.log_file = open(log_path, "a", encoding="utf-8")
+            python_exe = self.python_for(self.directory)
+            if python_exe != sys.executable:
+                logger.info("🎙 %s 使用独立解释器: %s", self.name, python_exe)
             self.process = subprocess.Popen(
-                [sys.executable, "-X", "faulthandler", "-m", "uvicorn",
+                [python_exe, "-X", "faulthandler", "-m", "uvicorn",
                  f"{self.directory}.{self.module}:app", "--host", self.host,
                  "--port", str(self.port), "--log-level",
                  os.getenv("LOG_LEVEL", "info").lower(), "--no-access-log"],

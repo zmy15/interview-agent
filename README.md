@@ -424,8 +424,12 @@ LLM usage | prompt=1504 (cache_hit=1408, cache_miss=96) | cache_hit_rate=93.6%  
 | `VOICE_ENABLED` | `false` | 语音功能总开关 |
 | `STT_ENABLED` | `false` | 语音识别（语音转文字） |
 | `TTS_ENABLED` | `false` | 语音合成（文字转语音） |
-| `STT_MODEL` | `base` | Whisper 模型：`tiny` / `base` / `small` / `medium` / `large-v3-turbo` |
-| `STT_DEVICE` | `cpu` | 推理设备：`cpu` / `cuda`（GPU 需 **CUDA 12**：cuBLAS 12 + cuDNN 9） |
+| `STT_BACKEND` | `qwen3_asr` | 识别后端：`qwen3_asr`（中文更准）/ `faster_whisper`（旧 Whisper 链路） |
+| `STT_QWEN_MODEL` | `Qwen/Qwen3-ASR-0.6B` | Qwen3-ASR 权重：HF repo id 或本地目录（相对路径按项目根解析）。1.7B 更准但约 4GB 显存 |
+| `STT_LANGUAGE` | `auto` | `auto` = Qwen 自判语种（中英混说更稳）/ `zh` = 强制中文 |
+| `STT_QWEN_MAX_NEW_TOKENS` | `256` | Qwen3-ASR 单块最大生成 token 数 |
+| `STT_MODEL` | `base` | Whisper 模型（仅 `STT_BACKEND=faster_whisper` 时生效）：`tiny` / `base` / `small` / `medium` / `large-v3-turbo` |
+| `STT_DEVICE` | `cpu` | 推理设备：`cpu` / `cuda`。Whisper 需 **CUDA 12**（cuBLAS 12 + cuDNN 9）；Qwen 需 **CUDA 版 torch** |
 | `STT_COMPUTE_TYPE` | `int8` | 量化类型：`int8` / `float16` / `int8_float16`（留空按设备自动：GPU→float16，CPU→int8） |
 | `STT_SERVICE_URL` | `http://stt:8000` | STT 微服务地址（本地运行为 `http://localhost:8001`） |
 | `STT_WS_URL` | `ws://stt:8000/stream` | STT WebSocket 地址 |
@@ -751,7 +755,7 @@ pre-commit install          # 安装 git hook，之后每次 commit 自动检查
 | Token 计数与裁剪 | tiktoken (cl100k_base) |
 | 文档解析 | PyMuPDF + python-docx |
 | 联网搜索 | DuckDuckGo Search |
-| STT | faster-whisper（CTranslate2）+ Silero VAD |
+| STT | Qwen3-ASR-0.6B（transformers）/ faster-whisper（CTranslate2）可切换 + Silero VAD |
 | TTS | Piper TTS |
 
 ### 前端
@@ -839,9 +843,24 @@ pre-commit install          # 安装 git hook，之后每次 commit 自动检查
 
 - **三个开关默认全为 `false`**，未启用时接口不注册、依赖不加载，对系统零影响。
 - **本地运行时**，`STT_SERVICE_URL` / `TTS_SERVICE_URL` 需指向 `http://localhost:8001` / `http://localhost:8002`；Docker 内部网络则是 `http://stt:8000` / `http://tts:8000`。`start.bat` 会自动设置前者。
-- **`STT_DEVICE=cuda` 需要 CUDA 12**：`faster-whisper` 1.x 依赖 `ctranslate2` 4.x，其 wheel 只提供 CUDA 12 构建，因此需要 CUDA 12 的 **cuBLAS + cuDNN 9**（Windows 轮子里自带 `cudnn64_9.dll`），与 `torch` 无关。缺运行库时模型加载会直接失败（如 `CUDA failed with error ...` 或找不到 cuBLAS DLL），请把 `STT_DEVICE` 改回 `cpu`。
-- **想用 CUDA 11.8 跑 GPU**：只能整体降级到 `ctranslate2==3.24.0` + `faster-whisper==0.10.1`（Python ≤ 3.12，且 PyAV 10 没有 Windows wheel），不推荐；详见 `stt_service/requirements.txt` 顶部说明。
-- **Whisper 模型选择**：`tiny` / `base` 体积小但中文准确率偏低，建议使用 `large-v3-turbo`。
+- **两种识别后端**（`STT_BACKEND`）：
+  - `qwen3_asr`（默认）：中文、方言准确率明显高于 Whisper，0.6B 权重约 1.8GB 显存、6 秒音频约 1 秒出字。
+  - `faster_whisper`：原链路，CPU 也能跑，生态更老。
+- **Qwen3-ASR 必须跑在独立环境 `.venv-stt` 里**：官方 `qwen-asr` 要求 `transformers==4.57.6`，而主环境是 5.x（RAG 的 `sentence-transformers` 依赖它），两者装一起会互相降级。`start.ps1` 首次启动会自动创建该环境；手动创建：
+  ```bash
+  python -m venv .venv-stt
+  .venv-stt/Scripts/pip install torch --index-url https://download.pytorch.org/whl/cu126
+  .venv-stt/Scripts/pip install --no-deps qwen-asr
+  .venv-stt/Scripts/pip install "transformers==4.57.6" "accelerate==1.12.0" nagisa soynlp pytz librosa \
+      numpy onnxruntime fastapi uvicorn websockets python-multipart python-dotenv soundfile zhconv
+  ```
+  （`qwen-asr` 的依赖链里有个需要编译的 `sox`，Windows 上常装不上，因此用 `--no-deps` 再逐个装运行时依赖。）
+- **权重**：默认从 `models/Qwen3-ASR-0.6B` 加载（相对路径按项目根解析，不联网）。也可填 HF repo id 让它在首次启动时下载；想更准可换 `Qwen/Qwen3-ASR-1.7B`（约 4GB 显存）。
+- **`STT_DEVICE=cuda` 的后端差异**：
+  - Whisper 走 `ctranslate2`，需要 CUDA 12 的 **cuBLAS + cuDNN 9**（与 `torch` 无关）。
+  - Qwen3-ASR 走 `torch`，必须是 **CUDA 版 torch**（PyPI 的 Windows 轮子是 CPU 版，要用 `--index-url https://download.pytorch.org/whl/cu126`）。
+- **想用 CUDA 11.8 跑 Whisper GPU**：只能整体降级到 `ctranslate2==3.24.0` + `faster-whisper==0.10.1`（Python ≤ 3.12，且 PyAV 10 没有 Windows wheel），不推荐；详见 `stt_service/requirements.txt` 顶部说明。
+- **Whisper 模型选择**（仅 `STT_BACKEND=faster_whisper`）：`tiny` / `base` 体积小但中文准确率偏低，建议使用 `large-v3-turbo`。
 - 首次转录时 STT 需要加载模型，因此心跳与连接超时设置得比较宽松，避免误报「连不上」。
 
 ### 前端与本地存储
