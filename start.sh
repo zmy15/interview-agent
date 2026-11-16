@@ -67,6 +67,10 @@ if [ ! -f ".env" ]; then
     if [ -f ".env.example" ]; then
         cp .env.example .env
         echo -e "${YELLOW}[提示]${NC} 已创建 .env，请编辑填入你的 DEEPSEEK_API_KEY"
+        # 按本机硬件决定识别后端：有可用独显 → Qwen3-ASR(GPU)，否则 → Whisper(CPU)
+        if [ -f "scripts/detect_stt_env.py" ]; then
+            "$SYS_PYTHON" scripts/detect_stt_env.py --patch .env || true
+        fi
     else
         echo -e "${RED}[警告]${NC} .env.example 也不存在，请手动创建 .env 文件"
     fi

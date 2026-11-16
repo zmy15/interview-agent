@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Interview Agent 桌面版启动器（无窗口 + 系统托盘）。
 
@@ -221,6 +221,12 @@ if (-not (Test-Path (Join-Path $root '.env'))) {
     if (Test-Path (Join-Path $root '.env.example')) {
         Copy-Item (Join-Path $root '.env.example') (Join-Path $root '.env')
         Write-Log '[提示] 未找到 .env，已从 .env.example 复制；请填入 DEEPSEEK_API_KEY 与 JWT_SECRET' 'WARN'
+
+        # 按本机硬件决定识别后端：有可用独显 → Qwen3-ASR(GPU)，否则 → Whisper(CPU)
+        $detector = Join-Path $root 'scripts\detect_stt_env.py'
+        if (Test-Path $detector) {
+            & $python $detector --patch (Join-Path $root '.env')
+        }
     }
 }
 

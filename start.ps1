@@ -214,6 +214,15 @@ if (-not (Test-Path $envFile)) {
     if (Test-Path (Join-Path $root '.env.example')) {
         Copy-Item -Path (Join-Path $root '.env.example') -Destination $envFile
         Write-Host '[提示] 已创建 .env，请编辑填入你的 DEEPSEEK_API_KEY 和 JWT_SECRET' -ForegroundColor Yellow
+
+        # 模板里的 STT 默认值对每台机器都一样，但两个后端对硬件的要求差很多：
+        # 没有独显却用 Qwen3-ASR，一句 6 秒的话要十几秒，表现为「识别卡死」。
+        # 因此刚复制完就探测一次：有可用 GPU → Qwen3-ASR(GPU)，否则 → Whisper(CPU)。
+        # 只改 STT_BACKEND / STT_DEVICE / STT_MODEL 三行，其它配置与注释保留。
+        $detector = Join-Path $root 'scripts\detect_stt_env.py'
+        if (Test-Path $detector) {
+            & $python $detector --patch $envFile
+        }
     } else {
         Write-Host '[警告] .env.example 也不存在，请手动创建 .env 文件' -ForegroundColor Yellow
     }
@@ -303,11 +312,20 @@ if ($voiceAnswer -match '^\s*(y|yes)\s*$') {
     # HuggingFace 镜像（国内必须，否则模型下载超时）
     if (-not $env:HF_ENDPOINT) { $env:HF_ENDPOINT = 'https://hf-mirror.com' }
 
+    # 默认值跟随 .env 里的 STT_DEVICE —— 首次启动时该值由
+    # scripts/detect_stt_env.py 按本机显卡写入（有独显即 cuda）。
+    $detectedDevice = 'cpu'
+    $deviceLine = Select-String -Path $envFile -Pattern '^STT_DEVICE=' -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($deviceLine) { $detectedDevice = ($deviceLine.Line -replace '^STT_DEVICE=', '').Trim() }
+    $defaultChoice = if ($detectedDevice -eq 'cuda') { '2' } else { '1' }
+
     Write-Host ''
     Write-Host '  STT 推理设备选择：'
     Write-Host '    [1] CPU'
-    Write-Host '    [2] GPU'
-    $deviceAnswer = Read-Host '请选择 [1/2]（默认 1）'
+    Write-Host "    [2] GPU（本机检测结果：$detectedDevice）"
+    $deviceAnswer = Read-Host "请选择 [1/2]（默认 $defaultChoice）"
+    if (-not $deviceAnswer) { $deviceAnswer = $defaultChoice }
     if ($deviceAnswer -eq '2') {
         $env:STT_DEVICE = 'cuda'
         $sttPkgs = @('faster-whisper', 'ctranslate2')

@@ -857,6 +857,23 @@ pre-commit install          # 安装 git hook，之后每次 commit 自动检查
 | **纯 CPU 机器** | `faster_whisper` | `cpu` | 主 `.venv` |
 | 有独显但显存吃紧 | `faster_whisper` | `cuda` | 主 `.venv` |
 
+**首次启动会自动探测硬件**：`.env` 从 `.env.example` 复制出来后，`start.ps1` / `start_app.ps1` / `start.sh` 会立刻调用 `scripts/detect_stt_env.py` 改写这三项 —— 有 ≥6GB 显存、驱动 ≥525 的 NVIDIA 显卡就用 `qwen3_asr` + `cuda`，否则退回 `faster_whisper` + `cpu` + `small`。判定保守（宁可退回 Whisper，也不让首启卡死），可以随时手动覆盖：
+
+```bash
+python scripts/detect_stt_env.py              # 只打印判定结果
+python scripts/detect_stt_env.py --patch .env # 按本机硬件重写 .env
+python scripts/detect_stt_env.py --json       # 供脚本调用
+```
+
+首次启动的下载量（权重都是**服务首次启动时**才拉，装的只是环境）：
+
+| 内容 | 位置 | 体积 |
+|---|---|---|
+| Qwen 环境（torch + qwen-asr） | `.venv-stt/` | ~4.8GB |
+| Qwen3-ASR-0.6B 权重 | HF 缓存（或 `.env` 指定的 `models/`） | 1.8GB |
+| Whisper 环境（faster-whisper） | 主 `.venv/` | ~100MB |
+| Whisper 权重 | HF 缓存 | base 145MB / small 480MB |
+
 CPU 机器切回 Whisper 的最小步骤：
 
 1. 改 `.env`（四行）：
