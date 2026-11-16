@@ -188,8 +188,10 @@ python main.py --desktop --no-topmost --width 1366 --height 768
 | `--opacity N` | `1.0` | 窗口透明度 `0.2`–`1.0`（也可写 `20`–`100` 百分数） |
 | `--zoom N` | `1.0` | 界面缩放 `0.5`–`2.0`（也可写百分数） |
 | `--capture-exclude [BOOL]` | `true` | 从截屏 / 录屏中排除窗口（仅 native 真正生效） |
+| `--click-through [BOOL]` | `false` | 鼠标穿透：点击 / 滚轮直接落到窗口下方，可编辑被浮窗盖住的文本。运行中按 **F9** 或托盘菜单切换（仅 native 生效） |
 | `--hide-taskbar [BOOL]` | `false` | 隐藏任务栏图标（开 `--tray` 时默认变为 `true`） |
 | `--tray [BOOL]` | `false` | 显示系统托盘图标：单击显隐窗口，右键可退出 |
+| `--tray-notify [BOOL]` | `false` | 托盘气泡提示（注册时 + 收进托盘时各一次）。默认关闭，因为 Win11 会渲染成右下角系统通知并遮挡内容 |
 | `--close-to-tray [BOOL]` | 跟随 `--tray` | 点 X 收进托盘而不是退出（浏览器模式无法拦截） |
 | `--fullscreen [BOOL]` | `false` | 全屏启动 |
 | `--app PATH` | — | 启动后打开的页面，如 `--app /login` |
@@ -831,6 +833,7 @@ pre-commit install          # 安装 git hook，之后每次 commit 自动检查
 - **`--capture-exclude` 仅在 native 模式真正生效**，browser 模式受 Windows 跨进程限制无法生效（界面上该开关显示为禁用）。
 - **`--opacity` 下限为 20%**，避免窗口过淡导致无法操作。
 - 窗口项（置顶 / 透明度 / 缩放 / 捕获排除 / 隐藏任务栏）均可在界面「设置」面板中**运行中实时调整**，启动参数只决定初始状态。
+- **鼠标穿透（`--click-through`）**：给窗口加 `WS_EX_TRANSPARENT | WS_EX_LAYERED`，让命中测试跳过本窗口，点击 / 滚轮直接落到下面的编辑器或浏览器，从而「透过浮窗编辑后面的文本」。注意它作用于**整个窗口**（Windows 没有跨进程的分区穿透），开启后本窗口的按钮、滑块、拖拽全部失效，只能用 **F9** 或**托盘菜单**关回来 —— 代码里因此做了保护：F9 注册失败且没有托盘图标时会拒绝开启，避免把自己锁死。浏览器 `--app` 模式窗口属于浏览器进程，无法穿透。
 
 ### 语音功能
 

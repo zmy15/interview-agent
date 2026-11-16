@@ -91,11 +91,20 @@ WDA_EXCLUDEFROMCAPTURE = 0x00000011  # Win10 2004+：截屏/录屏中完全不�
 GWL_EXSTYLE = -20
 WS_EX_TOOLWINDOW = 0x00000080   # 不在任务栏 / Alt-Tab 中显示
 WS_EX_APPWINDOW = 0x00040000    # 强制在任务栏显示（与 TOOLWINDOW 互斥）
-WS_EX_LAYERED = 0x00080000      # 分层窗口（透明度的前提）
+WS_EX_LAYERED = 0x00080000      # 分层窗口（透明度 / 鼠标穿透的前提）
+WS_EX_TRANSPARENT = 0x00000020  # 鼠标穿透：命中测试跳过本窗口，点击落到下层窗口
+WS_EX_NOACTIVATE = 0x08000000   # 不抢焦点（穿透时键盘焦点必须留在下层窗口）
 
 # SetLayeredWindowAttributes 的 flags
 LWA_COLORKEY = 0x00000001
 LWA_ALPHA = 0x00000002
+
+# SetWindowPos 的 flags：改完扩展样式后需要 SWP_FRAMECHANGED 让 DWM 重算
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOZORDER = 0x0004
+SWP_NOACTIVATE = 0x0010
+SWP_FRAMECHANGED = 0x0020
 
 # 透明度取值范围（0-255）；低于该下限窗口将难以操作，因此做保护性限制
 MIN_OPACITY = 0.20
@@ -133,10 +142,12 @@ MOD_NOREPEAT = 0x4000
 # 虚拟键码：F1..F24 连续排列，VK_F1 = 0x70
 VK_F1 = 0x70
 VK_F8 = 0x77
+VK_F9 = 0x78
 VK_F24 = 0x87
 
 # 热键 id（同一线程内唯一即可）
 _HOTKEY_ID_F8 = 1
+_HOTKEY_ID_CLICK_THROUGH = 2
 
 _user32 = None
 _kernel32 = None
@@ -466,6 +477,59 @@ def get_window_opacity(hwnd: int) -> Optional[float]:
     if not ok or not (flags.value & LWA_ALPHA):
         return None
     return alpha.value / 255.0
+
+
+def set_click_through(hwnd: int, enabled: bool = True) -> bool:
+    """开启 / 关闭鼠标穿透（点击、滚轮全部落到窗口下方的其它窗口）。
+
+    原理：
+      * WS_EX_TRANSPARENT 让系统的命中测试跳过本窗口 —— 点击不再落在它身上，
+        而是继续找下面的窗口，于是可以直接操作被它盖住的编辑器 / 浏览器。
+      * WS_EX_LAYERED 是它在现代 Windows 上生效的前提（本项目的透明度也用
+        同一个样式位，所以两者的开关互不干扰）。
+      * WS_EX_NOACTIVATE 让窗口即使被显示 / 移动也不抢焦点 —— 穿透期间键盘
+        焦点必须留在下层窗口，否则用户点得到却打不出字。
+
+    代价（必须知道）：开启后本窗口收不到任何鼠标消息，前端按钮、滑块、拖拽
+    全部失效，只能靠全局热键（F9）或托盘菜单关回来。关闭时会把上面两个
+    临时样式一并摘掉，恢复成普通可交互窗口。
+
+    关于 WebView2：样式加在**顶层窗口**上就够了 —— 系统的命中测试会先把整个
+    顶层窗口跳过，不会再往下走它的子窗口。若某个版本上发现点击仍被吃掉，
+    再对 WebView2 的子 HWND（Chrome_WidgetWin_*）补同样的样式。
+    """
+    if not IS_WINDOWS or not hwnd:
+        return False
+
+    hwnd_ptr = ctypes.c_void_p(hwnd)
+    ex_style = int(_get_window_long(hwnd_ptr, GWL_EXSTYLE))
+    new_style = ex_style | WS_EX_LAYERED
+    if enabled:
+        new_style |= WS_EX_TRANSPARENT | WS_EX_NOACTIVATE
+    else:
+        # 关闭时不要留下 NOACTIVATE：否则点标题栏也唤不醒窗口，像「点不动」
+        new_style &= ~(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE)
+
+    if new_style != ex_style:
+        _set_window_long(hwnd_ptr, GWL_EXSTYLE, new_style)
+
+    # 分层窗口改扩展样式后必须让 DWM 重算，否则会出现「样式改了但行为没变」
+    ok = _user32.SetWindowPos(
+        hwnd_ptr, None, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+    )
+    if not ok:
+        logger.debug("SetWindowPos(FRAMECHANGED) 失败 (hwnd=%s, err=%s)",
+                     hwnd, ctypes.get_last_error())
+    return True
+
+
+def is_click_through(hwnd: int) -> bool:
+    """读取窗口当前是否处于鼠标穿透状态"""
+    if not IS_WINDOWS or not hwnd:
+        return False
+    ex_style = int(_get_window_long(ctypes.c_void_p(hwnd), GWL_EXSTYLE))
+    return bool(ex_style & WS_EX_TRANSPARENT)
 
 
 def find_window_by_pid(pid: int, need_title: bool = False) -> int:
@@ -966,7 +1030,11 @@ class GlobalHotkey:
         }
 
     def _name(self) -> str:
-        return "F8" if self._vk == VK_F8 else f"VK_{self._vk:#04x}"
+        if self._vk == VK_F8:
+            return "F8"
+        if self._vk == VK_F9:
+            return "F9"
+        return f"VK_{self._vk:#04x}"
 
     # ── 线程体 ──
 
@@ -1115,6 +1183,31 @@ class WindowControlApi:
                              "（浏览器 --app 模式下窗口属于浏览器进程）"}
         return {"ok": True, "capture_exclude": ctrl.capture_exclude, "error": None}
 
+    # ── 鼠标穿透 ──
+
+    def set_click_through(self, enabled) -> dict:
+        """开启 / 关闭鼠标穿透（开启后本窗口不再接收任何鼠标输入）"""
+        ctrl = self._controller
+        target = _parse_bool_arg(enabled)
+        return ctrl.apply_click_through(target)
+
+    def toggle_click_through(self) -> dict:
+        """在「可交互」与「鼠标穿透」之间切换"""
+        ctrl = self._controller
+        return ctrl.apply_click_through(not ctrl.click_through)
+
+    def get_click_through(self) -> dict:
+        """查询当前鼠标穿透状态（以窗口实际样式为准）"""
+        ctrl = self._controller
+        value = is_click_through(ctrl.hwnd) if ctrl.hwnd else ctrl.click_through
+        ctrl.click_through = bool(value)
+        return {
+            "ok": True,
+            "click_through": ctrl.click_through,
+            "hotkey": "F9",
+            "error": None,
+        }
+
     def get_state(self) -> dict:
         """返回当前窗口状态，供前端初始化控件。
 
@@ -1138,6 +1231,9 @@ class WindowControlApi:
             "capture_exclude": ctrl.capture_exclude,
             "capture_supported": actual_capture is not None,
             "hide_taskbar": ctrl.hide_taskbar,
+            # 鼠标穿透：开启后窗口不可操作，只能靠 F9 或托盘菜单关回来
+            "click_through": ctrl.click_through,
+            "click_through_hotkey": "F9",
             "min_opacity": MIN_OPACITY,
             "max_opacity": MAX_OPACITY,
             # 缩放同透明度一样给出倍率与百分数两种形式
@@ -1244,6 +1340,7 @@ class NativeWindow:
         debug: bool = False,
         opacity: float = MAX_OPACITY,
         zoom: float = DEFAULT_ZOOM,
+        click_through: bool = False,
     ):
         self.url = url
         self.title = title
@@ -1257,6 +1354,12 @@ class NativeWindow:
         self.opacity = clamp_opacity(opacity)
         # 界面缩放倍率（1.0 = 100%），生效方式见 apply_zoom
         self.zoom = clamp_zoom(zoom)
+        # 鼠标穿透：开启后点击直接落到窗口下方（见 set_click_through）
+        self.click_through = bool(click_through)
+        # 托盘是否已就绪 —— 穿透开启后唯一的图形化解锁入口，见 apply_click_through
+        self.has_tray = False
+        # 由 TrayController 注入：穿透状态变化时回调，用于刷新托盘菜单文案
+        self._click_through_hook: Optional[Callable[[bool], None]] = None
 
         self.window = None
         self.hwnd: int = 0
@@ -1271,8 +1374,15 @@ class NativeWindow:
         # 全局热键：窗口失焦时也能触发截图
         self.hotkey: Optional[GlobalHotkey] = None
         self.hotkey_callback_name: str = ""
+        # 鼠标穿透的「解锁」热键：穿透后窗口收不到鼠标，没有它就只能关进程
+        self.click_through_hotkey: Optional[GlobalHotkey] = None
         if IS_WINDOWS:
             self.hotkey = GlobalHotkey(self._on_hotkey_fired)
+            self.click_through_hotkey = GlobalHotkey(
+                self._on_click_through_hotkey,
+                hotkey_id=_HOTKEY_ID_CLICK_THROUGH,
+                vk=VK_F9,
+            )
         # 暴露给前端的桥接 API（window.pywebview.api）
         self.api = WindowControlApi(self)
 
@@ -1371,6 +1481,81 @@ class NativeWindow:
         if abs(self.zoom - DEFAULT_ZOOM) < 1e-9:
             return
         self._set_native_zoom(self.zoom)
+
+    # ── 鼠标穿透 ──
+
+    def apply_click_through(self, enabled: bool) -> dict:
+        """开启 / 关闭鼠标穿透，返回 {"ok", "click_through", "error"}。
+
+        安全约束（重要）：穿透一旦生效，本窗口就收不到任何鼠标消息 —— 如果既
+        没有 F9、也没有托盘图标，用户就再也找不到入口关掉它。因此「开启」前
+        先确认至少存在一个解锁入口，否则直接拒绝开启（宁可开不了，也不要锁死）。
+        """
+        target = bool(enabled)
+        if not IS_WINDOWS:
+            return {"ok": False, "click_through": self.click_through,
+                    "error": "鼠标穿透仅支持 Windows"}
+        if not self.hwnd:
+            return {"ok": False, "click_through": self.click_through,
+                    "error": "窗口句柄尚未就绪"}
+
+        if target and not self._ensure_click_through_hotkey() and not self.has_tray:
+            return {"ok": False, "click_through": self.click_through,
+                    "error": "全局热键 F9 注册失败且没有托盘图标，"
+                             "开启后将无法关闭穿透，已取消"}
+
+        if not set_click_through(self.hwnd, target):
+            return {"ok": False, "click_through": self.click_through,
+                    "error": "设置鼠标穿透失败"}
+
+        self.click_through = target
+        self._notify_click_through()
+        return {"ok": True, "click_through": self.click_through, "error": None}
+
+    def _ensure_click_through_hotkey(self) -> bool:
+        """确保 F9 已注册；注册失败返回 False（调用方据此拒绝开启穿透）"""
+        hotkey = self.click_through_hotkey
+        if hotkey is None:
+            return False
+        if hotkey.status().get("ok"):
+            return True
+        return bool(hotkey.start().get("ok"))
+
+    def _on_click_through_hotkey(self) -> None:
+        """F9：切换鼠标穿透（在热键线程上执行，不能抛异常打断消息循环）"""
+        try:
+            result = self.apply_click_through(not self.click_through)
+        except Exception as exc:  # pragma: no cover
+            logger.error("⌨️ F9：切换鼠标穿透异常: %s", exc)
+            return
+        if result.get("ok"):
+            logger.info("⌨️ F9：鼠标穿透已%s",
+                        "开启（点击将穿过窗口落到下方）" if self.click_through else "关闭")
+        else:
+            logger.warning("⌨️ F9：切换鼠标穿透失败 —— %s", result.get("error"))
+
+    def _notify_click_through(self) -> None:
+        """把穿透状态同步给前端与托盘（两者都可能不存在，全部静默容错）"""
+        if self.window is not None:
+            state = "true" if self.click_through else "false"
+            try:
+                self.window.evaluate_js(
+                    "window.__onClickThroughChanged && "
+                    f"window.__onClickThroughChanged({state})"
+                )
+            except Exception as exc:  # pragma: no cover
+                logger.debug("通知前端穿透状态失败: %s", exc)
+
+        hook = self._click_through_hook
+        if hook is not None:
+            try:
+                hook(self.click_through)
+            except Exception as exc:  # pragma: no cover
+                logger.debug("通知托盘穿透状态失败: %s", exc)
+
+    def set_click_through_hook(self, callback: Optional[Callable[[bool], None]]) -> None:
+        """由托盘注入：穿透状态变化时回调（用于更新菜单文案）"""
+        self._click_through_hook = callback
 
     def _on_hotkey_fired(self) -> None:
         """全局热键触发（在热键线程里）→ 调用前端登记的 JS 回调。
@@ -1499,6 +1684,25 @@ class NativeWindow:
             else:
                 opacity_state = "设置失败"
 
+        # F9 必须**在窗口就绪时就注册**：它是穿透的双向开关，若像早期版本那样
+        # 等到「开启穿透」时才懒注册，用户从「未穿透」状态按 F9 会毫无反应。
+        if self._ensure_click_through_hotkey():
+            logger.info("⌨️ 全局热键 F9 已注册（鼠标穿透开关，窗口失焦同样有效）")
+        else:
+            status = self.click_through_hotkey.status() if self.click_through_hotkey else {}
+            logger.warning(
+                "⚠ 全局热键 F9 注册失败（%s）；鼠标穿透只能用界面开关或托盘菜单切换",
+                status.get("error") or "当前平台不支持",
+            )
+
+        # 鼠标穿透：启动参数指定时立即生效（F9 / 托盘菜单可随时解除）
+        click_through_state = "关"
+        if self.click_through:
+            result = self.apply_click_through(True)
+            click_through_state = (
+                "开（点击穿过窗口）" if result.get("ok") else f"失败（{result.get('error')}）"
+            )
+
         capture_state = "关"
         if self.capture_exclude:
             if set_capture_exclusion(hwnd, True):
@@ -1517,13 +1721,14 @@ class NativeWindow:
 
         logger.info(
             "🪟 原生窗口已就绪 (HWND=%s)：置顶=%s, 透明度=%s, 捕获排除=%s, "
-            "隐藏任务栏=%s, 界面缩放=%s",
+            "隐藏任务栏=%s, 界面缩放=%s, 鼠标穿透=%s",
             hwnd,
             "开" if self.topmost else "关",
             opacity_state,
             capture_state,
             taskbar_state,
             zoom_state,
+            click_through_state,
         )
         self._started.set()
 
@@ -1689,10 +1894,14 @@ class TrayController:
     def __init__(self, window, icon_path: Optional[str] = None,
                  log_path: Optional[str] = None,
                  quit_callback: Optional[Callable[[], None]] = None,
-                 close_to_tray: bool = True):
+                 close_to_tray: bool = True,
+                 notify: bool = False):
         self.window = window          # NativeWindow / DesktopWindow 实例
         self.icon_path = icon_path
         self.log_path = log_path
+        # 是否允许弹托盘气泡。Windows 11 会把它渲染成右下角的系统通知
+        # （标题是 "Python"），遮挡内容且需要手动关，因此默认关闭。
+        self.notify = bool(notify)
         # native 模式下 webview.start() 会一直阻塞在 GUI 事件循环里，
         # 没有「主循环」可以发现退出标志，因此直接给出关闭回调，
         # 由托盘线程调用 window.close()（pywebview 的 destroy 允许跨线程，
@@ -1724,7 +1933,11 @@ class TrayController:
             on_toggle=self._on_toggle,
             on_open_log=self._open_log,
             on_quit=self._request_quit,
-            balloon="已最小化到托盘：单击图标显示窗口，右键可退出",
+            on_click_through=self._on_click_through,
+            click_through=bool(getattr(self.window, "click_through", False)),
+            # notify=False 时不带 NIF_INFO：注册托盘图标就不会再弹系统通知
+            balloon=("已最小化到托盘：单击图标显示窗口，右键可退出"
+                     if self.notify else None),
         )
         ok = self.tray.start()
         if not ok:
@@ -1732,7 +1945,15 @@ class TrayController:
                            "请从任务管理器结束进程")
             return False
 
-        logger.info("🗂 托盘图标已就绪（单击显示/隐藏，右键退出）")
+        # 托盘是鼠标穿透唯一的图形化解锁入口（详见 NativeWindow.apply_click_through），
+        # 因此这里先告诉窗口「托盘可用」，再订阅它的状态变化以刷新菜单文案。
+        if hasattr(self.window, "has_tray"):
+            self.window.has_tray = True
+        subscribe = getattr(self.window, "set_click_through_hook", None)
+        if callable(subscribe):
+            subscribe(self._on_click_through_state_changed)
+
+        logger.info("🗂 托盘图标已就绪（单击显示/隐藏，右键退出 / 切换鼠标穿透）")
         # 托盘存在时，点右上角 X = 收进托盘（而不是退出）。
         # 装不上就退回原行为：X 直接退出，不会出现「点了没反应」。
         self._install_close_handler()
@@ -1816,13 +2037,32 @@ class TrayController:
         hide_window(hwnd)
         if self.tray is not None:
             self.tray.update_visibility(False)
-            if announce:
+            # 气泡同样受 --tray-notify 控制（默认不弹，避免右下角通知遮挡内容）
+            if announce and self.notify:
                 self.tray.notify(
                     "Interview Agent",
                     "已最小化到托盘，应用仍在后台运行。单击图标可重新显示，右键可退出。",
                 )
         logger.info("🗂 窗口已收进托盘（应用继续运行；托盘右键可退出）")
         return True
+
+    def _on_click_through(self, enabled: bool) -> None:
+        """托盘菜单：切换鼠标穿透（运行在托盘线程上）"""
+        apply = getattr(self.window, "apply_click_through", None)
+        if not callable(apply):
+            logger.warning("当前窗口模式不支持鼠标穿透")
+            return
+        result = apply(bool(enabled))
+        if result.get("ok"):
+            logger.info("🗂 托盘：鼠标穿透已%s",
+                        "开启（点击穿过窗口）" if result.get("click_through") else "关闭")
+        else:
+            logger.warning("🗂 托盘：切换鼠标穿透失败 —— %s", result.get("error"))
+
+    def _on_click_through_state_changed(self, enabled: bool) -> None:
+        """窗口侧穿透状态变化 → 刷新托盘菜单文案"""
+        if self.tray is not None:
+            self.tray.set_click_through_state(bool(enabled))
 
     def _open_log(self) -> None:
         """打开日志文件（控制台不可见时的主要排查入口）"""
@@ -2282,10 +2522,20 @@ def build_parser() -> argparse.ArgumentParser:
                         help="[browser 模式] 浏览器用户数据目录（默认 ~/.interview-agent/desktop-profile）")
     window.add_argument("--hide-taskbar", type=_str2bool, nargs="?", const=True, default=False,
                         help="隐藏任务栏图标（默认关闭）")
+    window.add_argument("--click-through", type=_str2bool, nargs="?", const=True,
+                        default=False,
+                        help="启动后立即开启鼠标穿透：点击与滚轮直接落到窗口下方的其它窗口，"
+                             "本窗口仍可见但完全不可操作（用于透过浮窗编辑后面的内容）。"
+                             "运行中按 F9 或托盘菜单切换；关闭时会把窗口样式恢复原样")
     window.add_argument("--tray", type=_str2bool, nargs="?", const=True, default=False,
                         help="在系统托盘显示图标（默认关闭）。开启后：单击图标显示/隐藏窗口，"
                              "右键菜单可退出。窗口隐藏时任务栏图标会一并移除，"
                              "避免留下一个点不开的死按钮。")
+    window.add_argument("--tray-notify", type=_str2bool, nargs="?", const=True,
+                        default=False,
+                        help="托盘弹气泡提示（默认关闭）。开启后注册托盘时会弹一次"
+                             "「已最小化到托盘」，点 X 收进托盘时再弹一次 —— "
+                             "Windows 11 会把它显示成右下角的系统通知并遮挡内容")
     window.add_argument("--close-to-tray", type=_str2bool, nargs="?", const=True, default=None,
                         help="点窗口右上角 X 时收进托盘而不是退出（默认跟随 --tray："
                              "开了托盘就收进托盘）。想保留「X 直接退出」可传 false。"
@@ -2458,6 +2708,9 @@ def run_desktop(args: argparse.Namespace) -> int:
                 "该模式下「捕获排除」受系统限制无法生效（窗口属于浏览器进程）。"
             )
 
+    if shell == "browser" and args.click_through:
+        logger.warning("⚠ 浏览器窗口模式无法实现鼠标穿透（窗口属于浏览器进程），该项已忽略")
+
     if shell == "native":
         if not is_native_available():
             logger.error("❌ 未安装 pywebview，无法使用 native 窗口。"
@@ -2466,6 +2719,9 @@ def run_desktop(args: argparse.Namespace) -> int:
             return 1
         if not IS_WINDOWS:
             logger.warning("⚠ native 窗口的「置顶 / 捕获排除」仅在 Windows 上生效。")
+        elif args.click_through and not args.tray:
+            # 穿透后窗口点不到，F9 是唯一回程入口；提醒一次，别让用户以为应用卡死
+            logger.info("ℹ 已开启鼠标穿透：按 F9 可随时恢复窗口交互")
         logger.info("🧩 窗口实现: native（pywebview / Edge WebView2）")
         window = NativeWindow(
             url=url,
@@ -2479,6 +2735,7 @@ def run_desktop(args: argparse.Namespace) -> int:
             debug=args.debug,
             opacity=_parse_opacity_arg(args.opacity),
             zoom=clamp_zoom(args.zoom),
+            click_through=args.click_through,
         )
         logger.info("ℹ 关闭窗口或按 Ctrl+C 即可退出应用")
 
@@ -2494,6 +2751,7 @@ def run_desktop(args: argparse.Namespace) -> int:
                 log_path=log_path,
                 quit_callback=window.close,
                 close_to_tray=args.close_to_tray,
+                notify=args.tray_notify,
             )
             tray_ctrl.start()
 
@@ -2574,6 +2832,7 @@ def run_desktop(args: argparse.Namespace) -> int:
                                    "assets", "tray.ico"),
             log_path=log_path,
             close_to_tray=args.close_to_tray,
+            notify=args.tray_notify,
         )
         # 等 hwnd 就绪（特效线程负责写入），最多等 20 秒
         deadline = time.time() + 20.0
@@ -2662,6 +2921,11 @@ def _apply_env_defaults(args: argparse.Namespace) -> None:
         if args.tray:
             args.hide_taskbar = True
         args.hide_taskbar = env_bool("DESKTOP_HIDE_TASKBAR", args.hide_taskbar)
+
+    if "click_through" not in took_arg:
+        args.click_through = env_bool("DESKTOP_CLICK_THROUGH", args.click_through)
+    if "tray_notify" not in took_arg:
+        args.tray_notify = env_bool("DESKTOP_TRAY_NOTIFY", args.tray_notify)
 
     if "close_to_tray" not in took_arg:
         # 没显式指定时跟随托盘开关：开了托盘就把 X 变成「收进托盘」。

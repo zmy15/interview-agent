@@ -157,7 +157,7 @@ class FakeWindow:
 class TestTrayController:
     """TrayController 的编排逻辑（不依赖真实 Shell）"""
 
-    def _make(self, monkeypatch, window, tray_start_ok=True):
+    def _make(self, monkeypatch, window, tray_start_ok=True, notify=False):
         from desktop import TrayController
 
         made = {}
@@ -183,7 +183,7 @@ class TestTrayController:
 
         monkeypatch.setattr(tray_mod, "TrayIcon", FakeTray)
         monkeypatch.setattr(tray_mod, "available", lambda: True)
-        ctrl = TrayController(window, log_path=None)
+        ctrl = TrayController(window, log_path=None, notify=notify)
         # 屏蔽等待 hwnd 的后台线程，让用例保持同步
         monkeypatch.setattr(ctrl, "_sync_visibility_when_ready", lambda *a, **k: None)
         return ctrl, made
@@ -194,7 +194,14 @@ class TestTrayController:
         assert made["on_toggle"] == ctrl._on_toggle
         assert made["on_quit"] == ctrl._request_quit
         assert "显示" in made["tooltip"] and "隐藏" in made["tooltip"]
-        assert made["balloon"], "首次注册应带气泡提示，否则用户不知道图标在哪"
+        # 气泡默认关闭：Win11 会把它渲染成右下角系统通知，遮挡面试内容
+        assert made["balloon"] is None
+
+    def test_start_balloon_only_when_notify_enabled(self, monkeypatch):
+        """--tray-notify 打开时，注册托盘才带气泡提示"""
+        ctrl, made = self._make(monkeypatch, FakeWindow(), notify=True)
+        assert ctrl.start() is True
+        assert made["balloon"], "开启 --tray-notify 时应带气泡提示"
 
     def test_toggle_hides_then_taskbar_follows(self, monkeypatch):
         """隐藏窗口时必须先把任务栏按钮摘掉（否则留下点不开的死按钮）"""
@@ -379,6 +386,26 @@ class TestCloseToTray:
         assert ctrl.hide_to_tray(announce=True) is True
         assert ("hide", 9) in events, "应真的隐藏窗口"
         assert ("vis", False) in events, "托盘状态应同步为不可见"
+        assert not notifications, "默认不弹气泡（--tray-notify 关闭时）"
+
+    def test_hide_to_tray_notifies_when_enabled(self, monkeypatch):
+        """--tray-notify 打开时，收进托盘要气泡告知「应用还在运行」"""
+        import desktop
+
+        monkeypatch.setattr(desktop, "hide_window", lambda hwnd: True)
+        notifications = []
+
+        class FakeTray:
+            def update_visibility(self, v):
+                pass
+
+            def notify(self, title, text):
+                notifications.append((title, text))
+
+        ctrl = desktop.TrayController(FakeWindow(hwnd=9), notify=True)
+        ctrl.tray = FakeTray()
+
+        assert ctrl.hide_to_tray(announce=True) is True
         assert notifications and "托盘" in notifications[0][1], "应气泡告知用户还在运行"
 
     def test_hide_to_tray_without_hwnd_is_safe(self, monkeypatch):

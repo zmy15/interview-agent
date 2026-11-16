@@ -7,8 +7,8 @@
 托盘图标补上这个缺口：
 
     单击       显示 / 隐藏主窗口
-    右键       菜单：显示/隐藏、打开日志、退出
-    首次出现   气泡提示一次「已最小化到托盘」
+    右键       菜单：显示/隐藏、鼠标穿透、打开日志、退出
+    首次出现   可选气泡提示（默认关闭，见 desktop.py 的 --tray-notify）
 
 为什么不用 pystray
 ------------------
@@ -87,6 +87,7 @@ CMD_SHOW = 1002
 CMD_HIDE = 1003
 CMD_OPEN_LOG = 1004
 CMD_QUIT = 1005
+CMD_CLICK_THROUGH = 1006
 
 _IDI_APPLICATION = 32512
 
@@ -216,6 +217,8 @@ class TrayIcon:
         on_toggle: Optional[Callable[[], bool]] = None,
         on_open_log: Optional[Callable[[], None]] = None,
         on_quit: Optional[Callable[[], None]] = None,
+        on_click_through: Optional[Callable[[bool], None]] = None,
+        click_through: bool = False,
         title: str = "Interview Agent",
         balloon: Optional[str] = None,
     ):
@@ -224,6 +227,9 @@ class TrayIcon:
         self.on_toggle = on_toggle
         self.on_open_log = on_open_log
         self.on_quit = on_quit
+        # 鼠标穿透是「开了就点不到窗口」的开关，托盘菜单是它唯一的图形化入口
+        self.on_click_through = on_click_through
+        self.click_through = bool(click_through)
         self.title = title
         self.balloon = balloon
 
@@ -285,6 +291,10 @@ class TrayIcon:
     def update_visibility(self, visible: bool) -> None:
         """告诉托盘当前窗口是否可见（决定菜单里显示「显示」还是「隐藏」）"""
         self._window_visible = bool(visible)
+
+    def set_click_through_state(self, enabled: bool) -> None:
+        """告诉托盘当前鼠标穿透状态（决定菜单文案）"""
+        self.click_through = bool(enabled)
 
     # ── 内部实现 ──
 
@@ -404,6 +414,13 @@ class TrayIcon:
             else:
                 _user32.AppendMenuW(menu, MF_STRING, CMD_SHOW, "显示窗口")
             _user32.AppendMenuW(menu, MF_STRING, CMD_TOGGLE, "切换显示/隐藏")
+            # 穿透开启时窗口点不到，这里必须给回程入口（也可按 F9）
+            _user32.AppendMenuW(
+                menu, MF_STRING, CMD_CLICK_THROUGH,
+                "关闭鼠标穿透（恢复可交互，F9）"
+                if self.click_through else
+                "开启鼠标穿透（点击穿过窗口，F9）",
+            )
             _user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
             _user32.AppendMenuW(menu, MF_STRING, CMD_OPEN_LOG, "打开日志")
             _user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
@@ -425,7 +442,14 @@ class TrayIcon:
             self._handle_command(int(cmd))
 
     def _handle_command(self, cmd: int) -> None:
-        if cmd in (CMD_TOGGLE, CMD_SHOW, CMD_HIDE):
+        if cmd == CMD_CLICK_THROUGH:
+            if self.on_click_through:
+                try:
+                    # 状态由窗口侧回写（成功后经 set_click_through_hook 通知回来）
+                    self.on_click_through(not self.click_through)
+                except Exception as exc:  # pragma: no cover
+                    logger.warning("切换鼠标穿透失败: %s", exc)
+        elif cmd in (CMD_TOGGLE, CMD_SHOW, CMD_HIDE):
             self._toggle(force_show=cmd == CMD_SHOW, force_hide=cmd == CMD_HIDE)
         elif cmd == CMD_OPEN_LOG:
             if self.on_open_log:
