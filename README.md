@@ -845,7 +845,40 @@ pre-commit install          # 安装 git hook，之后每次 commit 自动检查
 - **本地运行时**，`STT_SERVICE_URL` / `TTS_SERVICE_URL` 需指向 `http://localhost:8001` / `http://localhost:8002`；Docker 内部网络则是 `http://stt:8000` / `http://tts:8000`。`start.bat` 会自动设置前者。
 - **两种识别后端**（`STT_BACKEND`）：
   - `qwen3_asr`（默认）：中文、方言准确率明显高于 Whisper，0.6B 权重约 1.8GB 显存、6 秒音频约 1 秒出字。
-  - `faster_whisper`：原链路，CPU 也能跑，生态更老。
+  - `faster_whisper`：原链路，纯 CPU 也能跑，生态更老。
+
+#### 在 Qwen3-ASR 与 Whisper 之间切换
+
+两个后端共用同一套代码路径，**只改 `.env` + 重启**，不用动代码：
+
+| 场景 | `STT_BACKEND` | `STT_DEVICE` | 依赖装在 |
+|---|---|---|---|
+| 有独显、中文优先（默认） | `qwen3_asr` | `cuda` | `.venv-stt` |
+| **纯 CPU 机器** | `faster_whisper` | `cpu` | 主 `.venv` |
+| 有独显但显存吃紧 | `faster_whisper` | `cuda` | 主 `.venv` |
+
+CPU 机器切回 Whisper 的最小步骤：
+
+1. 改 `.env`（四行）：
+   ```ini
+   STT_BACKEND=faster_whisper
+   STT_DEVICE=cpu
+   STT_MODEL=small          # CPU 实测 6s 音频 ≈2s；large-v3-turbo 约 5.8s（≈1x 实时）
+   STT_COMPUTE_TYPE=        # 留空 → CPU 自动 int8
+   ```
+2. 主环境装依赖（纯 CPU 机器**不需要**建 `.venv-stt`）：
+   ```bash
+   .venv/Scripts/pip install faster-whisper ctranslate2
+   ```
+3. 重启（`start.bat` 或 desktop）。`start.ps1` / `desktop.py` 会**按后端挑解释器**：Qwen → `.venv-stt`，Whisper → 主 `.venv`。这是必需的 —— `.venv-stt` 里没有 `faster-whisper`，拿它跑 Whisper 会直接 ImportError。
+4. 验证：`curl http://localhost:8001/health` 应返回 `"backend": "faster_whisper"`。
+
+几点说明：
+
+- **可以共存**：切换不需要重装任何东西，改回 `qwen3_asr` 就恢复。
+- **CPU 实测**（i5-13500HX / int8 / 6 秒中文）：`large-v3-turbo` 约 5.8s（≈1x 实时），够做文件转写、不够做实时字幕；`small` 约 2.1s（≈0.35x 实时），可做准实时，代价是术语与标点明显变差。
+- **想在 CPU 上硬跑 Qwen3-ASR** 也行（`STT_BACKEND=qwen3_asr` + `STT_DEVICE=cpu`，会自动用 float32），但 6 秒音频要十几秒，只适合离线场景。
+- **彻底移除 Qwen**：删 `.venv-stt` 与 `models/Qwen3-ASR-*`（合计约 6.6GB），再把 `STT_BACKEND` 设为 `faster_whisper`。
 - **Qwen3-ASR 必须跑在独立环境 `.venv-stt` 里**：官方 `qwen-asr` 要求 `transformers==4.57.6`，而主环境是 5.x（RAG 的 `sentence-transformers` 依赖它），两者装一起会互相降级。`start.ps1` 首次启动会自动创建该环境；手动创建：
   ```bash
   python -m venv .venv-stt

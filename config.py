@@ -209,6 +209,10 @@ class Settings:
     )
 
     # ── STT 语音识别配置 ──
+    # 识别后端: qwen3_asr（默认，中文更准）/ faster_whisper（CPU 更省）
+    STT_BACKEND: str = os.getenv("STT_BACKEND", "qwen3_asr")
+    # Qwen3-ASR 权重（repo id 或本地目录）
+    STT_QWEN_MODEL: str = os.getenv("STT_QWEN_MODEL", "Qwen/Qwen3-ASR-0.6B")
     # whisper 模型大小: tiny / base / small / medium
     STT_MODEL: str = os.getenv("STT_MODEL", "base")
     # 推理设备: cpu / cuda（cuda 需 CUDA 12 + cuDNN 9，见 README「语音功能」）

@@ -2288,26 +2288,47 @@ class _MicroService:
     #
     # STT 默认跑 Qwen3-ASR，它要求 transformers 4.x，而主环境是 5.x
     # 给 RAG 的 sentence-transformers 用，两者不能共存 —— 所以单独建
-    # .venv-stt。没有这个目录时退回主解释器（此时只适合 Whisper 后端）。
+    # .venv-stt。Whisper 后端仍用主解释器。
     VENV_BY_SERVICE = {"stt_service": ".venv-stt"}
 
+    #: STT_BACKEND 里表示 Qwen3-ASR 的写法（与 stt_config.resolve_backend 对齐）
+    _QWEN_BACKENDS = {"", "auto", "qwen", "qwen3", "qwen3asr", "qwen3_asr", "qwen-asr"}
+
     @staticmethod
-    def python_for(directory: str) -> str:
+    def python_for(directory: str, backend: str = "") -> str:
+        """选择启动该微服务的解释器。
+
+        **不能只看 .venv-stt 是否存在**：同一台机器上两种后端都会用到，
+        切回 Whisper 时若仍拿 .venv-stt（里面没有 faster-whisper），
+        服务会直接 ImportError 起不来。所以按后端来挑：
+          qwen3_asr      → .venv-stt（存在时）
+          faster_whisper → 主解释器
+        """
         root = os.path.dirname(os.path.abspath(__file__))
         venv = _MicroService.VENV_BY_SERVICE.get(directory)
-        if venv:
+        is_qwen = (backend or "").strip().lower() in _MicroService._QWEN_BACKENDS
+        if venv and (not backend or is_qwen):
             for parts in (("Scripts", "python.exe"), ("bin", "python")):
                 exe = os.path.join(root, venv, *parts)
                 if os.path.isfile(exe):
                     return exe
         return sys.executable
 
-    def __init__(self, name: str, directory: str, module: str, host: str, port: int):
+    def __init__(
+        self,
+        name: str,
+        directory: str,
+        module: str,
+        host: str,
+        port: int,
+        backend: str = "",
+    ):
         self.name = name
         self.directory = directory
         self.module = module
         self.host = host
         self.port = port
+        self.backend = backend
         self.process: Optional[subprocess.Popen] = None
         self.log_file = None
 
@@ -2372,7 +2393,7 @@ class _MicroService:
         log_path = os.path.join(log_dir, f"{self.name.lower()}-service.log")
         try:
             self.log_file = open(log_path, "a", encoding="utf-8")
-            python_exe = self.python_for(self.directory)
+            python_exe = self.python_for(self.directory, self.backend)
             if python_exe != sys.executable:
                 logger.info("🎙 %s 使用独立解释器: %s", self.name, python_exe)
             self.process = subprocess.Popen(
@@ -2447,6 +2468,8 @@ class VoiceServices:
                     module="main",
                     host=_service_host_from_url(settings.STT_SERVICE_URL),
                     port=_service_port_from_url(settings.STT_SERVICE_URL, 8001),
+                    # 决定用哪个解释器：qwen3_asr → .venv-stt，whisper → 主环境
+                    backend=settings.STT_BACKEND,
                 )
             )
         if want_tts:

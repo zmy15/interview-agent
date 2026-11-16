@@ -404,10 +404,13 @@ $ttsStarted = $false
 if ($voiceOn) {
     if (Test-PortFree -Port 8001 -Name 'STT') {
         Write-Host '[语音] 启动 STT 语音识别服务 (端口 8001)...'
-        # Qwen3-ASR 后端跑在独立环境 .venv-stt 里（transformers 4.x）
+        # Qwen3-ASR 后端跑在独立环境 .venv-stt 里（transformers 4.x）；
+        # Whisper 后端仍用主解释器 —— 反过来会让服务 ImportError 起不来。
         $sttPython = $python
         $sttVenvPython = Join-Path $root '.venv-stt\Scripts\python.exe'
-        if (Test-Path $sttVenvPython) { $sttPython = $sttVenvPython }
+        if ($backendShow -ne 'faster_whisper' -and (Test-Path $sttVenvPython)) {
+            $sttPython = $sttVenvPython
+        }
         Start-Process -FilePath $sttPython -ArgumentList @(
             '-m', 'uvicorn', 'stt_service.main:app', '--host', '0.0.0.0', '--port', '8001'
         ) -WorkingDirectory $root
