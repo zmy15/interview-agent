@@ -32,6 +32,7 @@ faster-whisper 与 Qwen3-ASR 可以按环境变量互换。
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import Any, Optional
 
@@ -158,6 +159,20 @@ class Qwen3AsrModel:
         self.model_path = model_path
         self.max_new_tokens = max(32, int(max_new_tokens))
 
+        # 本地目录不存在时，直接给出可操作的提示。
+        # 否则 transformers 会把这串路径当成 repo id 去 hub 上找，报
+        # 「models/Qwen3-ASR-1.7B is not a valid model identifier」——
+        # 既没下载，也看不出下一步该干什么。
+        if os.path.isabs(model_path) and not os.path.isdir(model_path):
+            raise FileNotFoundError(
+                f"Qwen3-ASR 权重目录不存在: {model_path}\n"
+                "  二选一：\n"
+                "    a) 想让它自动下载 —— 把 .env 的 STT_QWEN_MODEL 改成 repo id，"
+                "例如 Qwen/Qwen3-ASR-1.7B（首次启动会下载）；\n"
+                "    b) 想用本地目录 —— 先执行 "
+                "python scripts/download_qwen_asr.py --model Qwen/Qwen3-ASR-1.7B"
+            )
+
         if device == "cuda" and not torch.cuda.is_available():
             logger.warning(
                 "STT_DEVICE=cuda 但 torch 检测不到 CUDA（是否装成了 CPU 版？），"
@@ -174,12 +189,34 @@ class Qwen3AsrModel:
             "加载 Qwen3-ASR（path=%s device=%s dtype=%s）…",
             model_path, self.device, self.dtype,
         )
-        self._model = _Qwen3ASRModel.from_pretrained(
-            model_path,
-            dtype=self.dtype,
-            device_map=self.device,
-            max_new_tokens=self.max_new_tokens,
-        )
+        if self.device != "cpu":
+            try:
+                free, total = torch.cuda.mem_get_info()
+                logger.info(
+                    "显存：可用 %.1fGB / 共 %.1fGB（0.6B 约需 1.8GB，1.7B 约需 4.3GB）",
+                    free / 2**30, total / 2**30,
+                )
+            except Exception:  # pragma: no cover - 老驱动/受限环境拿不到
+                pass
+
+        try:
+            self._model = _Qwen3ASRModel.from_pretrained(
+                model_path,
+                dtype=self.dtype,
+                device_map=self.device,
+                max_new_tokens=self.max_new_tokens,
+            )
+        except Exception as exc:
+            # 8GB 显卡上 1.7B 很容易在开了浏览器/壁纸引擎时 OOM，
+            # 原始报错只有一行 "CUDA out of memory"，看不出该换模型
+            if "out of memory" in str(exc).lower():
+                raise RuntimeError(
+                    f"加载 Qwen3-ASR 显存不足（{model_path}）。\n"
+                    "  1.7B 约需 4.3GB 空闲显存，8GB 卡同时开着浏览器/壁纸引擎时很容易不够；\n"
+                    "  处理方式：换回 0.6B（STT_QWEN_MODEL=models/Qwen3-ASR-0.6B，约 1.8GB），"
+                    "或关掉占用显存的程序后重试。"
+                ) from exc
+            raise
         self._lock = threading.Lock()
         logger.info("Qwen3-ASR 加载完成")
 

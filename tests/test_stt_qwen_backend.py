@@ -77,6 +77,22 @@ def test_resolve_model_path_keeps_repo_id(monkeypatch, tmp_path):
     assert resolve_model_path("Qwen/Qwen3-ASR-0.6B") == "Qwen/Qwen3-ASR-0.6B"
 
 
+def test_resolve_model_path_missing_dir_under_existing_parent(monkeypatch, tmp_path):
+    """models/ 存在、子目录还没下载 → 仍按本地路径处理。
+
+    回归：用户写 `models/Qwen3-ASR-1.7B` 却没下载时，旧逻辑按 repo id
+    送去 hub，报「models/Qwen3-ASR-1.7B is not a valid model identifier」，
+    既没下载也看不出怎么修。父目录存在就说明这是本地路径。
+    """
+    (tmp_path / "models").mkdir()
+    monkeypatch.setattr(stt_config, "_PROJECT_ROOT", str(tmp_path))
+
+    resolved = resolve_model_path("models/Qwen3-ASR-1.7B")
+
+    assert resolved == os.path.join(str(tmp_path), "models", "Qwen3-ASR-1.7B")
+    assert os.path.isabs(resolved)
+
+
 def test_resolve_model_path_plain_name(monkeypatch, tmp_path):
     """单个目录名（无斜杠）一律按项目内相对路径处理"""
     monkeypatch.setattr(stt_config, "_PROJECT_ROOT", str(tmp_path))

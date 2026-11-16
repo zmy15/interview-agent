@@ -874,6 +874,24 @@ python scripts/detect_stt_env.py --json       # 供脚本调用
 | Whisper 环境（faster-whisper） | 主 `.venv/` | ~100MB |
 | Whisper 权重 | HF 缓存 | base 145MB / small 480MB |
 
+**换成 1.7B（更准，约 4GB）两种写法，别混着用：**
+
+```ini
+# 写法一：repo id —— 服务首次启动自动下载到 HF 缓存
+STT_QWEN_MODEL=Qwen/Qwen3-ASR-1.7B
+
+# 写法二：本地目录 —— 必须先把权重下到这个目录，服务不会替你下
+STT_QWEN_MODEL=models/Qwen3-ASR-1.7B
+```
+
+写法二配 `scripts/download_qwen_asr.py`：
+
+```bash
+python scripts/download_qwen_asr.py --model 1.7b     # 落到 models/Qwen3-ASR-1.7B
+```
+
+注意：`models/Qwen3-ASR-1.7B` 和 `Qwen/Qwen3-ASR-1.7B` 长得一模一样，但含义完全不同——前者是项目内目录，后者是 repo id。判断规则是「父目录是否存在」：`models/` 存在就当本地路径，不存在才当 repo id。写错了会在日志里给出明确提示，不会静默失败。
+
 CPU 机器切回 Whisper 的最小步骤：
 
 1. 改 `.env`（四行）：

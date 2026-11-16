@@ -29,17 +29,22 @@ DEFAULT_QWEN_MODEL = "Qwen/Qwen3-ASR-0.6B"
 
 
 def resolve_model_path(value: str) -> str:
-    """把 .env 里的模型路径归一成"绝对路径"或"HF repo id"。
+    """把 .env 里的模型路径归一成"本地绝对路径"或"HF repo id"。
 
     规则（按顺序判断）：
       1. 绝对路径 → 原样
       2. 相对项目根目录能命中已有目录 → 补成绝对路径
-      3. `org/name` 形式且本地不存在 → 当作 HF repo id，交给 transformers 下载
-      4. 其余（如 `models/xxx`） → 按项目根目录补全
+      3. 父目录存在（如 `models/` 是项目里的真实目录）→ 认定为本地的
+         "尚未下载"目录，补成绝对路径并给出可操作的提示
+      4. `org/name` 形式 → 当作 HF repo id，交给 transformers 自动下载
+      5. 其余 → 按项目根目录补全
 
-    为什么要区分 3 和 4：repo id 与相对路径长得一样（都含 "/"），
-    只能靠"本地是否真的存在"来判断；不存在时按 repo id 处理才能让首次
-    下载走通，同时打一条日志说明这不是笔误。
+    为什么第 3 条要排在 repo id 之前：
+        `models/Qwen3-ASR-1.7B` 与 `Qwen/Qwen3-ASR-1.7B` 长得一样（都是
+        `xxx/yyy`）。只按"本地存不存在"判断的话，用户写了 `models/...`
+        还没下载时会被当成 repo id 送去 hub，报「models/Qwen3-ASR-1.7B
+        is not a valid model identifier」——既没下载，也看不出该怎么修。
+        只要 `models/` 这个父目录真实存在，就说明用户写的是本地路径。
     """
     raw = (value or "").strip()
     if not raw:
@@ -51,6 +56,17 @@ def resolve_model_path(value: str) -> str:
     if os.path.isdir(candidate):
         return candidate
 
+    parent = os.path.dirname(candidate)
+    if parent and os.path.isdir(parent):
+        logger.warning(
+            "STT_QWEN_MODEL 指向的本地目录不存在: %s\n"
+            "        处理方式二选一：\n"
+            "          a) 直接填 repo id（如 Qwen/Qwen3-ASR-1.7B），服务首次启动会自动下载；\n"
+            "          b) 先把它下到该目录：python scripts/download_qwen_asr.py --model Qwen/Qwen3-ASR-1.7B",
+            candidate,
+        )
+        return candidate
+
     parts = raw.replace("\\", "/").split("/")
     looks_like_repo_id = (
         len(parts) == 2
@@ -59,7 +75,7 @@ def resolve_model_path(value: str) -> str:
         and not os.path.splitdrive(raw)[0]
     )
     if looks_like_repo_id:
-        logger.info("STT_QWEN_MODEL=%s 本地不存在，按 HF repo id 处理", raw)
+        logger.info("STT_QWEN_MODEL=%s 本地不存在，按 HF repo id 处理（首次加载会下载）", raw)
         return raw
 
     return candidate
