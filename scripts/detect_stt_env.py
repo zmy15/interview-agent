@@ -35,7 +35,7 @@ import os
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Optional
 
 # Qwen3-ASR-0.6B 权重约 1.8GB，还要留给 KV cache / 桌面合成；

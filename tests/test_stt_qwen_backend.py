@@ -17,15 +17,14 @@ import pytest
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_PROJECT_ROOT, "stt_service"))
 
-import stt_config  # noqa: E402
 import streaming_transcriber as st  # noqa: E402
+import stt_config  # noqa: E402
 from stt_config import (  # noqa: E402
     BACKEND_QWEN,
     BACKEND_WHISPER,
     resolve_backend,
     resolve_model_path,
 )
-
 
 # ══════════════════════════════════════════════════════════════
 # 配置解析
