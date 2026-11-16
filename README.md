@@ -104,7 +104,7 @@ JWT_SECRET=请换成一串足够长的随机字符串
 
 > **国内用户**：`.env.example` 已默认配置 HuggingFace 镜像 `HF_ENDPOINT=https://hf-mirror.com`，首次启动下载 Embedding 模型（约 90MB）无需额外操作。
 >
-> 也可以完全不填 `DEEPSEEK_API_KEY` —— 前端支持在界面上直接填写 API Key（仅存本地浏览器），此时界面的 Key 优先级更高。
+> 也可以完全不填 `DEEPSEEK_API_KEY` —— 在界面里填一次即可（密钥加密保存在服务端数据库，不进浏览器），此时界面的 Key 优先级更高。
 
 ### 第二步：选择一种启动方式
 
@@ -151,29 +151,15 @@ python main.py --desktop --no-topmost --width 1366 --height 768
 | 前端 | Vite dev（5173，热更新） | 后端托管的 `dist` 构建产物 |
 | 语音微服务 | 各自一个 cmd 窗口 | 桌面进程内，**不弹窗** |
 | 可见窗口 | 4 个控制台 + 1 个浏览器 | **只有 1 个独立窗口 + 托盘图标** |
-| 任务栏 | 多个按钮 | 默认不出现图标，由托盘图标代替 |
 
-> 桌面版**默认免登录**（单用户模式，数据归属本机账号 `desktop@local`）。想恢复登录页：`.env` 中设 `AUTH_REQUIRED=true`，或 `start_app.bat --auth-required true`。
->
-> 桌面版**默认不询问语音开关**，是否启用完全由 `.env` 中的 `VOICE_ENABLED` / `STT_ENABLED` / `TTS_ENABLED` 决定，保持双击即用。
->
-> **全程没有终端窗口**：启动器由 PowerShell 以 `-WindowStyle Hidden` 启动，应用用
-> `pythonw.exe` 运行，两者都不分配控制台。日志写入 `logs/start_app.log`（启动器）、
-> `logs/desktop.log`（应用）、`logs/app-stderr.log`（应用的标准错误，含未捕获异常的
-> traceback）。排查问题用 `.\start_app.ps1 -Foreground` 在当前终端里跑，日志直接可见。
->
-> **托盘图标**（`--tray`，启动器默认开启）：单击图标显示/隐藏窗口，右键菜单提供
-> 显示/隐藏、打开日志、退出。窗口隐藏时应用与服务继续在后台运行。窗口隐藏时任务栏
-> 图标一并移除，避免留下点不开的死按钮；不想要托盘可用 `-NoTray`，想保留任务栏图标
-> 用 `-ShowTaskbar`。
->
-> **点右上角 X = 收进托盘**（`--close-to-tray`，默认跟随 `--tray`），不会退出程序，
-> 并弹一次气泡提示告知「还在托盘里」。真正退出请用托盘右键菜单的「退出」。
-> 想保留旧的「X 直接退出」行为：`-ExtraArgs --close-to-tray false`。
-> 注意浏览器窗口模式（`--shell browser`）的窗口属于浏览器进程，**无法拦截关闭**，
-> 点 X 仍会退出应用。
->
-> 独立窗口要求先构建前端：`cd frontend && npm run build`（`start_app.ps1` 会在产物缺失或源码更新时自动重新构建）。
+几条默认行为：
+
+- **默认免登录**（单用户模式，数据归属本机账号 `desktop@local`）。想恢复登录页：`.env` 设 `AUTH_REQUIRED=true`，或 `start_app.bat --auth-required true`。
+- **默认不询问语音开关**，是否启用完全由 `.env` 的 `VOICE_ENABLED` / `STT_ENABLED` / `TTS_ENABLED` 决定。
+- **全程没有终端窗口**，日志写在 `logs/start_app.log`（启动器）、`logs/desktop.log`（应用）、`logs/app-stderr.log`（未捕获异常）。想看实时日志用 `.\start_app.ps1 -Foreground`。
+- **托盘图标**（默认开启）：单击显隐窗口，右键可打开日志或退出；窗口隐藏时连任务栏图标一起收回，不留点不开的死按钮。不想要托盘用 `-NoTray`。
+- **点右上角 X 是收进托盘**而不是退出（浏览器窗口模式无法拦截，点 X 仍会退出）。
+- 独立窗口要求先构建前端；`start_app.ps1` 会在产物缺失或源码更新时自动构建。
 
 **常用启动参数**
 
@@ -199,7 +185,7 @@ python main.py --desktop --no-topmost --width 1366 --height 768
 | `--browser PATH` | — | 【browser 模式】指定浏览器可执行文件 |
 | `--user-data-dir PATH` | `~/.interview-agent/desktop-profile` | 【browser 模式】浏览器用户数据目录 |
 | `--debug` | `false` | 【native 模式】开启 WebView 开发者工具 |
-| `--hide-console [BOOL]` | `true` | 启动后隐藏启动器控制台。**注意**：Windows 11 默认终端（Windows Terminal）下这个开关无效，见下方说明；用 `start_app.ps1` 启动不会有控制台 |
+| `--hide-console [BOOL]` | `true` | 启动后隐藏启动器控制台。**注意**：Windows 11 默认终端（Windows Terminal）下这个开关无效；用 `start_app.ps1` 启动则不会有控制台 |
 | `--auth-required [BOOL]` | `false` | 是否要求登录；`true` 恢复登录页 |
 | `--no-console` | `false` | 不输出启动日志 |
 | `--open-timeout SEC` | `90` | 等待服务就绪的最长秒数 |
@@ -211,11 +197,7 @@ python main.py --desktop --no-topmost --width 1366 --height 768
 | `native`（auto 时优先） | Edge WebView2 | ✅ | ✅ 真正生效 | ✅ 窗口失焦也能触发 | `pywebview` + WebView2 运行时 |
 | `browser` | 系统 Edge / Chrome `--app` | ✅ | ❌ 系统跨进程限制 | ⚠️ 仅窗口聚焦时 | 无（零依赖） |
 
-> 未安装 `pywebview` 时自动回退到 `browser` 模式，功能不受影响（仅捕获排除无效）。
->
-> **为什么 `browser` 做不到捕获排除？** Windows 的 `SetWindowDisplayAffinity` 只能作用于本进程拥有的窗口；`browser` 模式窗口属于浏览器进程，跨进程调用会被系统拒绝。`native` 模式下窗口由本进程创建，因此截屏 / 录屏 / 直播中该窗口内容不可见。
->
-> **为什么 `browser` 做不到全局热键？** 网页 JS 的 `keydown` 只在窗口聚焦时才有事件，这是浏览器的安全边界。`native` 模式改由 Python 侧调用 Win32 `RegisterHotKey` 注册，系统投递 `WM_HOTKEY`，因此焦点在任何窗口上都能触发。
+> 未安装 `pywebview` 时自动回退到 `browser` 模式，功能不受影响 —— 但 `browser` 模式的窗口属于浏览器进程，受系统安全边界限制，**做不到捕获排除与全局热键**（热键只在窗口聚焦时生效）。
 
 #### 方式三：Docker Compose
 
@@ -314,46 +296,6 @@ docker run -d \
 | `PROMPT_DOC_MAX_CHARS` | `80000` | 单份附加文档最多保留多少字符（超出截断） |
 | `PROMPT_DOC_MAX_TOTAL_CHARS` | `200000` | 所有附加文档合计字符上限（超出不再附加） |
 | `PROMPT_DOC_MAX_FILES` | `8` | 最多同时附加多少份文档 |
-
-### 上下文结构（前缀缓存）
-
-每轮发给模型的 messages 顺序固定为：
-
-```
-system:  静态指令 → 经验级别 → 轮次 → 岗位类型 → 题库/补充说明 → 简历 → JD →（时间预算）
-user:    历史提问……（每轮只在尾部追加）
-user:    本轮提问 + 【参考上下文】RAG / 联网搜索 / 编程题   ← 唯一每轮变化的部分
-```
-
-这套顺序是为**服务端前缀缓存（prefix caching）**服务的：DeepSeek 按 token
-前缀匹配 KV，只要前缀逐字节一致就能复用，省下重复的 prefill。因此
-
-- 静态指令排在简历/JD **之前**，跨会话可复用的前缀最长；
-- `system` 在同一场面试里只构建一次并进程内缓存，绝不逐轮重建；
-- RAG 检索结果、联网搜索、编程题等**每轮变化**的内容，一律追加到
-  **最后一条 user 消息的末尾**，绝不放进 `system`（放进去会让它之后的 KV 全部失效）；
-- token 裁剪只作用于对话部分，`system` 原样透传（裁它会让前缀变短、缓存失效）。
-
-界面「资料」上传的文档整场对话不变，所以同样不影响前缀缓存（换文档只会重建一次）。
-
-> **实测（deepseek-flash，2026-10）**：缓存确实是「从第 0 个 token 起的严格前缀匹配」。
-> 用同一段 nonce 前缀做对照实验——只改尾部时 `cache_hit=128`（命中前半段），
-> 而在前缀**中途**插入一句话则 `cache_hit=0`（整条前缀连同后面全部作废）。
-> 这就是「变化的内容只能放尾部」的实证依据。
->
-> 真实面试场景下同前缀连发三轮的命中率约 82–85%，未命中的部分正好是本轮新增的问答。
-> 需要复现可跑 `scripts/verify_prefix_cache.py`（只读 `.env` 的 Key，不写业务数据）。
-
-日志里可直接观测命中情况：
-
-```
-Prefix cache HIT | fp=xxxx | 1537 chars / ~1500 tokens      # 进程内前缀复用
-Context: 22 messages, ~1843 tokens (... prefix=cache, fp=xxxx)
-LLM usage | prompt=1504 (cache_hit=1408, cache_miss=96) | cache_hit_rate=93.6%   # 服务端前缀缓存
-```
-
-配置开关见 `PREFIX_CACHE_*`；`prefix=client` 表示前端回传的 system 与后端
-权威前缀一致（这是最理想的情况）。
 
 ### RAG 知识库
 
@@ -686,66 +628,16 @@ LLM usage | prompt=1504 (cache_hit=1408, cache_miss=96) | cache_hit_rate=93.6%  
 
 ---
 
-## 🧪 运行测试
+## 🧪 运行测试与代码检查
 
 ```bash
-pytest tests/ -v
+pytest tests/ -v      # 后端测试
+ruff check .          # Python 静态检查（可选）
 ```
 
-测试标记（`pytest.ini`）：
+带 `windows_only` / `slow` 标记的用例在 Linux CI 上跳过；CI 还会跑前端 `npm run build`（含 `tsc` 类型检查）。
 
-| 标记 | 含义 |
-|------|------|
-| `windows_only` | 依赖 Windows 专有依赖（`windows-capture` / `soundcard` / `pywebview`），在 Linux CI 上跳过 |
-| `slow` | 需要真实时间等待的用例 |
-
-CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）在 Ubuntu 上跑 Python 3.11 / 3.12 的后端测试，以及前端 `npm run build`（含 `tsc` 类型检查）。前端 Lint 目前**不阻断**构建（仓库存在历史 lint 问题）。
-
----
-
-## 🧹 代码检查（pre-commit）
-
-项目使用 [pre-commit](https://pre-commit.com) 在提交前自动检查代码，并由 [pre-commit.ci](https://pre-commit.ci) 在 PR 上自动运行与修复。
-
-### 本地启用
-
-```bash
-pip install pre-commit
-pre-commit install          # 安装 git hook，之后每次 commit 自动检查
-```
-
-### 常用命令
-
-| 命令 | 说明 |
-|------|------|
-| `pre-commit run --all-files` | 对全部文件跑一遍检查 |
-| `pre-commit run <hook-id>` | 只跑某个钩子，如 `pre-commit run trailing-whitespace` |
-| `pre-commit autoupdate` | 手动把钩子版本升级到最新 tag |
-| `git commit --no-verify` | 跳过本次检查（仅在确有必要时使用） |
-
-### 包含的检查
-
-| 钩子 | 作用 |
-|------|------|
-| `check-yaml` / `check-json` / `check-toml` | 校验配置文件语法 |
-| `check-merge-conflict` | 拦截未解决的合并冲突标记 |
-| `check-added-large-files` | 拦截超过 1MB 的大文件 |
-| `mixed-line-ending` | 统一换行为 LF |
-| `end-of-file-fixer` / `trailing-whitespace` | 修正文件末尾换行与行尾空白 |
-| `detect-private-key` | 兜底防止私钥误提交 |
-
-> Python 静态检查用 `ruff`，但不挂在 pre-commit 里（它的 `--fix` 会直接改文件，打断提交流程）。需要时手动执行 `ruff check .`，自动修复加 `--fix`；规则集见 `pyproject.toml` 的 `[tool.ruff.lint]`。
->
-> **未启用 `ruff-format`**：它会重写 64/70 个 Python 文件（约 3.7 万行），与功能改动混在一起会让代码审查失去意义。如需统一格式，建议单独开一个只做格式化的提交。
-
-### CI 行为
-
-登录 [pre-commit.ci](https://pre-commit.ci) 用 GitHub 账号授权本仓库即可启用，无需额外配置：
-
-- 每个 PR 自动运行钩子，并直接向 PR 提交修复
-- 钩子版本不自动升级（需要时手动 `pre-commit autoupdate`）
-- 在 PR 中单独一行评论 `pre-commit.ci run` 可重新触发
-- 提交信息含 `[skip ci]` / `[skip pre-commit.ci]` 时跳过
+提交前可选安装 [pre-commit](https://pre-commit.com)（`pip install pre-commit && pre-commit install`），它会检查配置语法、大文件、换行与行尾空白、私钥等；PR 上由 [pre-commit.ci](https://pre-commit.ci) 自动运行。
 
 ---
 
@@ -851,7 +743,7 @@ pre-commit install          # 安装 git hook，之后每次 commit 自动检查
 - **`--capture-exclude` 仅在 native 模式真正生效**，browser 模式受 Windows 跨进程限制无法生效（界面上该开关显示为禁用）。
 - **`--opacity` 下限为 20%**，避免窗口过淡导致无法操作。
 - 窗口项（置顶 / 透明度 / 缩放 / 捕获排除 / 隐藏任务栏）均可在界面「设置」面板中**运行中实时调整**，启动参数只决定初始状态。
-- **鼠标穿透（`--click-through`）**：给窗口加 `WS_EX_TRANSPARENT | WS_EX_LAYERED`，让命中测试跳过本窗口，点击 / 滚轮直接落到下面的编辑器或浏览器，从而「透过浮窗编辑后面的文本」。注意它作用于**整个窗口**（Windows 没有跨进程的分区穿透），开启后本窗口的按钮、滑块、拖拽全部失效，只能用 **F9** 或**托盘菜单**关回来 —— 代码里因此做了保护：F9 注册失败且没有托盘图标时会拒绝开启，避免把自己锁死。浏览器 `--app` 模式窗口属于浏览器进程，无法穿透。
+- **鼠标穿透（`--click-through`）**：点击与滚轮直接落到下层窗口，适合「透过浮窗编辑后面的文本」。它作用于**整个窗口**，开启后本窗口的按钮全部失效，只能按 **F9** 或从托盘菜单关回来；浏览器 `--app` 模式不支持。
 
 ### 语音功能
 
@@ -871,130 +763,39 @@ pre-commit install          # 安装 git hook，之后每次 commit 自动检查
 | **纯 CPU 机器** | `faster_whisper` | `cpu` | 主 `.venv` |
 | 有独显但显存吃紧 | `faster_whisper` | `cuda` | 主 `.venv` |
 
-**首次启动会自动探测硬件**：`.env` 从 `.env.example` 复制出来后，`start.ps1` / `start_app.ps1` / `start.sh` 会立刻调用 `scripts/detect_stt_env.py` 改写这三项 —— 有 ≥6GB 显存、驱动 ≥525 的 NVIDIA 显卡就用 `qwen3_asr` + `cuda`，否则退回 `faster_whisper` + `cpu` + `small`。判定保守（宁可退回 Whisper，也不让首启卡死），可以随时手动覆盖：
+首次启动会按本机硬件自动写入这三项（`python scripts/detect_stt_env.py --patch .env` 可手动重跑）：有 ≥6GB 显存的 NVIDIA 显卡走 Qwen + CUDA，否则退回 Whisper + CPU + `small`。
 
-```bash
-python scripts/detect_stt_env.py              # 只打印判定结果
-python scripts/detect_stt_env.py --patch .env # 按本机硬件重写 .env
-python scripts/detect_stt_env.py --json       # 供脚本调用
-```
+首次启动的下载量：Qwen 环境约 4.8GB + 权重 1.8GB（装在 `.venv-stt/`）；Whisper 环境约 100MB + 权重（`base` 145MB / `small` 480MB）。
 
-首次启动的下载量（权重都是**服务首次启动时**才拉，装的只是环境）：
+想换更大的 Qwen 权重：`STT_QWEN_MODEL=Qwen/Qwen3-ASR-1.7B`（repo id，自动下载）或 `STT_QWEN_MODEL=models/Qwen3-ASR-1.7B`（本地目录，先用 `python scripts/download_qwen_asr.py --model 1.7b` 下好）。
 
-| 内容 | 位置 | 体积 |
-|---|---|---|
-| Qwen 环境（torch + qwen-asr） | `.venv-stt/` | ~4.8GB |
-| Qwen3-ASR-0.6B 权重 | HF 缓存（或 `.env` 指定的 `models/`） | 1.8GB |
-| Whisper 环境（faster-whisper） | 主 `.venv/` | ~100MB |
-| Whisper 权重 | HF 缓存 | base 145MB / small 480MB |
-
-**换成 1.7B（更准，约 4GB）两种写法，别混着用：**
-
-```ini
-# 写法一：repo id —— 服务首次启动自动下载到 HF 缓存
-STT_QWEN_MODEL=Qwen/Qwen3-ASR-1.7B
-
-# 写法二：本地目录 —— 必须先把权重下到这个目录，服务不会替你下
-STT_QWEN_MODEL=models/Qwen3-ASR-1.7B
-```
-
-写法二配 `scripts/download_qwen_asr.py`：
-
-```bash
-python scripts/download_qwen_asr.py --model 1.7b     # 落到 models/Qwen3-ASR-1.7B
-```
-
-注意：`models/Qwen3-ASR-1.7B` 和 `Qwen/Qwen3-ASR-1.7B` 长得一模一样，但含义完全不同——前者是项目内目录，后者是 repo id。判断规则是「父目录是否存在」：`models/` 存在就当本地路径，不存在才当 repo id。写错了会在日志里给出明确提示，不会静默失败。
-
-CPU 机器切回 Whisper 的最小步骤：
-
-1. 改 `.env`（四行）：
-   ```ini
-   STT_BACKEND=faster_whisper
-   STT_DEVICE=cpu
-   STT_MODEL=small          # CPU 实测 6s 音频 ≈2s；large-v3-turbo 约 5.8s（≈1x 实时）
-   STT_COMPUTE_TYPE=        # 留空 → CPU 自动 int8
-   ```
-2. 主环境装依赖（纯 CPU 机器**不需要**建 `.venv-stt`）：
-   ```bash
-   .venv/Scripts/pip install faster-whisper ctranslate2
-   ```
-3. 重启（`start.bat` 或 desktop）。`start.ps1` / `desktop.py` 会**按后端挑解释器**：Qwen → `.venv-stt`，Whisper → 主 `.venv`。这是必需的 —— `.venv-stt` 里没有 `faster-whisper`，拿它跑 Whisper 会直接 ImportError。
-4. 验证：`curl http://localhost:8001/health` 应返回 `"backend": "faster_whisper"`。
+**CPU 机器切回 Whisper**：`.env` 改成 `STT_BACKEND=faster_whisper` / `STT_DEVICE=cpu` / `STT_MODEL=small`（`STT_COMPUTE_TYPE` 留空即自动 int8），主环境 `pip install faster-whisper ctranslate2`，重启即可 —— 启动脚本会按后端自动挑解释器（Qwen → `.venv-stt`，Whisper → 主 `.venv`）。验证：`curl http://localhost:8001/health` 的 `backend` 字段。
 
 几点说明：
 
-- **可以共存**：切换不需要重装任何东西，改回 `qwen3_asr` 就恢复。
-- **CPU 实测**（i5-13500HX / int8 / 6 秒中文）：`large-v3-turbo` 约 5.8s（≈1x 实时），够做文件转写、不够做实时字幕；`small` 约 2.1s（≈0.35x 实时），可做准实时，代价是术语与标点明显变差。
-- **想在 CPU 上硬跑 Qwen3-ASR** 也行（`STT_BACKEND=qwen3_asr` + `STT_DEVICE=cpu`，会自动用 float32），但 6 秒音频要十几秒，只适合离线场景。
-- **彻底移除 Qwen**：删 `.venv-stt` 与 `models/Qwen3-ASR-*`（合计约 6.6GB），再把 `STT_BACKEND` 设为 `faster_whisper`。
-- **Qwen3-ASR 必须跑在独立环境 `.venv-stt` 里**：官方 `qwen-asr` 要求 `transformers==4.57.6`，而主环境是 5.x（RAG 的 `sentence-transformers` 依赖它），两者装一起会互相降级。`start.ps1` 首次启动会自动创建该环境；手动创建：
-  ```bash
-  python -m venv .venv-stt
-  .venv-stt/Scripts/pip install torch --index-url https://download.pytorch.org/whl/cu126
-  .venv-stt/Scripts/pip install --no-deps qwen-asr
-  .venv-stt/Scripts/pip install "transformers==4.57.6" "accelerate==1.12.0" nagisa soynlp pytz librosa \
-      numpy onnxruntime fastapi uvicorn websockets python-multipart python-dotenv soundfile zhconv
-  ```
-  （`qwen-asr` 的依赖链里有个需要编译的 `sox`，Windows 上常装不上，因此用 `--no-deps` 再逐个装运行时依赖。）
-- **权重**：默认从 `models/Qwen3-ASR-0.6B` 加载（相对路径按项目根解析，不联网）。也可填 HF repo id 让它在首次启动时下载；想更准可换 `Qwen/Qwen3-ASR-1.7B`（约 4GB 显存）。
-- **`STT_DEVICE=cuda` 的后端差异**：
-  - Whisper 走 `ctranslate2`，需要 CUDA 12 的 **cuBLAS + cuDNN 9**（与 `torch` 无关）。
-  - Qwen3-ASR 走 `torch`，必须是 **CUDA 版 torch**（PyPI 的 Windows 轮子是 CPU 版，要用 `--index-url https://download.pytorch.org/whl/cu126`）。
-- **想用 CUDA 11.8 跑 Whisper GPU**：只能整体降级到 `ctranslate2==3.24.0` + `faster-whisper==0.10.1`（Python ≤ 3.12，且 PyAV 10 没有 Windows wheel），不推荐；详见 `stt_service/requirements.txt` 顶部说明。
-- **Whisper 模型选择**（仅 `STT_BACKEND=faster_whisper`）：`tiny` / `base` 体积小但中文准确率偏低，建议使用 `large-v3-turbo`。
-- 首次转录时 STT 需要加载模型，因此心跳与连接超时设置得比较宽松，避免误报「连不上」。
+- 两个后端**可以共存**，来回切换不用重装。Qwen 必须跑在独立环境 `.venv-stt`（它要求的 `transformers` 版本与主环境冲突），该环境由启动脚本首次启动时自动创建。
+- CPU 上 `small` 约 0.35x 实时（准实时，术语与标点偏弱），`large-v3-turbo` 约 1x（够转写、不够实时字幕）。
+- `STT_DEVICE=cuda` 时：Whisper 走 ctranslate2，需要 CUDA 12 的 cuBLAS + cuDNN 9；Qwen 走 torch，必须是 CUDA 版 torch。
+- 彻底不再用 Qwen：删 `.venv-stt` 与 `models/Qwen3-ASR-*`（合计约 6.6GB），再把 `STT_BACKEND` 设为 `faster_whisper`。
 
 ### 前端与本地存储
 
-- **API Key 保存在浏览器 localStorage 中（明文）**。界面已提示「仅保存在本地浏览器中，不会上传到服务器」，但共享机器上仍需注意。清除方式：把界面的 API Key 输入框留空并确认。
-- **登录令牌同样存在 localStorage**，收到 401 时会自动刷新。
-- **对话消息只保留最近 100 条**（两种模式各自独立），QA 记录保留最近 30 条。
-- **刷新页面会重置练习进度**，需要重新点击「开始模拟练习」。
-- **不要使用前端 dev server 作为生产部署方式**。`start.bat` / `start.sh` 启动的是带热更新的 dev server；Docker 与独立窗口模式才使用构建产物。
+- **登录令牌与界面偏好存在浏览器 localStorage**；API Key 不落本地 —— 它加密保存在服务端数据库，界面只显示掩码。
+- **对话消息只保留最近 100 条**（两种模式各自独立），QA 记录保留最近 30 条；刷新页面会重置练习进度。
+- **不要用前端 dev server 做生产部署**：`start.bat` / `start.sh` 起的是带热更新的 dev server，Docker 与独立窗口模式才使用构建产物。
 
 ### 启动脚本
 
-- `start.bat`（转调 `start.ps1`）/ `start.sh` / `start_app.ps1` 首次启动会自动创建 `.venv` 虚拟环境，并把 `requirements.txt` 装进这个虚拟环境（不污染系统 Python）。依赖装好后会在 `.venv` 里写一个标记，`requirements.txt` 未变化时下次启动直接跳过安装。
-- 自动创建虚拟环境需要 **Python 3.11+**；Linux 上若报「创建虚拟环境失败」，先装 `python3-venv`（`sudo apt install python3-venv`）。
-- `start.bat` 现在只是一个转发器（和 `start_app.bat` 同一套路），实际逻辑在同目录的 `start.ps1`：`start.bat` 负责双击可用，`start.ps1` 负责干活。`start.ps1` 支持 `-SkipDeps`（跳过建虚拟环境 + 装依赖，依赖已就绪时可明显加快启动）。
-- `start.ps1` / `start.sh` 会**交互询问**是否启用语音；`start_app.bat` / `start_app.ps1` 则完全从 `.env` 读取，不提问。
-- 语音相关的安装与设备选择在 `start.ps1` 中**只在当前窗口会话内生效，不会写回 `.env`**。想让配置长期生效，请手动写入 `.env`。
-- 脚本只检查「是否安装了 Node」，并未校验版本。由于前端使用 Vite 8，建议使用 **Node 20+**。
-- `start_app.bat` 接受并透传任意参数给 `desktop.py`，例如 `start_app.bat --width 1600 --height 900 --no-topmost`。
-- `start_app.ps1` 是实际干活的启动器，`start_app.bat` 只是转发（因为双击 .bat 一定会先出现一个终端窗口）。常用开关：
-  `-Foreground`（前台运行看日志）、`-SkipDeps`、`-NoBuild`、`-NoTray`、`-ShowTaskbar`。
-- **托盘模式下点窗口右上角 X 不会退出程序**，只会把窗口收进托盘（见上文 `--close-to-tray`）。
-  退出请用托盘图标的右键菜单。这个「关不掉」是刻意设计：避免面试进行中误点 X 丢掉会话。
-- **`start_app.ps1` 必须以 UTF-8 BOM 保存**：Windows PowerShell 5.1 在没有 BOM 时按系统
-  ANSI 代码页读取 `.ps1`，中文会变乱码并破坏引号配对，脚本直接语法报错。（PowerShell 7 不受影响。）
-
-### 为什么双击 .bat 的终端窗口藏不掉
-
-这不是没实现，而是 Windows 11 的终端架构决定的，实测结论：
-
-- 默认终端是 **Windows Terminal** 时，`cmd` 跑在 ConPTY 伪控制台里；
-- 子进程调用 `GetConsoleWindow()` 拿到的是 `conhost.exe` 名下的
-  `PseudoConsoleWindow`（真实类名，可用 `EnumWindows` 验证）；
-- 对它调用 `ShowWindow(SW_HIDE)` 会**返回成功**，`IsWindowVisible` 也变成 `False`，
-  但屏幕上那个真正的终端窗口纹丝不动。
-
-也就是说「应用自己去隐藏启动它的终端」这条路走不通。`start_app.ps1` 改用
-`Start-Process -WindowStyle Hidden`（经由 `STARTUPINFO.wShowWindow` 让系统从一开始就不
-显示窗口）+ `pythonw.exe`（GUI 子系统，不分配控制台），因此**根本不存在**需要隐藏的窗口。
-
-> 另一个相关坑：`pythonw.exe` 下 `sys.stdout` / `sys.stderr` 为空，未捕获异常的
-> traceback 会彻底消失。启动器因此显式把子进程的 stdout/stderr 重定向到
-> `logs/app-stdout.log` 与 `logs/app-stderr.log` —— 既拿到崩溃现场，也避免子进程
-> 继承启动器的句柄、在启动器退出后因句柄失效而静默死掉（这个坑实际踩过）。
+- `start.bat`（转发给 `start.ps1`）/ `start.sh` / `start_app.bat` 首次启动会自动创建 `.venv` 并装依赖（不污染系统 Python），`requirements.txt` 未变化时跳过安装。需要 **Python 3.11+**，前端需要 **Node 20+**。
+- `start.ps1` / `start.sh` 会交互询问是否启用语音；`start_app.*` 完全从 `.env` 读取、不提问。语音相关的选择只在当前窗口会话内生效，想长期生效请写进 `.env`。
+- `start.ps1` 支持 `-SkipDeps`（跳过建环境与装依赖）；`start_app.ps1` 支持 `-Foreground`（前台看日志）、`-SkipDeps`、`-NoBuild`、`-NoTray`、`-ShowTaskbar`。
+- **托盘模式下点窗口右上角 X 不会退出程序**，只会收进托盘；退出请用托盘右键菜单（刻意设计，避免面试中误点丢会话）。
 
 ### 排查技巧
 
-- `/api/*` 返回 404 且带「功能开关未开启」提示时，说明该功能的路由压根没注册 —— 检查对应的 `.env` 开关并**重启服务**。
-- 排查前端拿到 HTML 导致的 `Unexpected token '<'` 报错：本项目已在应用级把 `/api/*` 的 404 兜底为结构化 JSON，若仍见到该报错，请确认请求路径是否真的以 `/api` 开头。
-- 桌面版日志在 `logs/desktop.log`（控制台会被自动隐藏）。
-- 依赖装不上时优先检查网络；国内环境请确认 `HF_ENDPOINT` 未被改动。
-- **HuggingFace 下载卡在 0 字节**：`config.py` 已默认设置 `HF_HUB_DISABLE_XET=1`。新版 `huggingface_hub` 默认启用 Xet 存储后端，其域名不受 `HF_ENDPOINT` 影响，在国内会出现「元数据全部 200，但权重停在 0 字节」的现象。该变量必须**在任何 HF 相关库导入之前**注入，因此写在 `config.py` 顶部。
+- `/api/*` 返回 404 且带「功能开关未开启」提示 = 该功能的路由没注册，检查对应的 `.env` 开关并重启服务。
+- 桌面版日志在 `logs/desktop.log`，隐藏控制台后的 stdout/stderr 在 `logs/app-*.log`。
+- HuggingFace 下载卡在 0 字节：`config.py` 已默认设置 `HF_HUB_DISABLE_XET=1`；国内环境再确认 `HF_ENDPOINT` 未被改动。
 
 ---
 
