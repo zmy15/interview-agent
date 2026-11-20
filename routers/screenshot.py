@@ -121,10 +121,12 @@ async def capture(
 ):
     """截取整个屏幕，交给界面选中的模型识别题目并作答。
 
-    模型与思考模式都跟随界面选择：
+    模型跟随界面选择，思考模式使用截图专用配置：
         - req.model 为模型选择器里选中的模型；不支持图片输入时返回 400
           （明确告知「不支持」，而不是发出去让模型编答案）。
-        - req.thinking_enabled / req.reasoning_effort 与界面的思考开关一致。
+        - 思考模式不受界面的普通聊天开关影响，按
+          settings.SCREENSHOT_THINKING_ENABLED 处理。
+        - req.reasoning_effort 仍可使用模型选择器中的推理强度。
     """
     _ensure_enabled()
 
@@ -189,7 +191,7 @@ async def capture(
             history=req.messages,
             api_key=await resolve_api_key(request, db, user, explicit=req.api_key),
             model=req.model,
-            thinking=req.thinking_enabled,
+            thinking=settings.SCREENSHOT_THINKING_ENABLED,
             reasoning_effort=req.reasoning_effort,
         )
     except sc.CaptureError as exc:

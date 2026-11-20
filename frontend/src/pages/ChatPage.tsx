@@ -479,12 +479,13 @@ const ChatPage: React.FC = () => {
           // 图片仍然只有本次这一张。
           messages: historyMessages.length > 0 ? historyMessages : undefined,
           // 不传 api_key：后端会用该用户在数据库里加密保存的密钥
-          // 模型与思考配置跟随界面选择：
+          // 模型跟随界面选择：
           // 后端会用官方 /models 的 input_modalities 校验该模型能否看图，
           // 不支持时直接返回「不支持图片输入」，不会静默换成别的模型。
           model: selectedModel || undefined,
-          thinking_enabled: thinkingEnabled,
-          reasoning_effort: thinkingEnabled ? reasoningEffort : undefined,
+          // 截图答题始终使用思考模式；普通聊天的思考开关不影响这里。
+          thinking_enabled: true,
+          reasoning_effort: reasoningEffort,
         })
       } finally {
         // 恢复用户原本的捕获排除设置，不改变他的窗口行为

@@ -265,7 +265,7 @@ docker run -d \
 
 ## ⚙️ 配置项
 
-所有配置通过项目根目录的 `.env` 文件提供（模板见 [.env.example](.env.example)），由 [config.py](config.py) 读取。**命令行参数优先于 `.env`**，界面上的选择（模型、思考开关、推理强度）优先于 `.env` 中的默认值。
+所有配置通过项目根目录的 `.env` 文件提供（模板见 [.env.example](.env.example)），由 [config.py](config.py) 读取。**命令行参数优先于 `.env`**，普通聊天的界面选择（模型、思考开关、推理强度）优先于 `.env` 中的默认值；截图答题的思考模式使用独立配置，不受界面思考开关影响。
 
 ### 模型与 LLM
 
@@ -338,8 +338,8 @@ docker run -d \
 | `SCREENSHOT_VISION_MODEL` | 空 | 视觉模型兜底偏好；留空则自动选账号下第一个支持图片的模型 |
 | `SCREENSHOT_DIR` | `screenshots` | 截图保存目录 |
 | `SCREENSHOT_MAX_IMAGE_EDGE` | `0` | 上传前图片最长边（像素）；`0` 表示保留显示器原生分辨率 |
-| `SCREENSHOT_MAX_TOKENS` | `8192` | 单次回答最大 token 数 |
-| `SCREENSHOT_THINKING_ENABLED` | `false` | 截图问答默认是否启用思考模式 |
+| `SCREENSHOT_MAX_TOKENS` | `-1` | 单次回答最大 token 数；`-1` 表示不发送 `max_tokens`，不设本地限制 |
+| `SCREENSHOT_THINKING_ENABLED` | `true` | 截图问答是否启用思考模式；不受界面普通聊天开关影响 |
 | `SCREENSHOT_SAVE` | `true` | 是否把每次截图留档到磁盘 |
 
 ### 系统音频捕获
@@ -599,7 +599,7 @@ docker run -d \
 - 独立窗口模式下，截图前会自动把本应用从屏幕捕获中排除，不会把自己拍进去。
 - 全局热键被其它程序占用时会自动退化为窗口内快捷键。
 
-> **关于思考模式**：思维链与正文共享 `max_tokens` 预算，截图答题若开启思考容易导致正文被截断，因此默认关闭。若回答仍被截断，界面会明确标注。
+> **关于思考模式与输出长度**：截图答题默认开启思考模式，界面上的普通聊天思考开关不会影响截图。`SCREENSHOT_MAX_TOKENS=-1` 时不会向模型发送 `max_tokens`，不设本地输出上限；模型或服务端自身仍可能有硬限制。若发生截断，界面会明确标注。
 
 ---
 

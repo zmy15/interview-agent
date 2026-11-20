@@ -157,15 +157,13 @@ class Settings:
     # 上传给模型前图片的最长边；0 表示不缩放，直接使用显示器原生分辨率。
     # 设为正数时按宽高比缩小，但不会放大小图。
     SCREENSHOT_MAX_IMAGE_EDGE: int = int(os.getenv("SCREENSHOT_MAX_IMAGE_EDGE", "0"))
-    # 单次回答的最大 token 数。注意：DeepSeek 思考模式默认开启，
-    # 思维链与正文共享该预算，2048 容易被推理吃光导致正文被截断。
-    SCREENSHOT_MAX_TOKENS: int = int(os.getenv("SCREENSHOT_MAX_TOKENS", "8192"))
-    # 截图问答在界面未传思考开关时的默认值。
-    # 截图答题只要答案（不复述题干），不需要长链推理；
-    # 开启只会占用输出预算并拖慢响应，故默认关闭。
-    # （界面上的思考开关优先于本配置）
+    # 单次回答的最大 token 数；-1 表示不发送 max_tokens，不设置本地输出上限。
+    # 注意：思考模式的思维链与正文共享模型/服务端自身的输出预算。
+    SCREENSHOT_MAX_TOKENS: int = int(os.getenv("SCREENSHOT_MAX_TOKENS", "-1"))
+    # 截图答题是否启用思考模式。
+    # 该项独立于界面的普通聊天思考开关，截图请求始终按本配置处理，默认开启。
     SCREENSHOT_THINKING_ENABLED: bool = (
-        os.getenv("SCREENSHOT_THINKING_ENABLED", "false").lower() == "true"
+        os.getenv("SCREENSHOT_THINKING_ENABLED", "true").lower() == "true"
     )
     # 是否保存每次截图到磁盘
     SCREENSHOT_SAVE: bool = os.getenv("SCREENSHOT_SAVE", "true").lower() == "true"

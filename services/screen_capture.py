@@ -25,8 +25,8 @@
     `input_modalities` 判断它能否看图；不支持时直接返回「不支持图片输入」，
     绝不把图片发出去赌运气。
 
-    使用哪个模型、是否开启思考，均以界面上的选择为准（前端把当前选中的
-    模型与思考开关透传给 /screenshot/capture）。
+    使用哪个模型跟随界面选择；截图是否开启思考由
+    settings.SCREENSHOT_THINKING_ENABLED 独立控制，不受界面普通聊天开关影响。
 """
 
 from __future__ import annotations
@@ -586,9 +586,10 @@ async def ask_vision(
 ) -> tuple[str, str, bool]:
     """把截图交给 DeepSeek 视觉模型，返回 (回答文本, 实际模型名, 是否开启思考)。
 
-    模型与思考模式均以界面选择为准：
+    模型跟随界面选择，思考模式由调用方（截图路由）按截图专用配置决定：
         - model 为界面选中的模型；为空时才由后端挑选账号下的视觉模型。
-        - thinking / reasoning_effort 透传界面的思考开关与推理强度。
+        - thinking 默认读取 SCREENSHOT_THINKING_ENABLED；
+          reasoning_effort 透传模型选择器中的推理强度。
           思考模式下 temperature / presence_penalty / frequency_penalty
           不生效（传了不报错但被忽略），所以这里不传 temperature。
 
@@ -610,7 +611,10 @@ async def ask_vision(
         )
 
     client = get_client(api_key=api_key)
-    _max_tokens = int(max_tokens or settings.SCREENSHOT_MAX_TOKENS)
+    configured_max_tokens = (
+        settings.SCREENSHOT_MAX_TOKENS if max_tokens is None else max_tokens
+    )
+    _max_tokens = int(configured_max_tokens)
 
     if thinking is None:
         _thinking = settings.SCREENSHOT_THINKING_ENABLED
@@ -646,14 +650,19 @@ async def ask_vision(
     else:
         extra_body["thinking"] = {"type": "disabled"}
 
+    request_kwargs: dict = {
+        "model": _model,
+        "messages": messages,
+        "extra_body": extra_body,
+        "stream": False,
+    }
+    # -1（以及任何非正数）表示不设置本地输出上限。
+    # 直接传 -1 可能被 OpenAI 兼容接口拒绝，因此只在正数时才发送该参数。
+    if _max_tokens > 0:
+        request_kwargs["max_tokens"] = _max_tokens
+
     try:
-        resp = await client.chat.completions.create(
-            model=_model,
-            messages=messages,
-            max_tokens=_max_tokens,
-            extra_body=extra_body,
-            stream=False,
-        )
+        resp = await client.chat.completions.create(**request_kwargs)
     except Exception as exc:
         text = str(exc)
         if "401" in text or "Authentication" in text:
@@ -677,14 +686,26 @@ async def ask_vision(
     # 必须显式告知用户，否则「答案写到一半没了」会被误认为是模型能力问题。
     finish_reason = getattr(choice, "finish_reason", None)
     if finish_reason == "length":
-        logger.warning(
-            "视觉回答因达到 max_tokens=%s 被截断（model=%s）", _max_tokens, _model
-        )
-        content += (
-            f"\n\n---\n\n> ⚠️ **回答被截断**：已达到单次输出上限 "
-            f"（`SCREENSHOT_MAX_TOKENS={_max_tokens}`）。"
-            "可在 `.env` 中调大该值后重试。"
-        )
+        if _max_tokens > 0:
+            logger.warning(
+                "视觉回答因达到 max_tokens=%s 被截断（model=%s）",
+                _max_tokens,
+                _model,
+            )
+            content += (
+                f"\n\n---\n\n> ⚠️ **回答被截断**：已达到单次输出上限 "
+                f"（`SCREENSHOT_MAX_TOKENS={_max_tokens}`）。"
+                "可在 `.env` 中调大该值，或设为 `-1` 取消本地限制。"
+            )
+        else:
+            logger.warning(
+                "视觉回答在未设置本地 max_tokens 的情况下被截断（model=%s）",
+                _model,
+            )
+            content += (
+                "\n\n---\n\n> ⚠️ **回答被截断**：本地未设置输出上限"
+                "（`SCREENSHOT_MAX_TOKENS=-1`），但模型或服务端仍可能限制最大输出。"
+            )
 
     usage = getattr(resp, "usage", None)
     if usage:

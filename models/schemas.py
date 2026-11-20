@@ -305,7 +305,7 @@ class CaptureRequest(BaseModel):
     model: Optional[str] = None      # 覆盖视觉模型（界面选中的模型）
     api_key: Optional[str] = None    # 前端传入的 Key，覆盖 .env
     save: Optional[bool] = None      # 是否保存到磁盘，覆盖 settings.SCREENSHOT_SAVE
-    # 思考模式与推理强度：与界面上的模型/思考开关保持一致
+    # 兼容字段：截图答题忽略 thinking_enabled，思考模式由截图专用配置决定
     thinking_enabled: Optional[bool] = None
     reasoning_effort: Optional[str] = None  # "low" / "high" / "max"
 

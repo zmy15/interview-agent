@@ -1,7 +1,7 @@
 /**
  * 截图识别 API — 整屏截图 + 交给界面选中的模型识别题目并作答
  *
- * 模型与思考模式都跟随界面「模型选择器」：
+ * 模型跟随界面「模型选择器」；截图固定使用思考模式，不受普通聊天开关影响：
  * 后端会用官方 /models 的 input_modalities 校验该模型能否看图，
  * 不支持时直接返回「不支持图片输入」。
  */
@@ -45,7 +45,7 @@ export interface CaptureRequest {
   model?: string
   api_key?: string
   save?: boolean
-  /** 界面上的思考模式开关 */
+  /** 兼容字段；截图服务会忽略该值，始终按截图专用配置启用思考 */
   thinking_enabled?: boolean
   /** 思考模式下的推理强度 */
   reasoning_effort?: string

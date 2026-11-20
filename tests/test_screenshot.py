@@ -537,33 +537,16 @@ def test_capture_disabled_returns_503(client, monkeypatch):
 # ══════════════════════════════════════════════════════════════
 
 
-def test_vision_disables_thinking_by_default(client, fake_capture, fake_vision):
-    """默认必须显式关闭思考模式。
-
-    背景：DeepSeek 思考模式默认开启且 effort=high，思维链与正文共享
-    max_tokens 预算，导致截图问答的正文被截断（写到一半突然中断）。
-    因此请求体必须带上 thinking=disabled，不能依赖服务端默认值。
-    """
+def test_vision_enables_thinking_by_default(client, fake_capture, fake_vision):
+    """截图答题默认必须显式开启思考模式。"""
     resp = client.post("/screenshot/capture", json={"save": False})
     assert resp.status_code == 200, resp.text
 
     extra = fake_vision.get("extra_body")
-    assert extra, "必须传 extra_body，否则会走服务端默认（思考开启）"
-    assert extra.get("thinking") == {"type": "disabled"}
-
-
-def test_vision_can_enable_thinking(client, fake_capture, fake_vision, monkeypatch):
-    """需要时可显式开启思考模式，并带上 reasoning_effort"""
-    from config import settings
-
-    monkeypatch.setattr(settings, "SCREENSHOT_THINKING_ENABLED", True)
-
-    resp = client.post("/screenshot/capture", json={"save": False})
-    assert resp.status_code == 200, resp.text
-
-    extra = fake_vision["extra_body"]
+    assert extra, "必须传 extra_body，确保思考模式显式开启"
     assert extra.get("thinking") == {"type": "enabled"}
     assert extra.get("reasoning_effort")
+    assert resp.json()["thinking_enabled"] is True
 
 
 def test_vision_does_not_send_temperature(client, fake_capture, fake_vision):
@@ -573,11 +556,22 @@ def test_vision_does_not_send_temperature(client, fake_capture, fake_vision):
     assert "temperature" not in fake_vision
 
 
-def test_vision_max_tokens_is_generous(client, fake_capture, fake_vision):
-    """输出预算应足够大，不能被推理挤光"""
+def test_vision_omits_max_tokens_when_unlimited(client, fake_capture, fake_vision):
+    """SCREENSHOT_MAX_TOKENS=-1 时不发送 max_tokens，且不能传负数值"""
     resp = client.post("/screenshot/capture", json={"save": False})
     assert resp.status_code == 200, resp.text
-    assert fake_vision["max_tokens"] >= 4096
+    assert "max_tokens" not in fake_vision
+
+
+def test_vision_sends_positive_max_tokens(client, fake_capture, fake_vision, monkeypatch):
+    """配置为正数时仍应显式发送 max_tokens"""
+    from config import settings
+
+    monkeypatch.setattr(settings, "SCREENSHOT_MAX_TOKENS", 4096)
+
+    resp = client.post("/screenshot/capture", json={"save": False})
+    assert resp.status_code == 200, resp.text
+    assert fake_vision["max_tokens"] == 4096
 
 
 def test_truncated_answer_is_flagged(client, fake_capture, monkeypatch):
@@ -619,6 +613,7 @@ def test_truncated_answer_is_flagged(client, fake_capture, monkeypatch):
     answer = resp.json()["answer"]
     assert "截断" in answer
     assert "SCREENSHOT_MAX_TOKENS" in answer
+    assert "本地未设置输出上限" in answer
 
 
 # ══════════════════════════════════════════════════════════════
@@ -689,13 +684,13 @@ def test_capture_rejects_unknown_model(client, fake_capture, fake_vision):
     assert "messages" not in fake_vision
 
 
-def test_capture_thinking_config_follows_ui(client, fake_capture, fake_vision):
-    """思考模式与推理强度跟随界面传参（而不是 .env 默认值）"""
+def test_capture_thinking_ignores_ui_toggle(client, fake_capture, fake_vision):
+    """界面关闭思考也不影响截图；推理强度仍跟随模型选择器"""
     resp = client.post(
         "/screenshot/capture",
         json={
             "save": False,
-            "thinking_enabled": True,
+            "thinking_enabled": False,
             "reasoning_effort": "max",
         },
     )
@@ -705,17 +700,6 @@ def test_capture_thinking_config_follows_ui(client, fake_capture, fake_vision):
     assert extra.get("thinking") == {"type": "enabled"}
     assert extra.get("reasoning_effort") == "max"
     assert resp.json()["thinking_enabled"] is True
-
-
-def test_capture_thinking_disabled_when_ui_says_so(client, fake_capture, fake_vision):
-    """界面关闭思考时，无论 .env 怎么配都要传 disabled"""
-    resp = client.post(
-        "/screenshot/capture",
-        json={"save": False, "thinking_enabled": False},
-    )
-    assert resp.status_code == 200, resp.text
-    assert fake_vision["extra_body"]["thinking"] == {"type": "disabled"}
-    assert resp.json()["thinking_enabled"] is False
 
 
 # ══════════════════════════════════════════════════════════════
@@ -768,16 +752,16 @@ def test_capture_normalizes_alias_effort(client, fake_capture, fake_vision):
     assert fake_vision["extra_body"]["reasoning_effort"] == "low"
 
 
-def test_capture_low_effort_omitted_when_thinking_off(client, fake_capture, fake_vision):
-    """关闭思考时不应带 reasoning_effort（该参数只在思考模式下有意义）"""
+def test_capture_keeps_reasoning_effort_when_ui_thinking_off(client, fake_capture, fake_vision):
+    """界面关闭思考时，截图仍启用思考并保留推理强度"""
     resp = client.post(
         "/screenshot/capture",
         json={"save": False, "thinking_enabled": False, "reasoning_effort": "low"},
     )
     assert resp.status_code == 200, resp.text
     extra = fake_vision["extra_body"]
-    assert extra["thinking"] == {"type": "disabled"}
-    assert "reasoning_effort" not in extra
+    assert extra["thinking"] == {"type": "enabled"}
+    assert extra["reasoning_effort"] == "low"
 
 
 def test_info_reports_vision_support_for_selected_model(client, monkeypatch):

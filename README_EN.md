@@ -273,7 +273,7 @@ The web build needs a one-time sign-up (email + password, at least 6 characters)
 
 ## ⚙️ Configuration
 
-Everything is configured through `.env` in the project root (template: [.env.example](.env.example)), read by [config.py](config.py). **Command-line flags override `.env`**, and UI choices (model, thinking toggle, reasoning effort) override the `.env` defaults.
+Everything is configured through `.env` in the project root (template: [.env.example](.env.example)), read by [config.py](config.py). **Command-line flags override `.env`**, and normal-chat UI choices (model, thinking toggle, reasoning effort) override the `.env` defaults; screenshot answering has its own thinking setting and ignores the UI thinking toggle.
 
 ### Model & LLM
 
@@ -346,8 +346,8 @@ Everything is configured through `.env` in the project root (template: [.env.exa
 | `SCREENSHOT_VISION_MODEL` | empty | Preferred vision model; empty = first image-capable model on the account |
 | `SCREENSHOT_DIR` | `screenshots` | Where captures are saved |
 | `SCREENSHOT_MAX_IMAGE_EDGE` | `0` | Longest edge of the uploaded image; `0` keeps the monitor's native resolution |
-| `SCREENSHOT_MAX_TOKENS` | `8192` | Max tokens per answer |
-| `SCREENSHOT_THINKING_ENABLED` | `false` | Whether screenshot Q&A uses thinking mode by default |
+| `SCREENSHOT_MAX_TOKENS` | `-1` | Max tokens per answer; `-1` omits `max_tokens` and sets no local limit |
+| `SCREENSHOT_THINKING_ENABLED` | `true` | Whether screenshot Q&A uses thinking mode; the normal-chat toggle has no effect |
 | `SCREENSHOT_SAVE` | `true` | Keep every capture on disk |
 
 ### System Audio Capture
@@ -607,7 +607,7 @@ Click the **Screenshot** button (or press **`F8`**) right of the input box on th
 - In standalone window mode the app excludes itself from capture, so it never photographs itself.
 - If another program already owns the hotkey, it degrades to an in-window shortcut.
 
-> **About thinking mode**: the reasoning chain and the answer share the `max_tokens` budget, so thinking mode tends to truncate screenshot answers — hence it is off by default. If a reply is still truncated, the UI says so explicitly.
+> **About thinking and output length**: screenshot answering enables thinking by default, and the normal-chat thinking toggle does not affect it. With `SCREENSHOT_MAX_TOKENS=-1`, the app does not send `max_tokens` and applies no local output limit; the model or server may still enforce its own hard limit. If a reply is truncated, the UI says so explicitly.
 
 ---
 
