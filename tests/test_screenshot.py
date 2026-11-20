@@ -152,6 +152,13 @@ def test_encode_image_keeps_small_image():
     assert Image.open(io.BytesIO(raw)).size == (300, 200)
 
 
+def test_encode_image_zero_keeps_native_resolution():
+    """max_edge=0 表示不缩放，直接保留原始分辨率"""
+    img = _make_image(2560, 1440)
+    _, raw = sc.encode_image(img, max_edge=0)
+    assert Image.open(io.BytesIO(raw)).size == (2560, 1440)
+
+
 def test_encode_large_primary_screen_stays_under_limits():
     """2560x1440 这类真实主屏尺寸应能顺利编码（缩放后体积可控）"""
     img = _make_image(2560, 1440)

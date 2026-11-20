@@ -337,7 +337,7 @@ docker run -d \
 | `SCREENSHOT_ENABLED` | `true` | 截图接口总开关（关闭后路由不注册，前端提示未启用） |
 | `SCREENSHOT_VISION_MODEL` | 空 | 视觉模型兜底偏好；留空则自动选账号下第一个支持图片的模型 |
 | `SCREENSHOT_DIR` | `screenshots` | 截图保存目录 |
-| `SCREENSHOT_MAX_IMAGE_EDGE` | `1280` | 上传前图片最长边（像素） |
+| `SCREENSHOT_MAX_IMAGE_EDGE` | `0` | 上传前图片最长边（像素）；`0` 表示保留显示器原生分辨率 |
 | `SCREENSHOT_MAX_TOKENS` | `8192` | 单次回答最大 token 数 |
 | `SCREENSHOT_THINKING_ENABLED` | `false` | 截图问答默认是否启用思考模式 |
 | `SCREENSHOT_SAVE` | `true` | 是否把每次截图留档到磁盘 |

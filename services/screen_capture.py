@@ -356,7 +356,8 @@ def encode_image(img: "Image.Image", max_edge: Optional[int] = None) -> tuple[st
     if Image is None:
         raise CaptureError("缺少 pillow，请执行：pip install pillow")
 
-    limit = int(max_edge or settings.SCREENSHOT_MAX_IMAGE_EDGE)
+    configured = settings.SCREENSHOT_MAX_IMAGE_EDGE if max_edge is None else max_edge
+    limit = int(configured)
     im = img
     if limit > 0 and max(im.width, im.height) > limit:
         scale = limit / float(max(im.width, im.height))

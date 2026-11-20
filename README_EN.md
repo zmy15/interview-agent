@@ -345,7 +345,7 @@ Everything is configured through `.env` in the project root (template: [.env.exa
 | `SCREENSHOT_ENABLED` | `true` | Master switch (off = routes not registered, UI says unavailable) |
 | `SCREENSHOT_VISION_MODEL` | empty | Preferred vision model; empty = first image-capable model on the account |
 | `SCREENSHOT_DIR` | `screenshots` | Where captures are saved |
-| `SCREENSHOT_MAX_IMAGE_EDGE` | `1280` | Longest edge of the uploaded image (pixels) |
+| `SCREENSHOT_MAX_IMAGE_EDGE` | `0` | Longest edge of the uploaded image; `0` keeps the monitor's native resolution |
 | `SCREENSHOT_MAX_TOKENS` | `8192` | Max tokens per answer |
 | `SCREENSHOT_THINKING_ENABLED` | `false` | Whether screenshot Q&A uses thinking mode by default |
 | `SCREENSHOT_SAVE` | `true` | Keep every capture on disk |

@@ -154,9 +154,9 @@ class Settings:
     # 留空则自动挑选账号下第一个支持图片输入的模型。
     SCREENSHOT_VISION_MODEL: str = os.getenv("SCREENSHOT_VISION_MODEL", "")
     SCREENSHOT_DIR: str = os.getenv("SCREENSHOT_DIR", "screenshots")
-    # 上传给模型前图片的最长边（官方会把图片缩放到约 1300×1300 再计费，
-    # 单图 token 上限 1024，因此本地先缩小可显著减少上传耗时）
-    SCREENSHOT_MAX_IMAGE_EDGE: int = int(os.getenv("SCREENSHOT_MAX_IMAGE_EDGE", "1280"))
+    # 上传给模型前图片的最长边；0 表示不缩放，直接使用显示器原生分辨率。
+    # 设为正数时按宽高比缩小，但不会放大小图。
+    SCREENSHOT_MAX_IMAGE_EDGE: int = int(os.getenv("SCREENSHOT_MAX_IMAGE_EDGE", "0"))
     # 单次回答的最大 token 数。注意：DeepSeek 思考模式默认开启，
     # 思维链与正文共享该预算，2048 容易被推理吃光导致正文被截断。
     SCREENSHOT_MAX_TOKENS: int = int(os.getenv("SCREENSHOT_MAX_TOKENS", "8192"))
